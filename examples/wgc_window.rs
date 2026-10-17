@@ -1,8 +1,9 @@
 //! M0 spike: capture one window via Windows Graphics Capture and log FPS,
 //! resolution and the cost of the GPU → CPU readback.
 //!
-//! Usage: `cargo run --release --example wgc_window -- <0xHWND | PID> [seconds]`
-//! (use `list_windows` to find a target; `seconds` defaults to 10).
+//! Usage: `cargo run --release --example wgc_window -- <0xHWND | PID> [seconds] [--border]`
+//! (use `list_windows` to find a target; `seconds` defaults to 10; the yellow
+//! capture border is off unless `--border` is given or the OS cannot turn it off).
 
 use std::{
     sync::{
@@ -84,10 +85,13 @@ impl GraphicsCaptureApiHandler for Capture {
 fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
-    let mut args = std::env::args().skip(1);
+    let (flags, positional): (Vec<String>, Vec<String>) =
+        std::env::args().skip(1).partition(|a| a.starts_with("--"));
+    let show_border = flags.iter().any(|f| f == "--border");
+    let mut args = positional.into_iter();
     let target = args
         .next()
-        .context("usage: wgc_window <0xHWND | PID> [seconds]")?;
+        .context("usage: wgc_window <0xHWND | PID> [seconds] [--border]")?;
     let seconds: u64 = match args.next() {
         Some(s) => s.parse().context("seconds must be an integer")?,
         None => 10,
@@ -115,7 +119,11 @@ fn main() -> Result<()> {
         CursorCaptureSettings::Default
     };
     let border = if GraphicsCaptureApi::is_border_settings_supported()? {
-        DrawBorderSettings::WithoutBorder
+        if show_border {
+            DrawBorderSettings::WithBorder
+        } else {
+            DrawBorderSettings::WithoutBorder
+        }
     } else {
         warn!("border control not supported; the yellow capture border stays");
         DrawBorderSettings::Default

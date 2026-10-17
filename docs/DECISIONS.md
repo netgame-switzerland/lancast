@@ -148,9 +148,14 @@ Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.p
 - Border: per the docs, `IsBorderRequired = false` only takes effect after
   `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` and the `graphicsCaptureWithoutBorder` package
   capability; otherwise it is "ignored". How this behaves for an unpackaged exe is not documented.
-  windows-capture does not call `RequestAccessAsync`. **To check visually:** does the border appear
-  during `wgc_window` on Win11? If it does, accept it (SPEC allows that) or call `RequestAccessAsync`
-  in M1.
+  windows-capture does not call `RequestAccessAsync`.
+  - **Observed 2026-10-17 (Win11 build 26200, unpackaged exe):** `wgc_window` on Rocket League with
+    `WithoutBorder` drew **no** yellow border. Without `RequestAccessAsync` and without a package
+    manifest, `IsBorderRequired = false` is honoured for an unpackaged desktop app. The consent
+    requirement in the docs evidently applies to packaged apps.
+  - `wgc_window --border` sets `WithBorder` for the comparison test.
+  - **Decision:** no `RequestAccessAsync` call. If a future Windows build starts ignoring the setting,
+    the border just reappears, which is harmless.
 - FPS cap: on ≥ 26100 we use `MinUpdateInterval = 1/60 s`. On older systems we drop frames in our own code.
 - WGC delivers frames only when the content changes, and none at all while the window is minimized
   (community knowledge: OBS, robmikh/Win32CaptureSample; Microsoft does not document it). Consequence

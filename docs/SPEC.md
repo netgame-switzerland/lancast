@@ -128,8 +128,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - **Check every non-default session setting with `is_*_supported()` first.** windows-capture fails at startup otherwise (D8).
 - Cursor **off** by default (user option).
 - Capture border **off** by default where supported (user option).
-  - Per the docs, a border-free capture may require `GraphicsCaptureAccess.RequestAccessAsync(Borderless)`. How this behaves for an unpackaged exe still needs checking.
-  - If the border still appears with `false`, call `RequestAccessAsync` before starting the session.
+  - Verified on Win11 26200: `IsBorderRequired = false` works for the unpackaged exe without `RequestAccessAsync` (D8), so no consent call is needed.
 - Pixel format is BGRA8, sent as `BGRX` (alpha is irrelevant; with alpha NDI uses a costlier codec, D6).
 - Size changes at runtime are handled by windows-capture (frame pool recreation). A minimized window produces no frames. The sender keeps the last frame, and NDI re-sends it to new receivers.
 - WGC delivers frames only when the content changes. The NDI thread sends at most the FPS cap and does not duplicate frames in v1.
@@ -235,6 +234,5 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 
 ## 9. Open points
 - Resolved in M0: process loopback minimum version (D7), NDI license (D5), NDI|HX and bandwidth (D6).
-- Does the capture border disappear for an unpackaged exe without `RequestAccessAsync`? Check visually in M1.
 - Process loopback on Windows 10 19041–19045: untested (no test machine). Rely on the fallback.
 - CPU cost on the sender when receivers request the "Lowest" bandwidth proxy stream: measure in M2/M3.
