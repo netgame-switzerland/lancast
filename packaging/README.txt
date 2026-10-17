@@ -9,7 +9,8 @@ Monitor or other NDI-capable software.
 
 QUICK START
 -----------
-1. Unzip this folder anywhere (e.g. your Desktop) and start LANcast.exe.
+1. Run LANcast-setup.exe (recommended: it also sets up the Windows Firewall
+   for you), or unzip the ZIP anywhere and start LANcast.exe.
 2. Pick your game in "Choose the window to cast". A live preview and the
    audio meter appear below.
 3. Click "Send". Your stream appears on the network as

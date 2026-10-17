@@ -675,6 +675,31 @@ Versions checked with `cargo info` on 2026-10-17.
   - Default inner size **1050×980**.
   - Verified: moved to (200,120) and resized to 1134×861, quit, restarted → identical.
 
+### D25. Installer (Inno Setup) (2026-10-17)
+- **Choice:** Inno Setup 6 (`setup.exe`) instead of WiX/MSI. It is simple and common for tools; MSI only
+  pays off for company rollouts (GPO/Intune). The ZIP stays as the portable option.
+- **Script:** `packaging/LANcast.iss`, built by `tools/package.ps1` when ISCC is present. Installed on
+  the dev machine with `winget install JRSoftware.InnoSetup --scope user` (6.7.3).
+  - Fixed AppId `{F98C4151-0F3E-495C-B8D3-B823EE2D71F2}`; it must never change (updates/uninstall).
+  - Default "for all users" (`PrivilegesRequired=admin`): installs to `Program Files` and offers a
+    **firewall task**, checked by default. It deletes, then adds, an inbound rule "LANcast" for
+    `LANcast.exe` (`profile=private,domain`).
+  - `PrivilegesRequiredOverridesAllowed=dialog` allows "for me only" without admin, into
+    `%LOCALAPPDATA%\Programs\LANcast`. That mode has no firewall task (`Check: IsAdminInstallMode`).
+  - The uninstaller removes the firewall rule (admin mode). Settings and logs in
+    `%LOCALAPPDATA%\LANcast` are kept.
+  - Other features: EULA page, start menu entry, optional desktop shortcut, `MinVersion=10.0.18362`,
+    x64 only, `CloseApplications=yes` (a running LANcast is closed for updates), English and German
+    setup UI.
+  - The final "Start LANcast" runs with `runasoriginaluser`, so LANcast does not run elevated like the
+    setup.
+- **Verified:** silent per-user install (`/CURRENTUSER /VERYSILENT`) installs all 8 files, the start menu
+  entry and the uninstall entry ("LANcast 0.1.0 by Kay Huber") and offers no firewall task. The silent
+  uninstall removes them again.
+  - Not verified automatically: the admin install with the firewall rule, which needs UAC → manual test.
+- **Unsigned:** SmartScreen warns about the setup as well. Only a code-signing certificate helps (e.g.
+  Azure Trusted Signing, or a classic certificate). That is not part of this change.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

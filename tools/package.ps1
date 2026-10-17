@@ -1,7 +1,9 @@
-# Builds the release ZIP (SPEC §6): dist\LANcast-<version>-win64.zip with
+# Builds the release ZIP and the installer (SPEC §6, D25):
+# dist\LANcast-<version>-win64.zip and dist\LANcast-<version>-setup.exe with
 # LANcast.exe, the NDI runtime DLL and its license file, README.txt,
 # EULA.txt, LICENSE.txt (Apache-2.0), NOTICE.txt and THIRD-PARTY-LICENSES.txt.
-# Needs Python 3 for the third-party license list.
+# Needs Python 3 (third-party license list) and Inno Setup 6 (installer;
+# skipped with a warning if missing).
 #
 # Usage (from the project root): powershell -File tools\package.ps1
 # LANcast must not be running (the build replaces LANcast.exe).
@@ -48,3 +50,19 @@ if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path "$stage\*" -DestinationPath $zip
 Write-Host "Created $zip"
 Get-ChildItem $stage | Format-Table Name, Length -AutoSize
+
+# Installer (Inno Setup, D25). Optional: skipped with a note if ISCC is missing.
+$iscc = @(
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) {
+    Write-Warning "Inno Setup not found; no setup.exe built (winget install JRSoftware.InnoSetup)."
+    return
+}
+$stageFull = (Resolve-Path $stage).Path
+$distFull = (Resolve-Path dist).Path
+& $iscc /Q "/DAppVersion=$version" "/DStageDir=$stageFull" "/DOutputDir=$distFull" packaging\LANcast.iss
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+Write-Host "Created dist\LANcast-$version-setup.exe"
