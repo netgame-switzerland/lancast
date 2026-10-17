@@ -81,7 +81,11 @@ Organizers can configure every participant's LANcast with one link on the event 
 | `max`, `fps` | **Limits** that keep the network bandwidth in check; users can only choose lower values |
 | `level`, `border`, `cursor` | **Defaults** (receiver audio level `unity`/`ndi`, capture border, cursor `1`/`0`) |
 
-LANcast shows the settings and asks before applying them; a link never starts sending. "Leave event" in the settings removes them again. The installer registers the `lancast:` scheme; the ZIP version registers it on first start.
+LANcast shows the settings and asks before applying them; a link never starts sending. "Leave event" in the settings removes them again.
+
+The installer registers the `lancast:` scheme and the uninstaller removes it; the ZIP version registers it on first start. *Settings → Links* shows which copy opens the links and can switch it to the current one, e.g. after moving the folder.
+
+Full reference with all keys, encoding rules, a website template and testing tips: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md).
 
 ## Requirements
 - **Windows 10 1903 or newer, 64-bit.** Windows 11 is recommended: process loopback (game-only audio) is documented from build 20348.

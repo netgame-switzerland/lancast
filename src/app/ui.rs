@@ -69,6 +69,8 @@ pub struct LancastApp {
     game_name: String,
     meter: Meter,
     preview: Option<TextureHandle>,
+    /// Where lancast:// links lead (refreshed on demand).
+    scheme_status: crate::url_scheme::SchemeStatus,
 }
 
 impl LancastApp {
@@ -111,6 +113,7 @@ impl LancastApp {
             selected_process: None,
             meter: Meter::default(),
             preview: None,
+            scheme_status: crate::url_scheme::status(),
         };
         if !app.discovery_server.is_empty() {
             app.send(Command::CheckDiscovery(app.discovery_server.clone()));
@@ -859,8 +862,44 @@ impl LancastApp {
                         ui.label(RichText::new("Network").weak());
                         self.network_settings(ui, state);
                         ui.end_row();
+
+                        ui.label(RichText::new("Links").weak());
+                        self.link_settings(ui);
+                        ui.end_row();
                     });
             });
+    }
+
+    /// Which LANcast opens lancast:// event links, with a fix button (D27).
+    fn link_settings(&mut self, ui: &mut egui::Ui) {
+        use crate::url_scheme::{self, SchemeStatus};
+        ui.horizontal(|ui| {
+            let (text, fix) = match &self.scheme_status {
+                SchemeStatus::ThisCopy => {
+                    ("lancast:// event links open this LANcast.".to_owned(), None)
+                }
+                SchemeStatus::OtherCopy(exe) => (
+                    format!("lancast:// event links open another copy: {exe}"),
+                    Some("Use this copy"),
+                ),
+                SchemeStatus::Missing => (
+                    "lancast:// event links are not set up.".to_owned(),
+                    Some("Set up for this copy"),
+                ),
+            };
+            ui.label(RichText::new(text).small().weak());
+            if let Some(button) = fix
+                && ui
+                    .small_button(button)
+                    .on_hover_text(
+                        "Registers lancast:// links for your Windows user to open this LANcast.",
+                    )
+                    .clicked()
+            {
+                url_scheme::register_this_copy();
+                self.scheme_status = url_scheme::status();
+            }
+        });
     }
 
     /// Discovery server setting with its reachability, and the system

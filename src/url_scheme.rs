@@ -20,17 +20,45 @@ use windows::{
 
 use crate::event_link::SCHEME;
 
-/// Registers `lancast:` for the current user unless a registration exists
-/// whose program is still present.
-pub fn ensure_registered() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
+/// Where `lancast:` links currently lead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemeStatus {
+    /// They open this LANcast.
+    ThisCopy,
+    /// They open another LANcast (e.g. an installed or older copy).
+    OtherCopy(String),
+    /// Not registered, or the registered program no longer exists.
+    Missing,
+}
+
+pub fn status() -> SchemeStatus {
+    let (Some(command), Ok(this)) = (registered_command(), std::env::current_exe()) else {
+        return SchemeStatus::Missing;
     };
-    if let Some(command) = registered_command()
-        && command_target_exists(&command)
-    {
-        return;
+    let target = command_target(&command);
+    if !Path::new(&target).is_file() {
+        SchemeStatus::Missing
+    } else if same_path(Path::new(&target), &this) {
+        SchemeStatus::ThisCopy
+    } else {
+        SchemeStatus::OtherCopy(target)
     }
+}
+
+/// Registers `lancast:` for the current user unless a registration exists
+/// whose program is still present (e.g. after the folder was moved).
+pub fn ensure_registered() {
+    if status() == SchemeStatus::Missing {
+        register_this_copy();
+    }
+}
+
+/// Makes `lancast:` links open this copy, for the current user (HKCU wins
+/// over an all-users registration). Returns whether it worked.
+pub fn register_this_copy() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
     let exe = exe.display().to_string();
     let base = format!(r"Software\Classes\{SCHEME}");
     let command = format!("\"{exe}\" \"%1\"");
@@ -43,6 +71,7 @@ pub fn ensure_registered() {
     } else {
         warn!("failed to register lancast: links");
     }
+    ok
 }
 
 /// The open command currently registered (HKCU or HKLM, merged view).
@@ -69,14 +98,23 @@ fn registered_command() -> Option<String> {
     Some(String::from_utf16_lossy(&buffer[..len]))
 }
 
-/// Whether the exe in `"C:\path\LANcast.exe" "%1"` still exists.
-fn command_target_exists(command: &str) -> bool {
-    let exe = command
+/// The exe of a `"C:\path\LANcast.exe" "%1"` command.
+fn command_target(command: &str) -> String {
+    command
         .trim()
         .strip_prefix('"')
         .and_then(|rest| rest.split('"').next())
-        .unwrap_or_else(|| command.split_whitespace().next().unwrap_or(""));
-    !exe.is_empty() && Path::new(exe).is_file()
+        .unwrap_or_else(|| command.split_whitespace().next().unwrap_or(""))
+        .to_owned()
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy()),
+    }
 }
 
 /// Writes a string value under HKCU.
@@ -104,8 +142,10 @@ mod tests {
 
     #[test]
     fn command_parsing() {
-        let exe = std::env::current_exe().unwrap().display().to_string();
-        assert!(command_target_exists(&format!("\"{exe}\" \"%1\"")));
-        assert!(!command_target_exists(r#""C:\nowhere\LANcast.exe" "%1""#));
+        assert_eq!(
+            command_target(r#""C:\Program Files\LANcast\LANcast.exe" "%1""#),
+            r"C:\Program Files\LANcast\LANcast.exe"
+        );
+        assert_eq!(command_target(r"C:\LANcast.exe %1"), r"C:\LANcast.exe");
     }
 }

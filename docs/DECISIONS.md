@@ -750,6 +750,16 @@ Versions checked with `cargo info` on 2026-10-17.
     the button instead.
   - Participants must have run LANcast once (ZIP), or installed it.
 
+- **Follow-up (2026-10-18):**
+  - *Settings → Links* shows where `lancast:` links lead: this copy, another copy (with the path), or
+    not set up. "Use this copy" / "Set up for this copy" registers the current exe in HKCU, which takes
+    precedence over an all-users registration.
+  - At startup LANcast re-registers itself if the registered exe no longer exists, e.g. after the
+    folder was moved.
+  - Verified with the setup (per user): after install, HKCU `lancast\shell\open\command` points to
+    the installed `LANcast.exe`; after uninstall, the key is gone.
+  - Full user documentation: `docs/EVENT_LINKS.md`.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
