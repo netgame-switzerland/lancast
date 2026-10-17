@@ -16,9 +16,9 @@ use crate::{
         video::{PreviewSlot, VideoOptions},
     },
     os_caps::OsCaps,
-    session::{POLL_INTERVAL, Session, SessionConfig, SessionEvent, SessionStatus},
+    session::{POLL_INTERVAL, Preview, Session, SessionConfig, SessionEvent, SessionStatus},
     tray::{TrayHandle, TrayState},
-    windows_list::WindowInfo,
+    windows_list::{self, WindowInfo},
 };
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -80,8 +80,17 @@ pub struct AppState {
     pub caps: OsCaps,
     pub selected: Option<WindowInfo>,
     pub audio_check: AudioCheck,
+    /// Live preview of the selected window before sending.
+    pub preview: Option<PreviewView>,
     pub sending: Option<Sending>,
     pub notice: Option<Notice>,
+}
+
+/// The preview capture as the UI sees it.
+#[derive(Clone)]
+pub struct PreviewView {
+    pub preview: Arc<PreviewSlot>,
+    pub levels: Option<Arc<AudioLevels>>,
 }
 
 pub enum Command {
@@ -104,6 +113,7 @@ pub struct Controller {
     wake: Box<dyn Fn() + Send>,
     settings: Option<Settings>,
     session: Option<Session>,
+    preview: Option<Preview>,
     last_status: Instant,
 }
 
@@ -115,6 +125,7 @@ impl Controller {
             wake,
             settings: None,
             session: None,
+            preview: None,
             last_status: Instant::now(),
         }
     }
@@ -131,17 +142,27 @@ impl Controller {
                 default(POLL_INTERVAL) => {}
             }
             self.poll_session();
+            self.poll_preview();
         }
         if let Some(session) = self.session.take() {
             session.stop();
         }
+        self.stop_preview();
         info!("controller stopped");
     }
 
     fn handle(&mut self, command: Command) {
         match command {
             Command::Select(window) => self.select(window),
-            Command::Settings(settings) => self.settings = Some(settings),
+            Command::Settings(settings) => {
+                let video_changed =
+                    self.settings.as_ref().map(|s| &s.video) != Some(&settings.video);
+                self.settings = Some(settings);
+                // Border and cursor show in the preview right away.
+                if video_changed && self.preview.is_some() {
+                    self.start_preview();
+                }
+            }
             Command::Start(choice) => self.start(choice),
             Command::TrayStart => {
                 let check = self.state().audio_check.clone();
@@ -182,7 +203,62 @@ impl Controller {
         state.audio_check = check;
         state.notice = None;
         drop(state);
+        self.start_preview();
         self.publish_tray();
+    }
+
+    /// (Re)starts the preview of the selected window, unless sending.
+    fn start_preview(&mut self) {
+        self.stop_preview();
+        if self.session.is_some() {
+            return;
+        }
+        let state = self.state();
+        let (Some(window), caps) = (state.selected.clone(), state.caps) else {
+            return;
+        };
+        if windows_list::window_state(window.hwnd) == windows_list::WindowState::Gone {
+            drop(state);
+            self.state().selected = None;
+            return;
+        }
+        // Meter only for game-only audio; system audio needs consent first.
+        let audio = (state.audio_check == AudioCheck::GameAudio).then_some(AudioSource::Process {
+            pid: window.pid,
+            fallback_to_system: false,
+        });
+        drop(state);
+        let video = self
+            .settings
+            .as_ref()
+            .map(|s| s.video.clone())
+            .unwrap_or_default();
+        match Preview::start(&window, &video, audio, &caps) {
+            Ok(preview) => {
+                self.state().preview = Some(PreviewView {
+                    preview: preview.preview.clone(),
+                    levels: preview.levels(),
+                });
+                self.preview = Some(preview);
+            }
+            Err(err) => warn!("preview failed: {err:#}"),
+        }
+    }
+
+    fn stop_preview(&mut self) {
+        if let Some(preview) = self.preview.take() {
+            preview.stop();
+        }
+        self.state().preview = None;
+    }
+
+    fn poll_preview(&mut self) {
+        if self.preview.as_ref().is_some_and(|p| !p.is_running()) {
+            info!("selected window closed");
+            self.stop_preview();
+            self.state().selected = None;
+            (self.wake)();
+        }
     }
 
     fn start(&mut self, choice: AudioChoice) {
@@ -209,6 +285,8 @@ impl Controller {
             audio,
             audio_gain_db: settings.audio_gain_db,
         };
+        // One capture of the window at a time: the session replaces the preview.
+        self.stop_preview();
         match Session::start(&config, &caps) {
             Ok((session, audio_error)) => {
                 let audio_error = audio_error.map(|e| format!("{e:#}"));
@@ -247,6 +325,7 @@ impl Controller {
                     NoticeLevel::Error,
                     &format!("Could not start sending: {err:#}"),
                 );
+                self.start_preview();
             }
         }
         self.publish_tray();
@@ -265,6 +344,8 @@ impl Controller {
             text: format!("Sending stopped: {reason}."),
         });
         drop(state);
+        // Back to the preview if the window still exists.
+        self.start_preview();
         self.publish_tray();
     }
 

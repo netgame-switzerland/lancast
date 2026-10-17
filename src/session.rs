@@ -98,7 +98,7 @@ impl Session {
 
         let (audio, audio_error) = match config.audio {
             None => (None, None),
-            Some(source) => match AudioCapture::start(source, audio_tx.clone()) {
+            Some(source) => match AudioCapture::start(source, Some(audio_tx.clone())) {
                 Ok(audio) => (Some(audio), None),
                 Err(err) => {
                     warn!("no audio capture, sending video only: {err:#}");
@@ -112,7 +112,7 @@ impl Session {
             config.window.hwnd,
             &config.video,
             caps,
-            frame_tx,
+            Some(frame_tx),
             recycle_rx,
             preview.clone(),
         )?;
@@ -158,7 +158,7 @@ impl Session {
         if let Some(old) = self.audio.take() {
             old.stop();
         }
-        self.audio = Some(AudioCapture::start(source, self.audio_tx.clone())?);
+        self.audio = Some(AudioCapture::start(source, Some(self.audio_tx.clone()))?);
         Ok(())
     }
 
@@ -267,3 +267,67 @@ impl Session {
 
 /// How often callers should call [`Session::poll`].
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Frame rate of the preview capture before sending; enough for the UI.
+pub const PREVIEW_FPS: u32 = 15;
+
+/// Capture without sending: the live preview and audio levels shown as soon
+/// as a window is selected (SPEC §3.1). Video is read back only while the UI
+/// shows the preview; audio only feeds the meter.
+pub struct Preview {
+    hwnd: isize,
+    video: VideoCapture,
+    audio: Option<AudioCapture>,
+    pub preview: Arc<PreviewSlot>,
+}
+
+impl Preview {
+    pub fn start(
+        window: &WindowInfo,
+        video: &VideoOptions,
+        audio: Option<AudioSource>,
+        caps: &OsCaps,
+    ) -> Result<Self> {
+        let preview = Arc::new(PreviewSlot::default());
+        let options = VideoOptions {
+            fps_cap: PREVIEW_FPS.min(video.fps_cap),
+            ..video.clone()
+        };
+        // Nothing is sent, so nothing comes back for reuse.
+        let (_, recycled) = crossbeam_channel::bounded(1);
+        let video =
+            VideoCapture::start(window.hwnd, &options, caps, None, recycled, preview.clone())?;
+        let audio = audio.and_then(|source| match AudioCapture::start(source, None) {
+            Ok(audio) => Some(audio),
+            Err(err) => {
+                warn!("no audio preview: {err:#}");
+                None
+            }
+        });
+        info!(pid = window.pid, "preview started");
+        Ok(Self {
+            hwnd: window.hwnd,
+            video,
+            audio,
+            preview,
+        })
+    }
+
+    pub fn levels(&self) -> Option<Arc<AudioLevels>> {
+        self.audio.as_ref().map(|a| a.levels.clone())
+    }
+
+    /// False once the window is gone.
+    pub fn is_running(&self) -> bool {
+        windows_list::window_state(self.hwnd) != WindowState::Gone && self.video.is_running()
+    }
+
+    pub fn stop(self) {
+        if let Err(err) = self.video.stop() {
+            warn!("{err:#}");
+        }
+        if let Some(audio) = self.audio {
+            audio.stop();
+        }
+    }
+}

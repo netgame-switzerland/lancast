@@ -22,7 +22,7 @@ The app shows a small live preview and an audio level meter, so the participant 
 Before sending (window picker):
 ```
 ┌─ LANcast ──────────────────────────────────────────────┐
-│ Choose the window of your game:                        │
+│ Choose the window to cast                              │
 │ ┌─┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─┐         │
 │ │<│ │ (live    │ │ (live    │ │ (live    │ │>│         │
 │ │ │ │ thumb)   │ │ thumb)   │ │ thumb)   │ │ │         │
@@ -37,11 +37,20 @@ Before sending (window picker):
 │ NDI® is a registered trademark of Vizrt NDI AB. ndi.video │
 └────────────────────────────────────────────────────────┘
 ```
-While sending, the carousel is replaced by the window name, a 320×180 live preview and the L/R audio meter, followed by the status line and "Stop".
+Below the carousel, as soon as a window is selected, the **live preview** and the L/R audio meter appear. They are centered and scale with the window. At the bottom: source name, status, Send/Stop, and the **Settings** panel (Window / Capture / Video / Audio in a framed grid).
+
+- **Preview before sending.** Selecting a window starts a preview capture without NDI: 15 fps, plus game audio for the meter if game-only audio is available. Video is read back only while the preview is visible.
+- **Switching to the session.** "Send" replaces the preview capture with the session; "Stop" returns to the preview. Changing the border or cursor option restarts the preview, so the effect is visible immediately.
+- **While sending,** the carousel can still be scrolled but cannot select another window.
 
 1. The participant launches `LANcast.exe`. The main window opens and the tray icon appears.
 2. **Window picker: a carousel like Alt-Tab** (requirement 2026-10-17, D19).
-   - **Tiles:** three are visible; the carousel cycles endlessly left and right (arrows, mouse wheel), with a smooth animation. Each tile shows a **live thumbnail** of the window, the exe's icon, the title and the process name. A click selects the tile and centers it.
+   - **Tiles:** three are visible, and the carousel cycles endlessly. Each tile shows a **live thumbnail** of the window, the exe's icon, the title and the process name. A click selects the tile and centers it.
+   - **Movement is continuous** (D20):
+     - the mouse wheel or touchpad scrolls it softly over the carousel
+     - it can be **dragged ("pulled")** with mouse or finger, with momentum after release
+     - afterwards it eases onto the nearest tile
+     - the arrows move by one tile
    - **Order:** like Alt-Tab, i.e. Z-order, most recently active first; LANcast's own window is excluded.
    - **Refresh:** every 2 s. Known windows keep their place, new windows are inserted at the front, and the centered window stays centered.
    - **Thumbnails:** DWM thumbnails (`DwmRegisterThumbnail`, the Alt-Tab mechanism). They are composited by Windows, cost no CPU and send nothing to the game process (anti-cheat safe).
@@ -278,3 +287,4 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - Resolved in M0: process loopback minimum version (D7), NDI license (D5), NDI|HX and bandwidth (D6).
 - Process loopback on Windows 10 19041–19045: untested (no test machine). Rely on the fallback.
 - CPU cost on the sender when receivers request the "Lowest" bandwidth proxy stream: measure in M2/M3.
+- **Idea: tournament mode (delayed stream).** Send the stream with a configurable delay of a few seconds, so the projector gives the opposing team no live information. Feasibility and options are in D20. Not scheduled yet.

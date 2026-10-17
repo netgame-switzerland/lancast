@@ -116,7 +116,7 @@ impl VideoCapture {
         hwnd: isize,
         options: &VideoOptions,
         caps: &OsCaps,
-        frames: Sender<VideoFrame>,
+        frames: Option<Sender<VideoFrame>>,
         recycled: Receiver<VideoFrame>,
         preview: Arc<PreviewSlot>,
     ) -> Result<Self> {
@@ -221,7 +221,8 @@ struct HandlerConfig {
     pacer: Pacer,
     fps: u32,
     max_size: (u32, u32),
-    frames: Sender<VideoFrame>,
+    /// `None` in preview-only mode (window selected, not sending).
+    frames: Option<Sender<VideoFrame>>,
     recycled: Receiver<VideoFrame>,
     stats: Arc<VideoStats>,
     closed: Arc<AtomicBool>,
@@ -284,9 +285,14 @@ impl GraphicsCaptureApiHandler for Handler {
             stats.paced_out.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-        if self.config.frames.is_full() {
-            stats.backlogged.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
+        match &self.config.frames {
+            Some(frames) if frames.is_full() => {
+                stats.backlogged.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            // Preview only: no readback at all while the UI is hidden.
+            None if !self.config.preview.enabled.load(Ordering::Relaxed) => return Ok(()),
+            _ => {}
         }
 
         let source = (frame.width(), frame.height());
@@ -328,7 +334,12 @@ impl GraphicsCaptureApiHandler for Handler {
         stats.width.store(size.0, Ordering::Relaxed);
         stats.height.store(size.1, Ordering::Relaxed);
 
-        match self.config.frames.try_send(out) {
+        let Some(frames) = &self.config.frames else {
+            stats.captured.fetch_add(1, Ordering::Relaxed);
+            self.spare = Some(out);
+            return Ok(());
+        };
+        match frames.try_send(out) {
             Ok(()) => {
                 stats.captured.fetch_add(1, Ordering::Relaxed);
             }

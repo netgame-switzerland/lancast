@@ -1,7 +1,11 @@
 //! The main window (SPEC §3.1). Renders [`AppState`] and sends commands to
 //! the controller; holds no session state of its own.
+//!
+//! Layout: carousel at the top, the live preview with the audio meter
+//! filling the space below it (scales with the window), and at the bottom
+//! the source name, status, send buttons and the settings panel.
 
-use std::sync::atomic::Ordering;
+use std::sync::{Arc, atomic::Ordering};
 
 use crossbeam_channel::Sender;
 use eframe::egui::{
@@ -15,16 +19,20 @@ use super::{
     meter::Meter,
 };
 use crate::{
-    capture::{audio_wasapi::AudioMode, video::VideoOptions},
+    capture::{
+        audio_wasapi::{AudioLevels, AudioMode},
+        video::{PreviewSlot, VideoOptions},
+    },
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
-    windows_list::WindowInfo,
 };
 
-const PREVIEW_SIZE: egui::Vec2 = egui::vec2(320.0, 180.0);
 const MAX_SIZES: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
 const AMBER: Color32 = Color32::from_rgb(235, 160, 0);
 const RED: Color32 = Color32::from_rgb(215, 60, 50);
+/// Width reserved for the meter next to the preview.
+const METER_WIDTH: f32 = 58.0;
+const MIN_PREVIEW_HEIGHT: f32 = 90.0;
 
 pub struct LancastApp {
     state: SharedState,
@@ -74,8 +82,8 @@ impl LancastApp {
     }
 
     fn hide_to_tray(&mut self, state: &AppState) {
-        if let Some(sending) = &state.sending {
-            sending.preview.enabled.store(false, Ordering::Relaxed);
+        if let Some(slot) = preview_slot(state) {
+            slot.enabled.store(false, Ordering::Relaxed);
         }
         self.carousel.hide();
         if let Some(hwnd) = self.hwnd {
@@ -85,20 +93,38 @@ impl LancastApp {
     }
 }
 
+/// The preview being shown: the session's while sending, otherwise the
+/// preview capture of the selected window.
+fn preview_slot(state: &AppState) -> Option<&Arc<PreviewSlot>> {
+    match (&state.sending, &state.preview) {
+        (Some(sending), _) => Some(&sending.preview),
+        (None, Some(preview)) => Some(&preview.preview),
+        (None, None) => None,
+    }
+}
+
+fn audio_levels(state: &AppState) -> Option<&AudioLevels> {
+    match (&state.sending, &state.preview) {
+        (Some(sending), _) => sending.levels.as_deref(),
+        (None, Some(preview)) => preview.levels.as_deref(),
+        (None, None) => None,
+    }
+}
+
 impl eframe::App for LancastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-        // × and minimize go to the tray if enabled; otherwise × quits.
+        // × goes to the tray if enabled (minimize is handled by the tray
+        // thread); otherwise × quits.
         if ctx.input(|i| i.viewport().close_requested()) {
-            if self.to_tray && self.hwnd.is_some() {
-                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-                self.hide_to_tray(&state);
-                return;
-            }
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            self.send(Command::Quit);
+            if self.to_tray && self.hwnd.is_some() {
+                self.hide_to_tray(&state);
+            } else {
+                self.send(Command::Quit);
+            }
             return;
         }
 
@@ -107,23 +133,23 @@ impl eframe::App for LancastApp {
             self.send(Command::Settings(self.settings.clone()));
         }
 
-        if let Some(sending) = &state.sending {
-            sending.preview.enabled.store(true, Ordering::Relaxed);
-            if let Some(image) = sending.preview.take() {
-                let image = ColorImage::from_rgba_unmultiplied(image.size, &image.rgba);
-                match &mut self.preview {
-                    Some(texture) => texture.set(image, TextureOptions::LINEAR),
-                    None => {
-                        self.preview =
-                            Some(ctx.load_texture("preview", image, TextureOptions::LINEAR))
+        match preview_slot(&state) {
+            Some(slot) => {
+                slot.enabled.store(true, Ordering::Relaxed);
+                if let Some(image) = slot.take() {
+                    let image = ColorImage::from_rgba_unmultiplied(image.size, &image.rgba);
+                    match &mut self.preview {
+                        Some(texture) => texture.set(image, TextureOptions::LINEAR),
+                        None => {
+                            self.preview =
+                                Some(ctx.load_texture("preview", image, TextureOptions::LINEAR))
+                        }
                     }
                 }
             }
-        } else {
-            self.preview = None;
+            None => self.preview = None,
         }
-        self.meter
-            .update(state.sending.as_ref().and_then(|s| s.levels.as_deref()));
+        self.meter.update(audio_levels(&state));
 
         egui::Panel::bottom("footer").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -136,79 +162,73 @@ impl eframe::App for LancastApp {
             });
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            if state.sending.is_some() {
-                // While sending: what is on air.
-                self.carousel.hide();
-                self.sending_header(ui, &state);
-                ui.add_space(6.0);
-                self.preview_and_meter(ui, &state);
-            } else {
-                // Before sending: pick the window.
-                ui.label(RichText::new("Choose the window of your game:").strong());
-                ui.add_space(4.0);
-                let selected = state.selected.as_ref().map(|w| w.hwnd);
-                if let Some(window) = self.carousel.show(ui, selected) {
-                    self.settings.source_name = window.default_source_name();
-                    self.send(Command::Select(window));
-                }
-                ui.add_space(6.0);
-                self.source_name(ui, &state);
-            }
+        egui::Panel::bottom("controls").show(ui, |ui| {
             ui.add_space(6.0);
+            self.source_name(ui, &state);
+            ui.add_space(4.0);
             self.audio_and_status(ui, &state);
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             self.send_controls(ui, &state);
             ui.add_space(8.0);
-            self.options(ui, &state);
+            self.settings_panel(ui, &state);
+            ui.add_space(6.0);
         });
 
-        // Animate the meter while sending; otherwise the controller wakes us.
-        let interval = if state.sending.is_some() { 33 } else { 1000 };
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.label(
+                RichText::new("Choose the window to cast")
+                    .strong()
+                    .size(15.0),
+            );
+            ui.add_space(4.0);
+            let selected = state.selected.as_ref().map(|w| w.hwnd);
+            let locked = state.sending.is_some();
+            if let Some(window) = self.carousel.show(ui, selected, locked) {
+                self.settings.source_name = window.default_source_name();
+                self.send(Command::Select(window));
+            }
+            ui.add_space(8.0);
+            self.preview_and_meter(ui, &state);
+        });
+
+        // Animate the meter and preview; otherwise the controller wakes us.
+        let live = state.sending.is_some() || state.preview.is_some();
+        let interval = if live { 33 } else { 1000 };
         ctx.request_repaint_after(std::time::Duration::from_millis(interval));
     }
 }
 
 impl LancastApp {
-    fn sending_header(&mut self, ui: &mut egui::Ui, state: &AppState) {
-        if let (Some(window), Some(sending)) = (&state.selected, &state.sending) {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Sending:").strong());
-                ui.label(window_label(window));
-            });
-            ui.label(RichText::new(format!("NDI name: {}", sending.source_name)).weak());
-        }
-    }
-
-    fn source_name(&mut self, ui: &mut egui::Ui, _state: &AppState) {
-        ui.horizontal(|ui| {
-            ui.label("Source name:");
-            ui.add(egui::TextEdit::singleline(&mut self.settings.source_name).desired_width(180.0));
-            let name = format!("{} ({})", self.machine_name, self.settings.source_name);
-            ui.label(RichText::new(format!("NDI name: {name}")).weak())
-                .on_hover_text("NDI adds the computer name in front of the source name.");
-        });
-    }
-
+    /// The live preview and the meter, centered, filling the remaining space.
     fn preview_and_meter(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        let available = ui.available_size();
+        if state.selected.is_none() && state.sending.is_none() {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("Select a window above to see its live preview.").weak());
+            });
+            return;
+        }
+        let aspect = self.preview.as_ref().map_or(16.0 / 9.0, |t| {
+            let [w, h] = t.size();
+            w as f32 / h.max(1) as f32
+        });
+        let max_width = (available.x - METER_WIDTH - 12.0).max(80.0);
+        let height = (available.y - 4.0)
+            .min(max_width / aspect)
+            .max(MIN_PREVIEW_HEIGHT);
+        let width = (height * aspect).min(max_width);
+        let total = width + 12.0 + METER_WIDTH;
+
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(PREVIEW_SIZE, Sense::hover());
+            ui.add_space(((available.x - total) / 2.0).max(0.0));
+            let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 4.0, Color32::from_gray(16));
-            let message = match (&state.sending, &self.preview) {
-                (None, _) => Some("Preview appears while sending"),
-                (Some(s), _) if s.minimized => Some("Window minimized – last frame stays on air"),
-                (Some(s), _) if s.frames_missing => Some(
-                    "No picture. Is the game in exclusive fullscreen?\nPlease use borderless windowed mode.",
-                ),
-                (Some(_), None) => Some("Waiting for the first frame…"),
-                (Some(_), Some(_)) => None,
-            };
             if let Some(texture) = &self.preview {
                 let [w, h] = texture.size();
                 let scale = (rect.width() / w as f32).min(rect.height() / h as f32);
-                let size = vec2(w as f32 * scale, h as f32 * scale);
-                let image_rect = egui::Rect::from_center_size(rect.center(), size);
+                let image_rect =
+                    egui::Rect::from_center_size(rect.center(), vec2(w as f32 * scale, h as f32 * scale));
                 painter.image(
                     texture.id(),
                     image_rect,
@@ -216,6 +236,14 @@ impl LancastApp {
                     Color32::WHITE,
                 );
             }
+            let message = match &state.sending {
+                Some(s) if s.minimized => Some("Window minimized – last frame stays on air"),
+                Some(s) if s.frames_missing => Some(
+                    "No picture. Is the game in exclusive fullscreen?\nPlease use borderless windowed mode.",
+                ),
+                _ if self.preview.is_none() => Some("Waiting for the picture…"),
+                _ => None,
+            };
             if let Some(message) = message {
                 painter.text(
                     rect.center(),
@@ -225,11 +253,31 @@ impl LancastApp {
                     Color32::from_gray(200),
                 );
             }
-            ui.add_space(8.0);
+            ui.add_space(12.0);
             ui.vertical(|ui| {
-                self.meter.show(ui, PREVIEW_SIZE.y - 18.0);
+                self.meter.show(ui, height - 18.0);
                 ui.label(RichText::new("  L   R").small().weak());
             });
+        });
+    }
+
+    fn source_name(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        ui.horizontal(|ui| {
+            ui.label("Source name:");
+            match &state.sending {
+                Some(sending) => {
+                    ui.label(RichText::new(&sending.source_name).strong());
+                }
+                None => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.settings.source_name)
+                            .desired_width(180.0),
+                    );
+                    let name = format!("{} ({})", self.machine_name, self.settings.source_name);
+                    ui.label(RichText::new(format!("NDI name: {name}")).weak())
+                        .on_hover_text("NDI adds the computer name in front of the source name.");
+                }
+            }
         });
     }
 
@@ -269,7 +317,7 @@ impl LancastApp {
                 }
                 let s = &sending.status;
                 let mut line = format!(
-                    "{}×{} · {:.1} fps · {} receiver{}",
+                    "Sending {}×{} · {:.1} fps · {} receiver{}",
                     s.output_size.0,
                     s.output_size.1,
                     s.send_fps,
@@ -286,7 +334,10 @@ impl LancastApp {
             }
             None => match (&state.selected, &state.audio_check) {
                 (Some(_), AudioCheck::GameAudio) => {
-                    ui.label("Audio: game only (checked)");
+                    ui.horizontal(|ui| {
+                        ui.label("Audio: game only (checked)");
+                        activity_dot(ui, self.meter.active());
+                    });
                 }
                 (Some(_), AudioCheck::Unavailable(reason)) => {
                     banner(
@@ -354,113 +405,134 @@ impl LancastApp {
         });
     }
 
-    fn options(&mut self, ui: &mut egui::Ui, state: &AppState) {
+    /// The settings, grouped in a framed panel.
+    fn settings_panel(&mut self, ui: &mut egui::Ui, state: &AppState) {
         let editable = state.sending.is_none();
         let caps = state.caps;
-        ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.to_tray, "Close and minimize to tray")
-                .on_hover_text(
-                    "× and minimize hide LANcast to the tray; sending continues.\n\
-                     Quit from the tray icon's menu.",
-                )
-                .changed()
-            {
-                // Minimizing is detected by the tray thread (eframe does not
-                // run the UI for a minimized window).
-                self.tray.set_minimize_to_tray(self.to_tray);
-            }
-            if ui
-                .checkbox(&mut self.always_on_top, "Always on top")
-                .on_hover_text(
-                    "Keeps LANcast visible over your game to check the setup.\n\
-                     Works with borderless windowed games, not exclusive fullscreen.",
-                )
-                .changed()
-            {
-                ui.ctx()
-                    .send_viewport_cmd(ViewportCommand::WindowLevel(if self.always_on_top {
-                        WindowLevel::AlwaysOnTop
-                    } else {
-                        WindowLevel::Normal
-                    }));
-            }
-        });
-        ui.add_enabled_ui(editable, |ui| {
-            ui.horizontal(|ui| {
-                ui.add_enabled(
-                    caps.border_control,
-                    egui::Checkbox::new(
-                        &mut self.settings.video.show_border,
-                        "Show capture border",
-                    ),
-                )
-                .on_disabled_hover_text("This Windows version always shows the yellow border.");
-                ui.add_enabled(
-                    caps.cursor_control,
-                    egui::Checkbox::new(&mut self.settings.video.capture_cursor, "Capture cursor"),
-                )
-                .on_disabled_hover_text("This Windows version cannot hide the cursor.");
-            });
-            egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                egui::Grid::new("advanced").num_columns(2).show(ui, |ui| {
-                    ui.label("Max. frame rate:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.settings.video.fps_cap)
-                            .range(10..=120)
-                            .suffix(" fps"),
-                    );
-                    ui.end_row();
+        egui::Frame::group(ui.style())
+            .corner_radius(6.0)
+            .inner_margin(10.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Settings").strong().size(14.0));
+                ui.add_space(4.0);
+                egui::Grid::new("settings")
+                    .num_columns(3)
+                    .spacing([18.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Window").weak());
+                        if ui
+                            .checkbox(&mut self.to_tray, "Close and minimize to tray")
+                            .on_hover_text(
+                                "× and minimize hide LANcast to the tray; sending continues.\n\
+                                 Quit from the tray icon's menu.",
+                            )
+                            .changed()
+                        {
+                            // Minimizing is detected by the tray thread
+                            // (eframe does not run the UI while minimized).
+                            self.tray.set_minimize_to_tray(self.to_tray);
+                        }
+                        if ui
+                            .checkbox(&mut self.always_on_top, "Always on top")
+                            .on_hover_text(
+                                "Keeps LANcast visible over your game to check the setup.\n\
+                                 Works with borderless windowed games, not exclusive fullscreen.",
+                            )
+                            .changed()
+                        {
+                            ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(
+                                if self.always_on_top {
+                                    WindowLevel::AlwaysOnTop
+                                } else {
+                                    WindowLevel::Normal
+                                },
+                            ));
+                        }
+                        ui.end_row();
 
-                    ui.label("Max. resolution:");
-                    let (w, h) = self.settings.video.max_size;
-                    egui::ComboBox::from_id_salt("max_size")
-                        .selected_text(format!("{w}×{h}"))
-                        .show_ui(ui, |ui| {
-                            for size in MAX_SIZES {
-                                ui.selectable_value(
-                                    &mut self.settings.video.max_size,
-                                    size,
-                                    format!("{}×{}", size.0, size.1),
+                        ui.label(RichText::new("Capture").weak());
+                        ui.add_enabled(
+                            editable && caps.border_control,
+                            egui::Checkbox::new(
+                                &mut self.settings.video.show_border,
+                                "Show capture border",
+                            ),
+                        )
+                        .on_disabled_hover_text(
+                            "Fixed while sending, or always shown on this Windows version.",
+                        );
+                        ui.add_enabled(
+                            editable && caps.cursor_control,
+                            egui::Checkbox::new(
+                                &mut self.settings.video.capture_cursor,
+                                "Capture cursor",
+                            ),
+                        )
+                        .on_disabled_hover_text(
+                            "Fixed while sending, or not supported on this Windows version.",
+                        );
+                        ui.end_row();
+
+                        ui.label(RichText::new("Video").weak());
+                        ui.add_enabled_ui(editable, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Max. frame rate");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.settings.video.fps_cap)
+                                        .range(10..=120)
+                                        .suffix(" fps"),
                                 );
-                            }
+                            });
                         });
-                    ui.end_row();
+                        ui.add_enabled_ui(editable, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Max. resolution");
+                                let (w, h) = self.settings.video.max_size;
+                                egui::ComboBox::from_id_salt("max_size")
+                                    .selected_text(format!("{w}×{h}"))
+                                    .show_ui(ui, |ui| {
+                                        for size in MAX_SIZES {
+                                            ui.selectable_value(
+                                                &mut self.settings.video.max_size,
+                                                size,
+                                                format!("{}×{}", size.0, size.1),
+                                            );
+                                        }
+                                    });
+                            });
+                        });
+                        ui.end_row();
 
-                    ui.label("Receiver audio level:");
-                    let unity = self.settings.audio_gain_db == 0.0;
-                    egui::ComboBox::from_id_salt("audio_level")
-                        .selected_text(if unity {
-                            "Unity (OBS / DistroAV)"
-                        } else {
-                            "NDI standard +20 dB (Studio Monitor)"
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.settings.audio_gain_db,
-                                0.0,
-                                "Unity (OBS / DistroAV)",
-                            );
-                            ui.selectable_value(
-                                &mut self.settings.audio_gain_db,
-                                AUDIO_GAIN_STUDIO_MONITOR_DB,
-                                "NDI standard +20 dB (Studio Monitor)",
-                            );
+                        ui.label(RichText::new("Audio").weak());
+                        ui.add_enabled_ui(editable, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Receiver level");
+                                let unity = self.settings.audio_gain_db == 0.0;
+                                egui::ComboBox::from_id_salt("audio_level")
+                                    .selected_text(if unity {
+                                        "Unity (OBS / DistroAV)"
+                                    } else {
+                                        "NDI standard +20 dB (Studio Monitor)"
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.settings.audio_gain_db,
+                                            0.0,
+                                            "Unity (OBS / DistroAV)",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.settings.audio_gain_db,
+                                            AUDIO_GAIN_STUDIO_MONITOR_DB,
+                                            "NDI standard +20 dB (Studio Monitor)",
+                                        );
+                                    });
+                            });
                         });
-                    ui.end_row();
-                });
+                        ui.end_row();
+                    });
             });
-        });
     }
-}
-
-fn window_label(window: &WindowInfo) -> String {
-    let process = window.process_name.as_deref().unwrap_or("?");
-    let mut title: String = window.title.chars().take(48).collect();
-    if window.title.chars().count() > 48 {
-        title.push('…');
-    }
-    format!("{title}  ({process})")
 }
 
 fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {

@@ -155,8 +155,9 @@ pub struct AudioCapture {
 }
 
 impl AudioCapture {
-    /// Starts capturing `source` on a new thread.
-    pub fn start(source: AudioSource, chunks: Sender<AudioChunk>) -> Result<Self> {
+    /// Starts capturing `source` on a new thread. Without `chunks` only the
+    /// levels are measured (preview before sending).
+    pub fn start(source: AudioSource, chunks: Option<Sender<AudioChunk>>) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let levels = Arc::new(AudioLevels::default());
         let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<AudioMode>>(1);
@@ -320,7 +321,7 @@ fn open_client(pid: Option<u32>) -> Result<Stream> {
 
 fn run(
     stream: &Stream,
-    chunks: &Sender<AudioChunk>,
+    chunks: &Option<Sender<AudioChunk>>,
     levels: &AudioLevels,
     stop: &AtomicBool,
 ) -> Result<()> {
@@ -375,6 +376,7 @@ fn run(
             let interleaved: Vec<f32> = pending.drain(..CHUNK_FRAMES * CHANNELS).collect();
             levels.store(&interleaved);
             levels.chunks.fetch_add(1, Ordering::Relaxed);
+            let Some(chunks) = chunks else { continue };
             match chunks.try_send(AudioChunk { interleaved }) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {

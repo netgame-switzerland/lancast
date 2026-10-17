@@ -501,6 +501,53 @@ Versions checked with `cargo info` on 2026-10-17.
 - Known cosmetic gap: emoji in window titles (e.g. Discord channel names) render as boxes with egui's
   default fonts.
 
+### D20. M3 refinements, round 2 (2026-10-17)
+- **Carousel physics:**
+  - The position is continuous (fractional tile index).
+  - The mouse wheel or touchpad (`smooth_scroll_delta`) moves it by `delta × 1.5 / tile step`.
+  - Dragging with `Sense::click_and_drag` on the whole strip moves it by `drag_delta`. On release the
+    momentum comes from the pointer velocity and decays exponentially (friction 4/s).
+  - Below 0.15 tiles/s, and 150 ms after the last wheel input, it eases onto the nearest tile (or the
+    arrow/click target).
+  - Clicks are mapped to the tile under the pointer. egui-winit turns single-finger touch into pointer
+    events, so dragging also works on touchscreens; touchpads send smooth scroll deltas.
+  - Verified with simulated input: 3 wheel notches and a 300 px drag each moved the carousel to another
+    window.
+- **Preview before sending:**
+  - `session::Preview` runs `VideoCapture` without an NDI channel (`frames: None`) at 15 fps and reads
+    back **only while the preview is visible**. `AudioCapture` without a channel only measures levels.
+  - The controller starts it on selection, restarts it when video options change, replaces it on
+    "Send", resumes it on "Stop", and drops it with the selection when the window closes.
+  - Verified: selection → `preview started`; the screenshot shows the preview and meter.
+- **Layout:**
+  - Bottom panels: footer, then controls (source name, status, Send/Stop, Settings).
+  - The central panel holds the carousel, and the preview fills the rest at the image's aspect ratio,
+    centered, next to the meter, so it scales with the window.
+  - Default window size 700×800, minimum 600×680.
+  - Settings is a framed `Frame::group` with a 3-column grid (Window / Capture / Video / Audio). The
+    "Advanced" fold-out is gone.
+- **Icon v2:** the user's updated design (`Gaming-Streaming-App-Symbol.png`) has **no alpha channel**
+  (RGB with a black background). `tools/make_icons.py` now makes the outer black transparent by flood
+  fill from the four corners (tolerance 12, then a 0.8 px blur for soft edges). Black inside the shape
+  is not affected. Verified on light and dark backgrounds and via the exe icon. Explorer may show the old
+  icon until its icon cache refreshes.
+- **Tournament mode (idea, user question):** send the stream several seconds late, so the projector
+  gives the opposing team no live information.
+  - Feasible in LANcast: a ring buffer between capture and NDI send, with audio delayed by the same
+    amount in samples. NDI timecodes stay synthesized at send time, so A/V sync is unaffected.
+  - The limit is **RAM**, since uncompressed frames are large:
+    - 1080p60 BGRX is 8.3 MB/frame, about 5 GB for 10 s.
+    - 1080p30 UYVY (M5 path) is 4.1 MB/frame, about 1.2 GB for 10 s.
+    - 720p30 BGRX is about 1.1 GB for 10 s.
+  - Practical options:
+    - (a) Delay mode with a lower rate/resolution, e.g. a fixed 720p30, and a RAM-based maximum delay
+      shown in the UI.
+    - (b) Compress in the buffer (hardware H.264 via Media Foundation, then decode before sending).
+      This allows minutes of delay but is noticeably more work.
+    - (c) Delay centrally on the receiving machine. One place for all players, but it depends on the
+      receiver software's features.
+  - Not scheduled.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

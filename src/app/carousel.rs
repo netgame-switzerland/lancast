@@ -1,5 +1,7 @@
-//! Window picker as an Alt-Tab-like carousel (D19): three tiles with live
-//! DWM thumbnails, app icon and title; cycles left and right endlessly.
+//! Window picker as an Alt-Tab-like carousel (D19, D20): three tiles with
+//! live DWM thumbnails, app icon and title. It scrolls continuously with the
+//! mouse wheel or touchpad, can be dragged ("pulled") with mouse or finger
+//! with momentum, and then settles softly on the nearest tile.
 
 use std::{
     collections::HashMap,
@@ -22,13 +24,27 @@ const ARROW_WIDTH: f32 = 26.0;
 const GAP: f32 = 8.0;
 const TEXT_HEIGHT: f32 = 38.0;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// Tiles per point of wheel/touchpad scrolling, relative to one tile width.
+const WHEEL_FACTOR: f32 = 1.5;
+/// Momentum decay per second after a drag is released.
+const FRICTION: f32 = 4.0;
+/// Below this speed (tiles/s) momentum ends and the carousel settles.
+const MIN_VELOCITY: f32 = 0.15;
+/// Settle only after the wheel has been quiet this long.
+const SETTLE_DELAY: Duration = Duration::from_millis(150);
+/// Settling speed (higher = faster).
+const SETTLE_RATE: f32 = 9.0;
 
 pub struct Carousel {
     /// Alt-Tab-like order: most recently active first, kept stable.
     windows: Vec<WindowInfo>,
-    /// Animated index of the centered tile (unbounded; wraps modulo len).
+    /// Continuous index of the centered tile (unbounded; wraps modulo len).
     position: f32,
-    target: i64,
+    /// Momentum in tiles per second.
+    velocity: f32,
+    /// Where to settle; `None` settles on the nearest tile.
+    snap: Option<f32>,
+    last_input: Option<Instant>,
     last_frame: Option<Instant>,
     last_refresh: Option<Instant>,
     icons: HashMap<String, Option<TextureHandle>>,
@@ -41,7 +57,9 @@ impl Carousel {
         Self {
             windows: Vec::new(),
             position: 0.0,
-            target: 0,
+            velocity: 0.0,
+            snap: None,
+            last_input: None,
             last_frame: None,
             last_refresh: None,
             icons: HashMap::new(),
@@ -49,7 +67,7 @@ impl Carousel {
         }
     }
 
-    /// Removes all thumbnails (while sending or hidden).
+    /// Removes all thumbnails (while hidden).
     pub fn hide(&mut self) {
         if let Some(thumbnails) = &mut self.thumbnails {
             thumbnails.clear();
@@ -58,8 +76,8 @@ impl Carousel {
     }
 
     /// Re-reads the window list. Known windows keep their place; new ones
-    /// (usually just started or activated) go to the front, centered windows
-    /// stay centered.
+    /// (usually just started or activated) go to the front, and the centered
+    /// window stays centered.
     fn refresh(&mut self) {
         self.last_refresh = Some(Instant::now());
         let own_pid = std::process::id();
@@ -71,10 +89,11 @@ impl Carousel {
         if self.windows.is_empty() {
             self.windows = fresh;
             self.position = 0.0;
-            self.target = 0;
+            self.snap = None;
             return;
         }
-        let centered = self.current().map(|w| w.hwnd);
+        let n_old = self.windows.len() as i64;
+        let centered = self.windows[(self.position.round() as i64).rem_euclid(n_old) as usize].hwnd;
         let new: Vec<WindowInfo> = fresh
             .iter()
             .filter(|f| !self.windows.iter().any(|w| w.hwnd == f.hwnd))
@@ -88,10 +107,11 @@ impl Carousel {
         let mut windows = new;
         windows.append(&mut kept);
         self.windows = windows;
-        if let Some(index) = centered.and_then(|h| self.windows.iter().position(|w| w.hwnd == h)) {
-            let shift = index as i64 - self.target.rem_euclid(self.len().max(1) as i64);
-            self.target += shift;
-            self.position += shift as f32;
+        if let Some(index) = self.windows.iter().position(|w| w.hwnd == centered) {
+            let n = self.windows.len() as i64;
+            let shift = (index as i64 - (self.position.round() as i64).rem_euclid(n)) as f32;
+            self.position += shift;
+            self.snap = self.snap.map(|s| s + shift);
         }
         if let Some(thumbnails) = &mut self.thumbnails {
             let windows = &self.windows;
@@ -99,17 +119,14 @@ impl Carousel {
         }
     }
 
-    fn len(&self) -> usize {
-        self.windows.len()
-    }
-
-    fn current(&self) -> Option<&WindowInfo> {
-        let n = self.len() as i64;
-        (n > 0).then(|| &self.windows[self.target.rem_euclid(n) as usize])
-    }
-
-    /// Draws the carousel; returns a window the user clicked.
-    pub fn show(&mut self, ui: &mut egui::Ui, selected: Option<isize>) -> Option<WindowInfo> {
+    /// Draws the carousel; returns a window the user clicked. With `locked`
+    /// (while sending) the carousel still scrolls but selects nothing.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        selected: Option<isize>,
+        locked: bool,
+    ) -> Option<WindowInfo> {
         if self
             .last_refresh
             .is_none_or(|t| t.elapsed() >= REFRESH_INTERVAL)
@@ -121,7 +138,7 @@ impl Carousel {
 
         let width = ui.available_width();
         let (area, _) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::hover());
-        let n = self.len();
+        let n = self.windows.len();
         if n == 0 {
             ui.painter().text(
                 area.center(),
@@ -140,48 +157,91 @@ impl Carousel {
         );
         let tile_width = (inner.width() - GAP * (VISIBLE as f32 - 1.0)) / VISIBLE as f32;
         let step = tile_width + GAP;
+        let now = Instant::now();
+        let dt = self
+            .last_frame
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f32())
+            .min(0.1);
+        self.last_frame = Some(now);
 
-        // Navigation: arrows, mouse wheel over the carousel.
+        // One interaction for the whole strip: drag to pull, click to pick.
+        let response = ui.interact(
+            inner,
+            ui.scope_id().with("carousel"),
+            Sense::click_and_drag(),
+        );
         if cycling {
-            let arrow = |ui: &mut egui::Ui, rect: Rect, text: &str| {
-                ui.put(rect, egui::Button::new(RichText::new(text).size(18.0)))
-                    .on_hover_text("More windows")
-                    .clicked()
-            };
-            let left = Rect::from_min_size(area.min, vec2(ARROW_WIDTH, HEIGHT));
+            if arrow(
+                ui,
+                Rect::from_min_size(area.min, vec2(ARROW_WIDTH, HEIGHT)),
+                "<",
+            ) {
+                self.snap = Some(self.position.round() - 1.0);
+                self.velocity = 0.0;
+            }
             let right = Rect::from_min_size(
                 pos2(area.right() - ARROW_WIDTH, area.top()),
                 vec2(ARROW_WIDTH, HEIGHT),
             );
-            if arrow(ui, left, "<") {
-                self.target -= 1;
-            }
             if arrow(ui, right, ">") {
-                self.target += 1;
+                self.snap = Some(self.position.round() + 1.0);
+                self.velocity = 0.0;
             }
-            let hovered = ui.rect_contains_pointer(area);
-            let scroll = ctx.input(|i| i.smooth_scroll_delta.x + i.smooth_scroll_delta.y);
-            if hovered && scroll.abs() > 20.0 {
-                self.target += if scroll > 0.0 { -1 } else { 1 };
+
+            // Mouse wheel / touchpad: continuous scrolling.
+            if ui.rect_contains_pointer(area) {
+                let delta = ctx.input(|i| i.smooth_scroll_delta);
+                let amount = delta.x + delta.y;
+                if amount != 0.0 {
+                    self.position -= amount * WHEEL_FACTOR / step;
+                    self.velocity = 0.0;
+                    self.snap = None;
+                    self.last_input = Some(now);
+                }
+            }
+
+            // Dragging with mouse or finger, with momentum on release.
+            if response.dragged() {
+                self.position -= response.drag_delta().x / step;
+                self.velocity = 0.0;
+                self.snap = None;
+                self.last_input = Some(now);
+            }
+            if response.drag_stopped() {
+                self.velocity = -ctx.input(|i| i.pointer.velocity().x) / step;
             }
         }
 
-        // Animate towards the target.
-        let now = Instant::now();
-        let dt = self
-            .last_frame
-            .map_or(1.0, |t| now.duration_since(t).as_secs_f32());
-        self.last_frame = Some(now);
-        let target = self.target as f32;
-        self.position += (target - self.position) * (dt * 14.0).min(1.0);
-        if (target - self.position).abs() < 0.002 {
-            self.position = target;
-        } else {
+        // Physics: momentum, then settle on a tile.
+        let mut moving = false;
+        if !response.dragged() {
+            if self.velocity.abs() > MIN_VELOCITY {
+                self.position += self.velocity * dt;
+                self.velocity *= (-FRICTION * dt).exp();
+                moving = true;
+            } else {
+                self.velocity = 0.0;
+                let quiet = self.last_input.is_none_or(|t| t.elapsed() >= SETTLE_DELAY);
+                if quiet || self.snap.is_some() {
+                    let target = self.snap.unwrap_or_else(|| self.position.round());
+                    let diff = target - self.position;
+                    if diff.abs() < 0.001 {
+                        self.position = target;
+                        self.snap = None;
+                    } else {
+                        self.position += diff * (dt * SETTLE_RATE).min(1.0);
+                        moving = true;
+                    }
+                } else {
+                    moving = true; // wait for the wheel to go quiet
+                }
+            }
+        }
+        if moving || response.dragged() {
             ctx.request_repaint();
         }
 
-        // Tiles to draw: (slot, window index, x offset of the tile center
-        // from the middle). The slot is stable while animating, for click ids.
+        // Tiles to draw: (slot, window index, x offset of the tile center).
         let slots: Vec<(i64, usize, f32)> = if cycling {
             let base = self.position.floor() as i64;
             (base - 2..=base + 3)
@@ -199,6 +259,28 @@ impl Carousel {
                 .collect()
         };
 
+        // Which tile a click hit.
+        let mut clicked = None;
+        if response.clicked()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            for &(slot, index, offset) in &slots {
+                let tile = Rect::from_center_size(
+                    pos2(inner.center().x + offset, area.center().y),
+                    vec2(tile_width, HEIGHT),
+                );
+                if tile.contains(pointer) {
+                    if !locked {
+                        clicked = Some(self.windows[index].clone());
+                    }
+                    if cycling {
+                        self.snap = Some(slot as f32);
+                        self.velocity = 0.0;
+                    }
+                }
+            }
+        }
+
         let ppp = ctx.pixels_per_point();
         let px = |r: Rect| {
             [
@@ -210,25 +292,25 @@ impl Carousel {
         };
         let painter = ui.painter_at(inner);
         let mut shown = Vec::new();
-        let mut clicked = None;
 
-        for (slot, index, offset) in slots {
-            let center_x = inner.center().x + offset;
-            let tile =
-                Rect::from_center_size(pos2(center_x, area.center().y), vec2(tile_width, HEIGHT));
-            let visible = tile.intersect(inner);
-            if visible.width() <= 1.0 {
+        for (_, index, offset) in slots {
+            let tile = Rect::from_center_size(
+                pos2(inner.center().x + offset, area.center().y),
+                vec2(tile_width, HEIGHT),
+            );
+            if tile.intersect(inner).width() <= 1.0 {
                 continue;
             }
             let window = &self.windows[index];
             let is_selected = selected == Some(window.hwnd);
-            let response = ui.interact(visible, ui.scope_id().with(("tile", slot)), Sense::click());
+            let hovered =
+                !response.dragged() && ui.rect_contains_pointer(tile.intersect(inner)) && !locked;
             let (fill, stroke) = if is_selected {
                 (
                     ui.visuals().selection.bg_fill.gamma_multiply(0.35),
                     Stroke::new(2.0, ui.visuals().selection.stroke.color),
                 )
-            } else if response.hovered() {
+            } else if hovered {
                 (
                     ui.visuals().widgets.hovered.weak_bg_fill,
                     Stroke::new(1.0, Color32::from_gray(110)),
@@ -270,7 +352,7 @@ impl Carousel {
                     .clone()
             });
             if !has_thumbnail && let Some(icon) = &icon {
-                // No live thumbnail (e.g. minimized on some systems): big icon.
+                // No live thumbnail available: show the icon large.
                 let r = Rect::from_center_size(thumb_area.center(), vec2(48.0, 48.0));
                 painter.image(icon.id(), r, uv(), Color32::WHITE);
             }
@@ -282,11 +364,10 @@ impl Carousel {
                 text_left += 22.0;
             }
             let text_width = tile.right() - 8.0 - text_left;
-            let title = elide(&painter, &window.title, 13.0, text_width);
             painter.text(
                 pos2(text_left, text_top + 10.0),
                 egui::Align2::LEFT_CENTER,
-                title,
+                elide(&painter, &window.title, 13.0, text_width),
                 egui::FontId::proportional(13.0),
                 ui.visuals().strong_text_color(),
             );
@@ -299,14 +380,6 @@ impl Carousel {
                     ui.visuals().weak_text_color(),
                 );
             }
-
-            if response.clicked() {
-                clicked = Some(window.clone());
-                // Center the clicked tile.
-                if cycling {
-                    self.target = slot;
-                }
-            }
         }
 
         if let Some(thumbnails) = &mut self.thumbnails {
@@ -318,6 +391,12 @@ impl Carousel {
         }
         clicked
     }
+}
+
+fn arrow(ui: &mut egui::Ui, rect: Rect, text: &str) -> bool {
+    ui.put(rect, egui::Button::new(RichText::new(text).size(18.0)))
+        .on_hover_text("More windows (or scroll, or drag)")
+        .clicked()
 }
 
 fn uv() -> Rect {
