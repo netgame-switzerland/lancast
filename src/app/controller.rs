@@ -15,6 +15,7 @@ use crate::{
         audio_wasapi::{self, AudioLevels, AudioMode, AudioSource},
         video::{PreviewSlot, VideoOptions},
     },
+    distro,
     event_link::{self, EventLink},
     ndi_config::{self, Discovery},
     os_caps::OsCaps,
@@ -50,6 +51,17 @@ pub struct Settings {
     pub audio_gain_db: f32,
     /// Discovery server choice, applied at the next send (D23).
     pub discovery: Discovery,
+    /// Why sending is not allowed (event edition without a valid event
+    /// configuration, D28); `None` = allowed.
+    pub send_blocked: Option<String>,
+}
+
+/// An event link waiting for confirmation.
+#[derive(Debug, Clone)]
+pub struct PendingLink {
+    pub link: EventLink,
+    /// The signature was checked against this event edition's key.
+    pub verified: bool,
 }
 
 /// Reachability of NDI discovery servers (SPEC §5.4, D14).
@@ -95,8 +107,8 @@ pub struct Sending {
 #[derive(Clone)]
 pub struct AppState {
     pub network: NetworkStatus,
-    /// An event link waiting for the user's confirmation (D27).
-    pub pending_link: Option<EventLink>,
+    /// An event link waiting for the user's confirmation (D27, D28).
+    pub pending_link: Option<PendingLink>,
     pub caps: OsCaps,
     pub selected: Option<WindowInfo>,
     pub audio_check: AudioCheck,
@@ -187,6 +199,7 @@ impl Controller {
                 let video_changed =
                     self.settings.as_ref().map(|s| &s.video) != Some(&settings.video);
                 self.settings = Some(settings);
+                self.publish_tray();
                 // Border and cursor show in the preview right away.
                 if video_changed && self.preview.is_some() {
                     self.start_preview();
@@ -210,16 +223,16 @@ impl Controller {
             Command::Stop => self.stop("stopped by the user", NoticeLevel::Info),
             Command::SwitchToSystemAudio => self.switch_to_system_audio(),
             Command::CheckDiscovery(servers) => self.check_own_discovery(servers),
-            Command::OpenLink(url) => match event_link::parse(&url) {
-                Ok(link) => {
-                    info!(?link, "event link received");
-                    self.state().pending_link = Some(link);
+            Command::OpenLink(url) => match self.check_link(&url) {
+                Ok(pending) => {
+                    info!(link = ?pending.link, verified = pending.verified, "event link received");
+                    self.state().pending_link = Some(pending);
                 }
                 Err(err) => {
-                    warn!("invalid event link: {err:#}");
+                    warn!("event link rejected: {err:#}");
                     self.set_notice(
                         NoticeLevel::Warning,
-                        &format!("Invalid event link: {err:#}"),
+                        &format!("Event link rejected: {err:#}"),
                     );
                 }
             },
@@ -313,6 +326,10 @@ impl Controller {
         else {
             return;
         };
+        if let Some(reason) = &settings.send_blocked {
+            self.set_notice(NoticeLevel::Error, reason);
+            return;
+        }
         let caps = self.state().caps;
         let audio = match choice {
             AudioChoice::Game => Some(AudioSource::Process {
@@ -470,6 +487,26 @@ impl Controller {
         });
     }
 
+    /// Parses an event link; an event edition only accepts links signed for
+    /// it (D28).
+    fn check_link(&self, url: &str) -> anyhow::Result<PendingLink> {
+        let link = event_link::parse(url)?;
+        if !distro::is_distro() {
+            return Ok(PendingLink {
+                link,
+                verified: false,
+            });
+        }
+        let Some(signed) = &link.signed else {
+            anyhow::bail!("this event edition only accepts signed event links");
+        };
+        distro::verify_signature_for_this_build(signed)?;
+        Ok(PendingLink {
+            link,
+            verified: true,
+        })
+    }
+
     /// Checks the discovery server from NDI Access Manager in the background.
     fn check_system_discovery(&self) {
         let servers = ndi_config::system_discovery();
@@ -547,7 +584,12 @@ impl Controller {
             }
             None => (TrayState::Idle, "LANcast – idle".to_owned()),
         };
-        let can_start = state.selected.is_some() && state.audio_check == AudioCheck::GameAudio;
+        let can_start = state.selected.is_some()
+            && state.audio_check == AudioCheck::GameAudio
+            && self
+                .settings
+                .as_ref()
+                .is_some_and(|s| s.send_blocked.is_none());
         let sending = state.sending.is_some();
         drop(state);
         self.tray

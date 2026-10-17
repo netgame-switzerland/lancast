@@ -87,6 +87,20 @@ The installer registers the `lancast:` scheme and the uninstaller removes it; th
 
 Full reference with all keys, encoding rules, a website template and testing tips: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md).
 
+### Event edition ("LAN distro")
+For events that want more control, there is an event edition: a LANcast package for one event that **does not send until it has the event's configuration**, signed by the organizer.
+- **Two sections.** The configuration has an *enforced* section (signed: discovery server, limits, anything else the event wants fixed) and a *defaults* section (unsigned starting values participants may change).
+- **Delivery.** The configuration comes as `LANcast.event` in the event's download, or as a signed `lancast://event?…` link. It is valid from/until given dates.
+- **Signing.** Ed25519: the edition contains only the organizer's public key, so a configuration can't be forged or changed, not even with the exe in hand.
+
+```powershell
+cargo build --release --bin lancast-event
+target\release\lancast-event keygen secret.key        # once per event; keep secret.key private
+# describe the event in event.toml (see packaging\event.example.toml), then:
+powershell -File tools\package.ps1 -EventConfig event.toml -SigningKey secret.key
+```
+This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
+
 ## Requirements
 - **Windows 10 1903 or newer, 64-bit.** Windows 11 is recommended: process loopback (game-only audio) is documented from build 20348.
 - Games should run in **borderless windowed** mode. Exclusive fullscreen may not be captured.
@@ -117,7 +131,7 @@ Participant-facing instructions (firewall, SmartScreen, troubleshooting) are in 
 cargo build --release                         # target\release\LANcast.exe (+ NDI DLL copied next to it)
 cargo clippy --all-targets -- -D warnings
 cargo fmt
-cargo test --release                          # unit tests (pacer, scaler, levels, config, icons)
+cargo test --release                          # unit tests (pacer, scaler, levels, config, links, signatures)
 ```
 Quit a running LANcast before rebuilding: Windows does not let cargo replace a running exe.
 
@@ -125,6 +139,7 @@ Quit a running LANcast before rebuilding: Windows does not let cargo replace a r
 ```powershell
 powershell -File tools\package.ps1   # dist\LANcast-<ver>-win64.zip and dist\LANcast-<ver>-setup.exe
 ```
+With `-EventConfig event.toml -SigningKey secret.key` it also builds the event edition (see [Event edition](#event-edition-lan-distro)).
 
 ## Testing
 Unit tests cover the pure logic. Capture, audio and NDI are checked with small tools in `examples/`:
@@ -163,13 +178,16 @@ src/
   ndi_out.rs         NDI sender thread
   ndi_config.rs      NDI network configuration (discovery server)
   config.rs          LANcast.toml, data folder (%LOCALAPPDATA%\LANcast, portable mode)
+  event_link.rs      lancast:// links: enforced and default sections
+  distro.rs          event edition: signed event configurations (Ed25519)
+  bin/lancast-event.rs  organizer tool: key, sign, verify
   tray.rs            tray icon, notifications, single instance
   windows_list.rs    window enumeration (Alt-Tab-like)
   win_thumbnail.rs   DWM live thumbnails
 examples/            spikes and test tools (see above)
-packaging/           README/EULA for the release, Inno Setup script
+packaging/           README/EULA for the release, Inno Setup script, event.example.toml
 tools/               package.ps1, make_icons.py, third_party_licenses.py
-docs/                SPEC, DECISIONS, ICON
+docs/                SPEC, DECISIONS, ICON, EVENT_LINKS
 ```
 
 ## License

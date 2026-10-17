@@ -50,15 +50,18 @@ pub struct Config {
     /// Who is casting; part of the stream name (D26). Defaults to the
     /// Windows login name.
     pub user_name: String,
-    /// Event settings from an event link (D27): display name and limits the
-    /// user cannot exceed (bandwidth).
+    /// Active event (D27, D28): its name and its enforced settings as
+    /// key/value pairs (normal edition), or the signed configuration (event
+    /// edition), which is verified again at every start.
     pub event_name: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_enforced: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_max_width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_max_height: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_max_fps: Option<u32>,
+    pub event_signed: Option<crate::distro::SignedEvent>,
+    /// Signature of the bundled `LANcast.event` applied last, so an updated
+    /// file is picked up once but does not override a later event link.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub event_bundled: String,
     /// Last game name per process (lowercase exe name).
     pub source_names: BTreeMap<String, String>,
 }
@@ -104,25 +107,15 @@ impl Default for Config {
             window_maximized: false,
             user_name: login_name(),
             event_name: String::new(),
-            event_max_width: None,
-            event_max_height: None,
-            event_max_fps: None,
+            event_enforced: BTreeMap::new(),
+            event_signed: None,
+            event_bundled: String::new(),
             source_names: BTreeMap::new(),
         }
     }
 }
 
 impl Config {
-    /// Applies the event limits (if any) to a frame rate and resolution.
-    pub fn within_event_limits(&self, fps: u32, size: (u32, u32)) -> (u32, (u32, u32)) {
-        let fps = self.event_max_fps.map_or(fps, |max| fps.min(max));
-        let size = (
-            self.event_max_width.map_or(size.0, |max| size.0.min(max)),
-            self.event_max_height.map_or(size.1, |max| size.1.min(max)),
-        );
-        (fps, size)
-    }
-
     /// Keeps values in the ranges the UI offers.
     fn sanitized(mut self) -> Self {
         self.fps_cap = self.fps_cap.clamp(10, 120);
@@ -134,8 +127,6 @@ impl Config {
         self.audio_gain_db = self.audio_gain_db.clamp(-40.0, 40.0);
         self.discovery_server = self.discovery_server.trim().to_owned();
         self.user_name = self.user_name.trim().to_owned();
-        (self.fps_cap, (self.max_width, self.max_height)) =
-            self.within_event_limits(self.fps_cap, (self.max_width, self.max_height));
         let finite_or = |v: f32, default: f32| if v.is_finite() { v } else { default };
         self.window_width =
             finite_or(self.window_width, DEFAULT_WINDOW_SIZE.0).clamp(MIN_WINDOW_SIZE.0, 8000.0);

@@ -5,6 +5,7 @@ pub mod app_icon;
 pub mod capture;
 pub mod cli;
 pub mod config;
+pub mod distro;
 pub mod event_link;
 pub mod exe_icon;
 pub mod logging;

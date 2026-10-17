@@ -2,3 +2,6 @@
 /.idea
 /.cargo/config.toml
 /dist
+
+# Event signing keys (D28) must never be committed
+*.key

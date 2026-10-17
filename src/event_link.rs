@@ -1,48 +1,130 @@
-//! Event links (D27): `lancast://config?event=…&discovery=…` on an event
-//! website configures LANcast in one click. Only known keys with valid values
-//! are accepted, and the UI always asks before applying anything.
+//! Event links (D27, D28): `lancast://…` links on an event website that
+//! configure LANcast in one click. The UI always asks before applying.
 //!
-//! Keys (all optional):
-//! - `event`: display name of the event, e.g. `NetGame 2026`
-//! - `discovery`: the event's NDI discovery server ("NDI gateway"),
-//!   `host[:port]`, comma-separated; empty = automatic (mDNS)
+//! Two sections of values, with the same keys:
+//! - **enforced**: fixed while the event is active (the user cannot change
+//!   them). In an event edition (LAN distro) they must be signed (D28).
+//! - **defaults**: starting values the user may change afterwards; never
+//!   signed. Enforced values always win over defaults.
 //!
-//! Event **limits** (enforced; users can choose lower values only), to keep
-//! the network bandwidth in check:
-//! - `max`: max. resolution, e.g. `1280x720`
-//! - `fps`: max. frame rate, 10–120
+//! Keys: `discovery` (NDI discovery server / gateway), `max` (max.
+//! resolution, a limit), `fps` (max. frame rate, a limit), `level`
+//! (`unity`/`ndi`), `border`, `cursor` (`1`/`0`).
 //!
-//! Event **defaults** (applied once; users may change them afterwards):
-//! - `level`: receiver audio level, `unity` (OBS/DistroAV) or `ndi` (+20 dB,
-//!   NDI Studio Monitor)
-//! - `border`, `cursor`: `1`/`0` (or `true`/`false`)
+//! Link forms:
+//! - `lancast://config?event=…&discovery=…&max=…&fps=…&level=…` (unsigned;
+//!   `discovery`, `max`, `fps` are enforced, the others are defaults)
+//! - `lancast://event?p=<payload>&s=<signature>&level=…` (signed enforced
+//!   section in `p`, unsigned defaults as further parameters)
 
-use anyhow::{Result, bail};
+use std::collections::BTreeMap;
 
-use crate::ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB;
+use anyhow::{Result, anyhow, bail};
+
+use crate::{distro::SignedEvent, ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB};
 
 /// The URL scheme LANcast registers.
 pub const SCHEME: &str = "lancast";
-const MAX_LENGTH: usize = 2048;
+const MAX_LENGTH: usize = 4096;
 
-/// Settings carried by an event link; `None` = not set by the link.
+/// Values of one section; `None` = not set.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct EventLink {
-    pub event: Option<String>,
+pub struct EventValues {
     pub discovery: Option<String>,
-    /// Limits.
     pub max_size: Option<(u32, u32)>,
     pub max_fps: Option<u32>,
-    /// Defaults.
     pub audio_gain_db: Option<f32>,
     pub show_border: Option<bool>,
     pub capture_cursor: Option<bool>,
 }
 
-impl EventLink {
+impl EventValues {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+
+    /// Sets `key` from its text form. Returns `false` for unknown keys.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<bool> {
+        let value = value.trim();
+        match key.to_ascii_lowercase().as_str() {
+            "discovery" => self.discovery = Some(discovery(value)?),
+            "max" => {
+                let (w, h) = value
+                    .split_once(['x', 'X'])
+                    .ok_or_else(|| anyhow!("max must look like 1920x1080"))?;
+                let (w, h): (u32, u32) = (w.trim().parse()?, h.trim().parse()?);
+                if !(320..=3840).contains(&w) || !(180..=2160).contains(&h) {
+                    bail!("max resolution {w}x{h} is out of range");
+                }
+                self.max_size = Some((w, h));
+            }
+            "fps" => {
+                let fps: u32 = value.parse()?;
+                if !(10..=120).contains(&fps) {
+                    bail!("fps must be between 10 and 120");
+                }
+                self.max_fps = Some(fps);
+            }
+            "level" => {
+                self.audio_gain_db = Some(match value.to_ascii_lowercase().as_str() {
+                    "unity" | "obs" => 0.0,
+                    "ndi" | "studio-monitor" => AUDIO_GAIN_STUDIO_MONITOR_DB,
+                    other => bail!("level must be \"unity\" or \"ndi\", not {other:?}"),
+                })
+            }
+            "border" => self.show_border = Some(boolean(value)?),
+            "cursor" => self.capture_cursor = Some(boolean(value)?),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Parses key/value pairs; unknown keys are ignored, invalid values fail.
+    pub fn from_pairs<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Result<Self> {
+        let mut values = Self::default();
+        for (key, value) in pairs {
+            if !values.set(key, value)? {
+                tracing::info!(key, "ignoring unknown event setting");
+            }
+        }
+        Ok(values)
+    }
+
+    /// The text form, for storing and signing.
+    pub fn to_pairs(&self) -> BTreeMap<String, String> {
+        let mut pairs = BTreeMap::new();
+        if let Some(d) = &self.discovery {
+            pairs.insert("discovery".into(), d.clone());
+        }
+        if let Some((w, h)) = self.max_size {
+            pairs.insert("max".into(), format!("{w}x{h}"));
+        }
+        if let Some(fps) = self.max_fps {
+            pairs.insert("fps".into(), fps.to_string());
+        }
+        if let Some(gain) = self.audio_gain_db {
+            let level = if gain == 0.0 { "unity" } else { "ndi" };
+            pairs.insert("level".into(), level.into());
+        }
+        if let Some(b) = self.show_border {
+            pairs.insert("border".into(), u8::from(b).to_string());
+        }
+        if let Some(c) = self.capture_cursor {
+            pairs.insert("cursor".into(), u8::from(c).to_string());
+        }
+        pairs
+    }
+}
+
+/// A parsed event link.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EventLink {
+    pub event: Option<String>,
+    pub enforced: EventValues,
+    pub defaults: EventValues,
+    /// Signed links (event editions): the signed enforced section, still to be
+    /// verified by `distro::verify_for_this_build`.
+    pub signed: Option<SignedEvent>,
 }
 
 /// Whether a command-line argument is an event link.
@@ -50,7 +132,7 @@ pub fn is_link(arg: &str) -> bool {
     arg.len() > SCHEME.len() && arg[..SCHEME.len() + 1].eq_ignore_ascii_case("lancast:")
 }
 
-/// Parses `lancast://config?…`. Unknown keys are ignored; invalid values are
+/// Parses an event link. Unknown keys are ignored; invalid values are
 /// errors, so a broken link is reported instead of half-applied.
 pub fn parse(url: &str) -> Result<EventLink> {
     if url.len() > MAX_LENGTH {
@@ -61,55 +143,68 @@ pub fn parse(url: &str) -> Result<EventLink> {
     }
     let rest = url[SCHEME.len() + 1..].trim_start_matches('/');
     let (action, query) = rest.split_once('?').unwrap_or((rest, ""));
-    if !action.trim_end_matches('/').eq_ignore_ascii_case("config") {
-        bail!("unknown link action {action:?} (expected lancast://config?...)");
-    }
+    let pairs: Vec<(String, String)> = query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            Ok((decode(key)?.to_ascii_lowercase(), decode(value)?))
+        })
+        .collect::<Result<_>>()?;
 
     let mut link = EventLink::default();
-    for pair in query.split('&').filter(|p| !p.is_empty()) {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        let key = decode(key)?.to_ascii_lowercase();
-        let value = decode(value)?.trim().to_owned();
-        match key.as_str() {
-            "event" => link.event = Some(clean_text(&value, 64)?),
-            "discovery" => link.discovery = Some(discovery(&value)?),
-            "level" => {
-                link.audio_gain_db = Some(match value.to_ascii_lowercase().as_str() {
-                    "unity" | "obs" => 0.0,
-                    "ndi" | "studio-monitor" => AUDIO_GAIN_STUDIO_MONITOR_DB,
-                    other => bail!("level must be \"unity\" or \"ndi\", not {other:?}"),
-                })
-            }
-            "max" => {
-                let (w, h) = value
-                    .split_once(['x', 'X'])
-                    .ok_or_else(|| anyhow::anyhow!("max must look like 1920x1080"))?;
-                let (w, h): (u32, u32) = (w.parse()?, h.parse()?);
-                if !(320..=3840).contains(&w) || !(180..=2160).contains(&h) {
-                    bail!("max resolution {w}x{h} is out of range");
+    match action.trim_end_matches('/').to_ascii_lowercase().as_str() {
+        "config" => {
+            for (key, value) in &pairs {
+                match key.as_str() {
+                    "event" => link.event = Some(clean_text(value, 64)?),
+                    // The network and bandwidth settings stay fixed while
+                    // the event is active; the rest are defaults.
+                    "discovery" | "max" | "fps" => {
+                        link.enforced.set(key, value)?;
+                    }
+                    _ => {
+                        if !link.defaults.set(key, value)? {
+                            tracing::info!(key, "ignoring unknown event link key");
+                        }
+                    }
                 }
-                link.max_size = Some((w, h));
             }
-            "fps" => {
-                let fps: u32 = value.parse()?;
-                if !(10..=120).contains(&fps) {
-                    bail!("fps must be between 10 and 120");
-                }
-                link.max_fps = Some(fps);
-            }
-            "border" => link.show_border = Some(boolean(&value)?),
-            "cursor" => link.capture_cursor = Some(boolean(&value)?),
-            other => tracing::info!(key = other, "ignoring unknown event link key"),
         }
+        "event" => {
+            let mut payload = None;
+            let mut signature = None;
+            for (key, value) in &pairs {
+                match key.as_str() {
+                    "p" => payload = Some(value.clone()),
+                    "s" => signature = Some(value.clone()),
+                    _ => {
+                        if !link.defaults.set(key, value)? {
+                            tracing::info!(key, "ignoring unknown event link key");
+                        }
+                    }
+                }
+            }
+            let (Some(payload), Some(signature)) = (payload, signature) else {
+                bail!("a signed event link needs p= and s=");
+            };
+            let signed = SignedEvent { payload, signature };
+            // Show what the link claims; the signature is checked separately.
+            let claimed = crate::distro::decode_payload(&signed)?;
+            link.event = Some(clean_text(&claimed.event, 64)?);
+            link.enforced = claimed.enforced_values()?;
+            link.signed = Some(signed);
+        }
+        other => bail!("unknown link action {other:?} (expected config or event)"),
     }
-    if link.is_empty() {
+    if link.event.is_none() && link.enforced.is_empty() && link.defaults.is_empty() {
         bail!("the link contains no settings");
     }
     Ok(link)
 }
 
 /// Percent-decoding (`%20`) plus `+` as space, as in HTML forms.
-fn decode(text: &str) -> Result<String> {
+pub fn decode(text: &str) -> Result<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -118,7 +213,7 @@ fn decode(text: &str) -> Result<String> {
             b'%' => {
                 let hex = text
                     .get(i + 1..i + 3)
-                    .ok_or_else(|| anyhow::anyhow!("broken %-escape in the link"))?;
+                    .ok_or_else(|| anyhow!("broken %-escape in the link"))?;
                 out.push(u8::from_str_radix(hex, 16)?);
                 i += 3;
             }
@@ -135,6 +230,18 @@ fn decode(text: &str) -> Result<String> {
     Ok(String::from_utf8(out)?)
 }
 
+/// Percent-encoding for link parameters.
+pub fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 fn boolean(value: &str) -> Result<bool> {
     match value.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
@@ -144,11 +251,11 @@ fn boolean(value: &str) -> Result<bool> {
 }
 
 /// Plain display text without control characters, at most `max` chars.
-fn clean_text(value: &str, max: usize) -> Result<String> {
+pub fn clean_text(value: &str, max: usize) -> Result<String> {
     if value.chars().any(char::is_control) {
-        bail!("the link contains control characters");
+        bail!("the text contains control characters");
     }
-    Ok(value.chars().take(max).collect())
+    Ok(value.trim().chars().take(max).collect())
 }
 
 /// Comma-separated `host[:port]` entries with plain host characters.
@@ -174,35 +281,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_link() {
+    fn config_link_splits_sections() {
         let link = parse(
             "lancast://config?event=NetGame%202026&discovery=10.0.0.5:5959&level=ndi&max=1280x720&fps=30&border=0",
         )
         .unwrap();
         assert_eq!(link.event.as_deref(), Some("NetGame 2026"));
-        assert_eq!(link.discovery.as_deref(), Some("10.0.0.5:5959"));
-        assert_eq!(link.audio_gain_db, Some(AUDIO_GAIN_STUDIO_MONITOR_DB));
-        assert_eq!(link.max_size, Some((1280, 720)));
-        assert_eq!(link.max_fps, Some(30));
-        assert_eq!(link.show_border, Some(false));
-        assert_eq!(link.capture_cursor, None);
+        assert_eq!(link.enforced.discovery.as_deref(), Some("10.0.0.5:5959"));
+        assert_eq!(link.enforced.max_size, Some((1280, 720)));
+        assert_eq!(link.enforced.max_fps, Some(30));
+        assert_eq!(
+            link.defaults.audio_gain_db,
+            Some(AUDIO_GAIN_STUDIO_MONITOR_DB)
+        );
+        assert_eq!(link.defaults.show_border, Some(false));
+        assert!(link.signed.is_none());
     }
 
     #[test]
     fn variants_and_unknown_keys() {
-        // Browsers may pass "lancast:config?…" or add a trailing slash.
         let link = parse("LANCAST:config/?event=LAN+Party&foo=bar&discovery=").unwrap();
         assert_eq!(link.event.as_deref(), Some("LAN Party"));
-        assert_eq!(link.discovery.as_deref(), Some(""));
+        assert_eq!(link.enforced.discovery.as_deref(), Some(""));
     }
 
     #[test]
     fn rejects_bad_links() {
-        assert!(parse("lancast://config").is_err()); // nothing to apply
+        assert!(parse("lancast://config").is_err());
         assert!(parse("lancast://run?x=1").is_err());
         assert!(parse("lancast://config?fps=500").is_err());
         assert!(parse("lancast://config?discovery=evil%20host;rm").is_err());
         assert!(parse("lancast://config?event=a%0Ab").is_err());
+        assert!(parse("lancast://event?level=ndi").is_err()); // unsigned "event" link
         assert!(parse("https://example.com").is_err());
+    }
+
+    #[test]
+    fn values_round_trip() {
+        let values =
+            EventValues::from_pairs([("max", "1280x720"), ("fps", "30"), ("cursor", "0")]).unwrap();
+        let pairs = values.to_pairs();
+        let back =
+            EventValues::from_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))).unwrap();
+        assert_eq!(back, values);
+        assert_eq!(encode("NetGame 2026/1"), "NetGame%202026%2F1");
     }
 }

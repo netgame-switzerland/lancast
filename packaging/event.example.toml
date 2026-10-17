@@ -1,0 +1,21 @@
+# Example event description for a LANcast event edition (D28).
+# Sign it with:  lancast-event sign event.toml secret.key LANcast.event
+# or build the whole event download with:
+#   powershell -File tools\package.ps1 -EventConfig event.toml -SigningKey secret.key
+
+event = "NetGame 2026"            # shown to participants, max. 64 characters
+event_id = "netgame-2026"         # letters, digits, - and _; names the download files
+valid_from = "2026-11-01"         # local dates (the event's time zone), inclusive
+valid_until = "2026-11-05"
+
+# Signed: participants cannot change these while the event is active.
+[enforced]
+discovery = "10.0.0.5"            # NDI discovery server; "" = automatic (mDNS)
+max = "1280x720"                  # max. resolution (limit)
+fps = 60                          # max. frame rate (limit)
+
+# Unsigned starting values: participants may change them.
+[defaults]
+level = "unity"                   # "unity" (OBS / DistroAV) or "ndi" (+20 dB, Studio Monitor)
+border = true
+cursor = false

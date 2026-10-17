@@ -14,6 +14,13 @@ lancast://config?event=NetGame%202026&discovery=10.0.0.5&max=1280x720&fps=60&lev
 
 A link never starts sending and never changes the system-wide NDI configuration (NDI Access Manager).
 
+## Two sections: enforced and defaults
+Every setting in an event configuration is in one of two sections:
+- **Enforced:** fixed while the event is active. Participants see them disabled, marked *(set by the event)*. Limits (`max`, `fps`) cap the participant's choice, marked *(event limit …)*; the other keys replace it.
+- **Defaults:** starting values, applied once when the event is applied. Participants can change them afterwards.
+
+In a `lancast://config` link (normal edition), `discovery`, `max` and `fps` are enforced, and `level`, `border` and `cursor` are defaults. In the [event edition](#event-edition-lan-distro) the organizer chooses for every key.
+
 ## Keys
 All keys are optional, but a link must set at least one. Unknown keys are ignored. An invalid value rejects the whole link, so a link is never half-applied.
 
@@ -35,7 +42,7 @@ All keys are optional, but a link must set at least one. Unknown keys are ignore
 ## Encoding
 - Use URL encoding for values: a space is `%20` (or `+`), a comma inside a value is fine.
 - Accepted forms: `lancast://config?…`, `lancast:config?…` and `lancast://config/?…`.
-- Maximum link length: 2048 characters.
+- Maximum link length: 4096 characters.
 
 ## Website example
 ```html
@@ -58,6 +65,56 @@ All keys are optional, but a link must set at least one. Unknown keys are ignore
 - **Not set up:** *Set up for this copy* registers it.
 
 LANcast also re-registers itself automatically at startup if the registered program no longer exists. The registration lives in `HKEY_CURRENT_USER\Software\Classes\lancast`, or in `HKEY_LOCAL_MACHINE` for an all-users install; the uninstaller removes it.
+
+## Event edition ("LAN distro")
+An event edition is a LANcast package built for one event. It **only sends with that event's configuration**, signed by the organizer:
+- `LANcast.event` next to `LANcast.exe` (part of the event download; applied automatically), or
+- a signed link `lancast://event?p=<payload>&s=<signature>&<defaults>` (asks first, like every link).
+
+Without a valid configuration (missing, not yet valid, expired, or not signed with the event's key), Send is disabled and a banner explains why. Unsigned `lancast://config` links are rejected. The window title reads *LANcast – <event> edition*.
+
+**How it is secured:** Ed25519 signatures. The organizer keeps the private key (`secret.key`); the event edition contains only the public key. Changing anything in the signed part, e.g. raising the resolution limit, makes the signature invalid. The defaults are deliberately unsigned, because participants may change them anyway.
+
+**What it does not do:** it cannot stop someone from running a normal LANcast or another NDI sender on the event network. Use the event's network setup (discovery server, switch limits) for that. The event edition makes the right configuration the default and stops tampering within it.
+
+### Building an event edition
+1. **Key pair**, once per event. Keep `secret.key` private: not in the repository, not in the download.
+   ```powershell
+   cargo build --release --bin lancast-event
+   target\release\lancast-event keygen secret.key     # prints the public key
+   ```
+2. **Describe the event** in `event.toml` (template: `packaging/event.example.toml`):
+   ```toml
+   event = "NetGame 2026"
+   event_id = "netgame-2026"        # names the download files
+   valid_from = "2026-11-01"        # local dates, inclusive
+   valid_until = "2026-11-05"
+
+   [enforced]                       # signed, fixed during the event
+   discovery = "10.0.0.5"
+   max = "1280x720"
+   fps = 60
+
+   [defaults]                       # unsigned, participants may change them
+   level = "unity"
+   border = true
+   ```
+   All keys from the table above may go into either section. `discovery = ""` enforces automatic discovery (mDNS).
+3. **Build the packages:**
+   ```powershell
+   powershell -File tools\package.ps1 -EventConfig event.toml -SigningKey secret.key
+   ```
+   Besides the normal packages, this creates:
+   - `dist\LANcast-<ver>-<event_id>-win64.zip`: the event edition plus `LANcast.event`
+   - `dist\LANcast-<ver>-<event_id>-setup.exe`: the same as an installer ("LANcast (<event> edition)"; replaces a normal LANcast install)
+   - `dist\LANcast-<ver>-<event_id>-link.txt`: the signed event link for the website
+
+To change settings later (e.g. a new discovery server), edit `event.toml` and sign again. The edition doesn't need to be rebuilt as long as the key stays the same:
+```powershell
+target\release\lancast-event sign event.toml secret.key LANcast.event   # prints the new link
+target\release\lancast-event verify LANcast.event <public key>          # check a file
+```
+Participants get the new configuration from the new link, or from a new download (a changed `LANcast.event` is picked up at the next start).
 
 ## Testing a link without a website
 ```powershell

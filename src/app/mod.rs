@@ -107,7 +107,10 @@ pub fn run(link: Option<String>) -> Result<()> {
         height: side as u32,
     };
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("LANcast")
+        .with_title(match crate::distro::DISTRO_NAME {
+            Some(name) if crate::distro::is_distro() => format!("LANcast – {name} edition"),
+            _ => "LANcast".to_owned(),
+        })
         .with_inner_size([config.window_width, config.window_height])
         .with_min_inner_size([MIN_WINDOW_SIZE.0, MIN_WINDOW_SIZE.1])
         .with_maximized(config.window_maximized)

@@ -1,7 +1,9 @@
 ; Inno Setup script for the LANcast installer (D25).
 ; Built by tools\package.ps1, which passes:
 ;   /DAppVersion=<version>  /DStageDir=<folder with the release files>
-;   /DOutputDir=<folder for the setup.exe>
+;   /DOutputDir=<folder for the setup.exe>  /DOutputBase=<setup file name>
+; and for an event edition (D28) also /DEdition=<event name> /DEventFile=1
+; (installs the signed LANcast.event next to the exe).
 ;
 ; Install modes: "for all users" (default; admin) installs to Program Files
 ; and adds an inbound firewall rule; "for me only" installs to
@@ -16,13 +18,22 @@
 #ifndef OutputDir
   #define OutputDir "..\dist"
 #endif
+#ifndef OutputBase
+  #define OutputBase "LANcast-" + AppVersion + "-setup"
+#endif
+; An event edition replaces a normal install (same AppId): one LANcast per PC.
+#ifdef Edition
+  #define DisplayName "LANcast (" + Edition + " edition)"
+#else
+  #define DisplayName "LANcast"
+#endif
 
 [Setup]
 ; Never change the AppId: it identifies LANcast for updates and uninstall.
 AppId={{F98C4151-0F3E-495C-B8D3-B823EE2D71F2}
-AppName=LANcast
+AppName={#DisplayName}
 AppVersion={#AppVersion}
-AppVerName=LANcast {#AppVersion}
+AppVerName={#DisplayName} {#AppVersion}
 AppPublisher=Kay Huber
 AppCopyright=Copyright 2026 Kay Huber
 AppPublisherURL=https://ndi.video/
@@ -31,10 +42,10 @@ DefaultGroupName=LANcast
 DisableProgramGroupPage=yes
 LicenseFile={#StageDir}\EULA.txt
 OutputDir={#OutputDir}
-OutputBaseFilename=LANcast-{#AppVersion}-setup
+OutputBaseFilename={#OutputBase}
 SetupIconFile=..\assets\LANcast.ico
 UninstallDisplayIcon={app}\LANcast.exe
-UninstallDisplayName=LANcast
+UninstallDisplayName={#DisplayName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -73,6 +84,9 @@ Source: "{#StageDir}\EULA.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\THIRD-PARTY-LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef EventFile
+Source: "{#StageDir}\LANcast.event"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\LANcast"; Filename: "{app}\LANcast.exe"

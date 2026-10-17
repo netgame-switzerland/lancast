@@ -736,6 +736,8 @@ Versions checked with `cargo info` on 2026-10-17.
   - The first instance shows its window and the dialog.
 - **Stored:** `event_name` and `event_max_width/height/fps` in `LANcast.toml`. The settings panel shows
   "Event: …" with **Leave event**, which removes the name, the limits and the discovery server.
+  (Superseded by D28: enforced values are stored as `event_enforced` and are no longer copied into
+  the user's settings.)
   - The resolution list offers only presets within the limit (plus the limit itself), and the frame
     rate is capped.
 - **Verified end to end:**
@@ -759,6 +761,78 @@ Versions checked with `cargo info` on 2026-10-17.
   - Verified with the setup (per user): after install, HKCU `lancast\shell\open\command` points to
     the installed `LANcast.exe`; after uninstall, the key is gone.
   - Full user documentation: `docs/EVENT_LINKS.md`.
+
+### D28. Event edition ("LAN distro") with signed event configurations (2026-10-18)
+- **Requirement:** an event can hand out a LANcast package that does not send until it has the
+  event's configuration, either bundled with the download or from a link. People must not be able to
+  fake that configuration (e.g. raise the bandwidth limits).
+- **Decisions (with the user):** Ed25519 signatures, one configuration per event, validity window
+  (from/until dates).
+- **Two sections:**
+  - **enforced**: signed; fixed while the event is active. Limits (`max`, `fps`) cap the user's
+    choice; the other keys (`discovery`, `level`, `border`, `cursor`) replace it.
+  - **defaults**: unsigned starting values, applied once; the user may change them afterwards.
+  - Every key may appear in either section; enforced always wins.
+- **Keys and trust:**
+  - The organizer creates a key pair with `lancast-event keygen`.
+  - The **public key** is compiled into the event edition (`LANCAST_DISTRO_KEY`, plus
+    `LANCAST_DISTRO_NAME` for the title; `option_env!`, `src/distro.rs`).
+  - The **private key** stays with the organizer and is used only by `lancast-event sign`. The exe
+    can verify but not sign, so a configuration cannot be forged even by someone who takes the exe
+    apart.
+  - Library: `ed25519-dalek` 3.0 (verify_strict-compatible standard Ed25519), base64url without
+    padding.
+- **Format:**
+  - Signed payload: JSON `{v, event, event_id, valid_from, valid_until, enforced: {key: value}}`. The
+    signature covers the exact payload bytes (base64url), so there is no canonicalization problem.
+  - `LANcast.event` (TOML): `payload`, `signature` and a `[defaults]` table.
+  - Link: `lancast://event?p=<payload>&s=<signature>&<default key>=<value>…`. Defaults are plain
+    parameters, unsigned by design.
+- **Validity:** `valid_from`/`valid_until` are inclusive **local** dates. Everyone at a LAN party
+  shares one time zone; the first test compared against UTC and reported "valid from today" in the
+  early morning, which is confusing. The event edition checks the dates at startup and every minute.
+  It accepts a configuration whose signature is valid even before `valid_from` (people download
+  early) and shows the reason in the banner.
+- **Behaviour of the event edition:**
+  - Window title "LANcast – <event> edition".
+  - Without a valid configuration, Send (and Send from the tray) is disabled with a banner explaining
+    why. The controller also refuses to start (`Settings::send_blocked`), so the check does not rely
+    on the UI alone.
+  - At startup it applies `LANcast.event` next to the exe without asking (it comes with the original
+    download), but only when that file changed since it was last applied (`event_bundled` = its
+    signature). An event link clicked later therefore stays in force.
+  - Event links must be signed for this key; `lancast://config` links are rejected. The confirmation
+    dialog shows "Signed by the event organizers, valid … to …" and both sections separately.
+  - No "Leave event" button (an event edition is for exactly this event).
+- **Normal edition:** unchanged in spirit (D27). `lancast://config` keeps `discovery`, `max`, `fps`
+  as enforced and the rest as defaults; stored as `event_enforced` key/value pairs, so "Leave event"
+  restores the user's own values (they are no longer overwritten). A signed link is accepted there
+  but marked "only an event edition checks the signature".
+- **UI for enforced values:** disabled controls showing the event's value with a blue "(set by the
+  event)", limits as "(event limit …)" with the choices restricted, and the heading "Settings marked
+  'set by the event' are fixed".
+- **Packaging:** `tools/package.ps1 -EventConfig event.toml -SigningKey secret.key` additionally
+  builds `target\distro\release\LANcast.exe` with the public key and produces
+  `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` (with `LANcast.event`, AppName
+  "LANcast (<event> edition)") and `…-link.txt`. It uses the same AppId, so the event edition
+  replaces a normal install (one LANcast per PC, one owner of the `lancast:` scheme).
+- **Honest limits:** the signature proves that settings come from the organizer, and the event
+  edition honours them. It cannot stop someone from running the normal edition, a self-built LANcast
+  or any other NDI sender on the event network. Enforcing the network side (discovery server access,
+  switch QoS/limits) is the organizer's job. The point is to make the right thing the easy thing,
+  and to prevent tampered configurations within the event edition.
+- **Verified (2026-10-18):**
+  - `lancast-event`: keygen refuses to overwrite a key; sign → verify OK; a different key and a
+    modified payload both fail ("the signature is not valid for this LANcast edition").
+  - Package script built both editions; the event ZIP contains `LANcast.event`.
+  - Event edition without `LANcast.event`: banner "sends only with the event configuration", Send
+    disabled.
+  - With the bundled file: event applied, 60 fps / 1280×720 limits, discovery server fixed.
+  - Enforced `level`/`border`/`cursor`: shown disabled with "(set by the event)".
+  - Signed link: dialog with both sections and "Signed by the event organizers". Unsigned
+    `lancast://config` link: "Event link rejected: this event edition only accepts signed event
+    links".
+  - Tests in a portable copy, so the user's own `LANcast.toml` was not touched.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

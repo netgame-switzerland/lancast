@@ -18,7 +18,9 @@ use eframe::egui::{
 
 use super::{
     carousel::Carousel,
-    controller::{AppState, AudioCheck, AudioChoice, Command, NoticeLevel, Settings, SharedState},
+    controller::{
+        AppState, AudioCheck, AudioChoice, Command, NoticeLevel, PendingLink, Settings, SharedState,
+    },
     meter::Meter,
 };
 use crate::{
@@ -27,7 +29,8 @@ use crate::{
         video::{PreviewSlot, VideoOptions},
     },
     config::{Config, ConfigStore},
-    event_link::EventLink,
+    distro,
+    event_link::{EventLink, EventValues},
     ndi_config::Discovery,
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
@@ -42,6 +45,19 @@ const METER_WIDTH: f32 = 58.0;
 const MIN_PREVIEW_HEIGHT: f32 = 90.0;
 /// Settings are written at most this often while being edited.
 const SAVE_DELAY: Duration = Duration::from_millis(700);
+/// An event edition re-checks the validity dates this often.
+const EVENT_RECHECK: Duration = Duration::from_secs(60);
+const BLUE: Color32 = Color32::from_rgb(90, 170, 255);
+
+/// The event in force (D27, D28).
+#[derive(Debug, Clone)]
+struct ActiveEvent {
+    name: String,
+    /// Values the user cannot change while the event is active.
+    enforced: EventValues,
+    /// Event edition: the validity window of the signed configuration.
+    valid: Option<(String, String)>,
+}
 
 pub struct LancastApp {
     state: SharedState,
@@ -71,6 +87,10 @@ pub struct LancastApp {
     preview: Option<TextureHandle>,
     /// Where lancast:// links lead (refreshed on demand).
     scheme_status: crate::url_scheme::SchemeStatus,
+    /// The event in force, and in an event edition why sending is blocked.
+    event: Option<ActiveEvent>,
+    event_error: Option<String>,
+    event_checked: Instant,
 }
 
 impl LancastApp {
@@ -82,7 +102,7 @@ impl LancastApp {
         store: ConfigStore,
         config: Config,
     ) -> Self {
-        let app = Self {
+        let mut app = Self {
             state,
             commands,
             tray,
@@ -99,6 +119,7 @@ impl LancastApp {
                 },
                 audio_gain_db: config.audio_gain_db,
                 discovery: Discovery::System,
+                send_blocked: None,
             },
             sent_settings: None,
             to_tray: config.to_tray,
@@ -114,11 +135,127 @@ impl LancastApp {
             meter: Meter::default(),
             preview: None,
             scheme_status: crate::url_scheme::status(),
+            event: None,
+            event_error: None,
+            event_checked: Instant::now(),
         };
-        if !app.discovery_server.is_empty() {
-            app.send(Command::CheckDiscovery(app.discovery_server.clone()));
+        app.load_bundled_event();
+        app.refresh_event();
+        let servers = app.effective_servers();
+        if !servers.is_empty() {
+            app.send(Command::CheckDiscovery(servers));
         }
         app
+    }
+
+    /// Event edition: applies the `LANcast.event` shipped with the download
+    /// (D28) when it is new. It comes with the original download, so it is
+    /// applied without asking; a later event link still takes precedence.
+    fn load_bundled_event(&mut self) {
+        if !distro::is_distro() {
+            return;
+        }
+        let Some(file) = distro::bundled_event_file() else {
+            return;
+        };
+        if file.signed.signature == self.config.event_bundled {
+            return;
+        }
+        let checked = distro::verify_signature_for_this_build(&file.signed).and_then(|payload| {
+            Ok(EventLink {
+                event: Some(payload.event.clone()),
+                enforced: payload.enforced_values()?,
+                defaults: file.defaults()?,
+                signed: Some(file.signed.clone()),
+            })
+        });
+        match checked {
+            Ok(link) => {
+                tracing::info!(event = ?link.event, "applying the bundled event configuration");
+                self.apply_link(&link);
+                self.config.event_bundled = file.signed.signature.clone();
+            }
+            Err(err) => tracing::warn!("{} is not valid: {err:#}", distro::EVENT_FILE),
+        }
+    }
+
+    /// Recomputes the event in force from the saved settings. An event
+    /// edition verifies the signature and the dates again (D28).
+    fn refresh_event(&mut self) {
+        self.event_checked = Instant::now();
+        self.event_error = None;
+        if distro::is_distro() {
+            let Some(signed) = &self.config.event_signed else {
+                self.event = None;
+                self.event_error = Some(format!(
+                    "this {} edition of LANcast sends only with the event configuration. \
+                     Click the event link on the event website, or use the complete download \
+                     (with {}).",
+                    distro::DISTRO_NAME.unwrap_or("event"),
+                    distro::EVENT_FILE
+                ));
+                return;
+            };
+            let checked = distro::verify_for_this_build(signed).and_then(|payload| {
+                Ok(ActiveEvent {
+                    enforced: payload.enforced_values()?,
+                    name: payload.event,
+                    valid: Some((payload.valid_from, payload.valid_until)),
+                })
+            });
+            match checked {
+                Ok(event) => self.event = Some(event),
+                Err(err) => {
+                    self.event = None;
+                    self.event_error = Some(format!("{err:#}."));
+                }
+            }
+        } else if self.config.event_name.is_empty() && self.config.event_enforced.is_empty() {
+            self.event = None;
+        } else {
+            let pairs = self.config.event_enforced.iter();
+            self.event = Some(ActiveEvent {
+                name: self.config.event_name.clone(),
+                enforced: EventValues::from_pairs(pairs.map(|(k, v)| (k.as_str(), v.as_str())))
+                    .unwrap_or_default(),
+                valid: None,
+            });
+        }
+    }
+
+    /// The enforced values of the event in force (empty without an event).
+    fn enforced(&self) -> EventValues {
+        self.event
+            .as_ref()
+            .map(|e| e.enforced.clone())
+            .unwrap_or_default()
+    }
+
+    /// The settings sent to the controller: the user's choices with the
+    /// event's enforced values on top. Limits were already applied to the
+    /// user's choices; the other enforced values replace them.
+    fn effective_settings(&self) -> Settings {
+        let enforced = self.enforced();
+        let mut settings = self.settings.clone();
+        if let Some(gain) = enforced.audio_gain_db {
+            settings.audio_gain_db = gain;
+        }
+        if let Some(border) = enforced.show_border {
+            settings.video.show_border = border;
+        }
+        if let Some(cursor) = enforced.capture_cursor {
+            settings.video.capture_cursor = cursor;
+        }
+        settings.discovery = self.discovery();
+        settings.send_blocked = self.event_error.clone();
+        settings
+    }
+
+    /// Discovery servers in use: the event's, else the user's.
+    fn effective_servers(&self) -> String {
+        self.enforced()
+            .discovery
+            .unwrap_or_else(|| self.discovery_server.trim().to_owned())
     }
 
     /// Copies the UI state (and the window geometry) into the persistent
@@ -162,57 +299,51 @@ impl LancastApp {
     }
 
     /// Asks before applying an event link; nothing is applied silently.
-    fn confirm_link(&mut self, ctx: &egui::Context, link: &EventLink) {
+    fn confirm_link(&mut self, ctx: &egui::Context, pending: &PendingLink) {
+        let link = &pending.link;
         let mut decision = None;
         egui::Modal::new(egui::Id::unique("event_link")).show(ctx, |ui| {
-            ui.set_width(420.0);
+            ui.set_width(440.0);
             let title = link.event.as_deref().unwrap_or("an event");
             ui.heading(format!("Apply settings for {title}?"));
-            ui.add_space(6.0);
-            ui.label("An event link wants to set:");
-            egui::Grid::new("link_settings")
-                .num_columns(2)
-                .spacing([16.0, 4.0])
-                .show(ui, |ui| {
-                    if let Some(servers) = &link.discovery {
-                        ui.label("NDI discovery server");
-                        ui.strong(if servers.is_empty() {
-                            "automatic (mDNS)"
-                        } else {
-                            servers
-                        });
-                        ui.end_row();
-                    }
-                    if let Some((w, h)) = link.max_size {
-                        ui.label("Max. resolution (limit)");
-                        ui.strong(format!("{w}×{h}"));
-                        ui.end_row();
-                    }
-                    if let Some(fps) = link.max_fps {
-                        ui.label("Max. frame rate (limit)");
-                        ui.strong(format!("{fps} fps"));
-                        ui.end_row();
-                    }
-                    if let Some(gain) = link.audio_gain_db {
-                        ui.label("Receiver level");
-                        ui.strong(if gain == 0.0 {
-                            "Unity (OBS / DistroAV)"
-                        } else {
-                            "NDI standard +20 dB"
-                        });
-                        ui.end_row();
-                    }
-                    if let Some(border) = link.show_border {
-                        ui.label("Show capture border");
-                        ui.strong(if border { "on" } else { "off" });
-                        ui.end_row();
-                    }
-                    if let Some(cursor) = link.capture_cursor {
-                        ui.label("Capture cursor");
-                        ui.strong(if cursor { "on" } else { "off" });
-                        ui.end_row();
-                    }
-                });
+            ui.add_space(4.0);
+            if let Some(signed) = &link.signed {
+                let window = distro::decode_payload(signed)
+                    .map(|p| format!(", valid {} to {}", p.valid_from, p.valid_until))
+                    .unwrap_or_default();
+                if pending.verified {
+                    ui.colored_label(
+                        Color32::from_rgb(60, 190, 80),
+                        format!("Signed by the event organizers{window}."),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(format!(
+                            "Signed event configuration{window} (only an event edition checks the signature)."
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                }
+            }
+            if !link.enforced.is_empty() {
+                ui.add_space(6.0);
+                ui.label("Fixed while the event is active:");
+                values_grid(ui, "link_enforced", &link.enforced);
+            }
+            if !link.defaults.is_empty() {
+                ui.add_space(6.0);
+                ui.label("Starting values you can change afterwards:");
+                values_grid(ui, "link_defaults", &link.defaults);
+            }
+            if self.event.is_some() {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("This replaces the current event's settings.")
+                        .small()
+                        .color(AMBER),
+                );
+            }
             ui.add_space(6.0);
             ui.label(
                 RichText::new("Only settings are changed; nothing is sent until you click Send.")
@@ -239,60 +370,77 @@ impl LancastApp {
         }
     }
 
+    /// Makes the link's event the one in force (replacing a previous event)
+    /// and applies its defaults once; the user may change those later.
     fn apply_link(&mut self, link: &EventLink) {
-        if let Some(event) = &link.event {
-            self.config.event_name = event.clone();
+        self.config.event_name = link.event.clone().unwrap_or_default();
+        if distro::is_distro() {
+            self.config.event_signed = link.signed.clone();
+            self.config.event_enforced.clear();
+        } else {
+            self.config.event_enforced = link.enforced.to_pairs();
+            self.config.event_signed = None;
         }
-        if let Some(servers) = &link.discovery {
+        let defaults = &link.defaults;
+        if let Some(servers) = &defaults.discovery {
             self.discovery_server = servers.clone();
-            self.send(Command::CheckDiscovery(servers.clone()));
         }
-        if let Some((w, h)) = link.max_size {
-            (self.config.event_max_width, self.config.event_max_height) = (Some(w), Some(h));
+        if let Some(size) = defaults.max_size {
+            self.settings.video.max_size = size;
         }
-        if let Some(fps) = link.max_fps {
-            self.config.event_max_fps = Some(fps);
+        if let Some(fps) = defaults.max_fps {
+            self.settings.video.fps_cap = fps;
         }
-        if let Some(gain) = link.audio_gain_db {
+        if let Some(gain) = defaults.audio_gain_db {
             self.settings.audio_gain_db = gain;
         }
-        if let Some(border) = link.show_border {
+        if let Some(border) = defaults.show_border {
             self.settings.video.show_border = border;
         }
-        if let Some(cursor) = link.capture_cursor {
+        if let Some(cursor) = defaults.capture_cursor {
             self.settings.video.capture_cursor = cursor;
         }
         self.changed_at = Some(Instant::now());
+        self.refresh_event();
+        let servers = self.effective_servers();
+        if !servers.is_empty() {
+            self.send(Command::CheckDiscovery(servers));
+        }
     }
 
     /// The resolutions offered: the presets within the event limit, plus the
     /// limit itself if it is not a preset.
     fn allowed_sizes(&self) -> Vec<(u32, u32)> {
-        let fits = |(w, h): (u32, u32)| {
-            self.config.event_max_width.is_none_or(|max| w <= max)
-                && self.config.event_max_height.is_none_or(|max| h <= max)
-        };
+        let limit = self.enforced().max_size;
+        let fits = |(w, h): (u32, u32)| limit.is_none_or(|(mw, mh)| w <= mw && h <= mh);
         let mut sizes: Vec<(u32, u32)> = MAX_SIZES.into_iter().filter(|&s| fits(s)).collect();
-        if let (Some(w), Some(h)) = (self.config.event_max_width, self.config.event_max_height)
-            && !sizes.contains(&(w, h))
+        if let Some(limit) = limit
+            && !sizes.contains(&limit)
         {
-            sizes.push((w, h));
+            sizes.push(limit);
         }
         sizes
     }
 
-    /// Removes the event name, limits and discovery server (after the event).
+    /// Ends the event (normal edition): its enforced values no longer apply.
     fn leave_event(&mut self) {
         self.config.event_name.clear();
-        self.config.event_max_width = None;
-        self.config.event_max_height = None;
-        self.config.event_max_fps = None;
-        self.discovery_server.clear();
+        self.config.event_enforced.clear();
+        self.config.event_signed = None;
         self.changed_at = Some(Instant::now());
+        self.refresh_event();
     }
 
-    /// Effective discovery choice: own server, else ignore, else system.
+    /// Effective discovery choice: the event's, else own server, else
+    /// ignore, else system.
     fn discovery(&self) -> Discovery {
+        if let Some(servers) = self.enforced().discovery {
+            return if servers.is_empty() {
+                Discovery::Mdns
+            } else {
+                Discovery::Servers(servers)
+            };
+        }
         let servers = self.discovery_server.trim();
         if !servers.is_empty() {
             Discovery::Servers(servers.to_owned())
@@ -374,19 +522,31 @@ impl eframe::App for LancastApp {
             return;
         }
 
-        if let Some(link) = state.pending_link.clone() {
-            self.confirm_link(&ctx, &link);
+        if let Some(pending) = state.pending_link.clone() {
+            self.confirm_link(&ctx, &pending);
         }
-        // Event limits (D27) cap what the user chose.
-        (self.settings.video.fps_cap, self.settings.video.max_size) = self
-            .config
-            .within_event_limits(self.settings.video.fps_cap, self.settings.video.max_size);
-        self.settings.discovery = self.discovery();
+        if distro::is_distro() && self.event_checked.elapsed() >= EVENT_RECHECK {
+            self.refresh_event();
+        }
+        // Event limits (D27, D28) cap what the user chose.
+        let enforced = self.enforced();
+        let video = &mut self.settings.video;
+        if let Some(max) = enforced.max_fps {
+            video.fps_cap = video.fps_cap.min(max);
+        }
+        if let Some((w, h)) = enforced.max_size {
+            video.max_size = (video.max_size.0.min(w), video.max_size.1.min(h));
+        }
         self.settings.source_name = crate::config::source_name(&self.user_name, &self.game_name);
         self.sync_config(&ctx);
-        if self.sent_settings.as_ref() != Some(&self.settings) {
-            self.sent_settings = Some(self.settings.clone());
-            self.send(Command::Settings(self.settings.clone()));
+        let settings = self.effective_settings();
+        if self.sent_settings.as_ref() != Some(&settings) {
+            self.sent_settings = Some(settings.clone());
+            self.send(Command::Settings(settings));
+        }
+        // Keep the next repaint coming for the date re-check.
+        if distro::is_distro() {
+            ctx.request_repaint_after(EVENT_RECHECK);
         }
 
         match preview_slot(&state) {
@@ -671,6 +831,12 @@ impl LancastApp {
         let big = |text: &str| {
             egui::Button::new(RichText::new(text).size(16.0)).min_size(vec2(160.0, 34.0))
         };
+        if state.sending.is_none()
+            && let Some(reason) = &self.event_error
+        {
+            banner(ui, AMBER, &format!("Sending is disabled: {reason}"));
+            ui.add_space(4.0);
+        }
         ui.horizontal(|ui| {
             if state.sending.is_some() {
                 if ui.add(big("Stop")).clicked() {
@@ -678,8 +844,10 @@ impl LancastApp {
                 }
                 return;
             }
-            let ready =
-                state.selected.is_some() && !self.game_name.trim().is_empty() && state.caps.wgc;
+            let ready = state.selected.is_some()
+                && !self.game_name.trim().is_empty()
+                && state.caps.wgc
+                && self.event_error.is_none();
             match &state.audio_check {
                 AudioCheck::Unavailable(_) if state.selected.is_some() => {
                     // No plain "Send" that silently uses system audio (SPEC §3.1).
@@ -719,17 +887,34 @@ impl LancastApp {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Settings").strong().size(14.0));
-                    if !self.config.event_name.is_empty() {
-                        ui.label(
-                            RichText::new(format!("–  Event: {}", self.config.event_name))
-                                .color(Color32::from_rgb(90, 170, 255)),
-                        );
-                        if ui
-                            .small_button("Leave event")
-                            .on_hover_text(
-                                "Removes the event's limits and discovery server (after the event).",
-                            )
-                            .clicked()
+                    if let Some(event) = self.event.clone() {
+                        let name = if event.name.is_empty() {
+                            "unnamed"
+                        } else {
+                            &event.name
+                        };
+                        ui.label(RichText::new(format!("–  Event: {name}")).color(BLUE));
+                        if let Some((_, until)) = &event.valid {
+                            ui.label(
+                                RichText::new(format!("(valid until {until})"))
+                                    .small()
+                                    .weak(),
+                            );
+                        }
+                        if !event.enforced.is_empty() {
+                            ui.label(
+                                RichText::new("Settings marked \"set by the event\" are fixed.")
+                                    .small()
+                                    .weak(),
+                            );
+                        }
+                        if !distro::is_distro()
+                            && ui
+                                .small_button("Leave event")
+                                .on_hover_text(
+                                    "Ends the event's fixed settings and limits (after the event).",
+                                )
+                                .clicked()
                         {
                             self.leave_event();
                         }
@@ -772,24 +957,21 @@ impl LancastApp {
                         ui.end_row();
 
                         ui.label(RichText::new("Capture").weak());
-                        ui.add_enabled(
+                        let enforced = self.enforced();
+                        enforced_checkbox(
+                            ui,
                             editable && caps.border_control,
-                            egui::Checkbox::new(
-                                &mut self.settings.video.show_border,
-                                "Show capture border",
-                            ),
-                        )
-                        .on_disabled_hover_text(
+                            &mut self.settings.video.show_border,
+                            enforced.show_border,
+                            "Show capture border",
                             "Fixed while sending, or always shown on this Windows version.",
                         );
-                        ui.add_enabled(
+                        enforced_checkbox(
+                            ui,
                             editable && caps.cursor_control,
-                            egui::Checkbox::new(
-                                &mut self.settings.video.capture_cursor,
-                                "Capture cursor",
-                            ),
-                        )
-                        .on_disabled_hover_text(
+                            &mut self.settings.video.capture_cursor,
+                            enforced.capture_cursor,
+                            "Capture cursor",
                             "Fixed while sending, or not supported on this Windows version.",
                         );
                         ui.end_row();
@@ -800,11 +982,15 @@ impl LancastApp {
                                 ui.label("Max. frame rate");
                                 ui.add(
                                     egui::DragValue::new(&mut self.settings.video.fps_cap)
-                                        .range(10..=self.config.event_max_fps.unwrap_or(120))
+                                        .range(10..=enforced.max_fps.unwrap_or(120))
                                         .suffix(" fps"),
                                 );
-                                if let Some(fps) = self.config.event_max_fps {
-                                    ui.label(RichText::new(format!("(event limit {fps})")).small().weak());
+                                if let Some(fps) = enforced.max_fps {
+                                    ui.label(
+                                        RichText::new(format!("(event limit {fps})"))
+                                            .small()
+                                            .weak(),
+                                    );
                                 }
                             });
                         });
@@ -823,20 +1009,24 @@ impl LancastApp {
                                             );
                                         }
                                     });
-                                if let (Some(w), Some(h)) =
-                                    (self.config.event_max_width, self.config.event_max_height)
-                                {
-                                    ui.label(RichText::new(format!("(event limit {w}×{h})")).small().weak());
+                                if let Some((w, h)) = enforced.max_size {
+                                    ui.label(
+                                        RichText::new(format!("(event limit {w}×{h})"))
+                                            .small()
+                                            .weak(),
+                                    );
                                 }
                             });
                         });
                         ui.end_row();
 
                         ui.label(RichText::new("Audio").weak());
-                        ui.add_enabled_ui(editable, |ui| {
+                        let forced_gain = enforced.audio_gain_db;
+                        ui.add_enabled_ui(editable && forced_gain.is_none(), |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Receiver level");
-                                let unity = self.settings.audio_gain_db == 0.0;
+                                let mut gain = forced_gain.unwrap_or(self.settings.audio_gain_db);
+                                let unity = gain == 0.0;
                                 egui::ComboBox::from_id_salt("audio_level")
                                     .selected_text(if unity {
                                         "Unity (OBS / DistroAV)"
@@ -845,16 +1035,23 @@ impl LancastApp {
                                     })
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(
-                                            &mut self.settings.audio_gain_db,
+                                            &mut gain,
                                             0.0,
                                             "Unity (OBS / DistroAV)",
                                         );
                                         ui.selectable_value(
-                                            &mut self.settings.audio_gain_db,
+                                            &mut gain,
                                             AUDIO_GAIN_STUDIO_MONITOR_DB,
                                             "NDI standard +20 dB (Studio Monitor)",
                                         );
                                     });
+                                if forced_gain.is_some() {
+                                    ui.label(
+                                        RichText::new("(set by the event)").small().color(BLUE),
+                                    );
+                                } else {
+                                    self.settings.audio_gain_db = gain;
+                                }
                             });
                         });
                         ui.end_row();
@@ -874,20 +1071,27 @@ impl LancastApp {
     fn link_settings(&mut self, ui: &mut egui::Ui) {
         use crate::url_scheme::{self, SchemeStatus};
         ui.horizontal(|ui| {
+            let mut hint = None;
             let (text, fix) = match &self.scheme_status {
                 SchemeStatus::ThisCopy => {
                     ("lancast:// event links open this LANcast.".to_owned(), None)
                 }
-                SchemeStatus::OtherCopy(exe) => (
-                    format!("lancast:// event links open another copy: {exe}"),
-                    Some("Use this copy"),
-                ),
+                SchemeStatus::OtherCopy(exe) => {
+                    hint = Some(exe.clone());
+                    (
+                        "lancast:// event links open another LANcast copy.".to_owned(),
+                        Some("Use this copy"),
+                    )
+                }
                 SchemeStatus::Missing => (
                     "lancast:// event links are not set up.".to_owned(),
                     Some("Set up for this copy"),
                 ),
             };
-            ui.label(RichText::new(text).small().weak());
+            let label = ui.label(RichText::new(text).small().weak());
+            if let Some(exe) = hint {
+                label.on_hover_text(exe);
+            }
             if let Some(button) = fix
                 && ui
                     .small_button(button)
@@ -905,6 +1109,21 @@ impl LancastApp {
     /// Discovery server setting with its reachability, and the system
     /// setting from NDI Access Manager (SPEC §5.4).
     fn network_settings(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        if let Some(servers) = self.enforced().discovery {
+            ui.horizontal(|ui| {
+                ui.label("Discovery server");
+                if servers.is_empty() {
+                    ui.strong("automatic (mDNS)");
+                } else {
+                    ui.strong(&servers);
+                    if state.network.own_servers == servers {
+                        reachability(ui, state.network.own_reachable);
+                    }
+                }
+                ui.label(RichText::new("(set by the event)").small().color(BLUE));
+            });
+            return;
+        }
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label("Discovery server");
@@ -923,11 +1142,7 @@ impl LancastApp {
                 if !self.discovery_server.trim().is_empty()
                     && network.own_servers == self.discovery_server.trim()
                 {
-                    match network.own_reachable {
-                        Some(true) => ui.colored_label(Color32::from_rgb(60, 190, 80), "reachable"),
-                        Some(false) => ui.colored_label(RED, "NOT reachable"),
-                        None => ui.weak("checking…"),
-                    };
+                    reachability(ui, network.own_reachable);
                 }
                 ui.label(RichText::new("Optional. Applies at the next Send.").small().weak())
                     .on_hover_text(
@@ -967,7 +1182,7 @@ impl LancastApp {
         else {
             return;
         };
-        if self.ignore_system_discovery || !self.discovery_server.trim().is_empty() {
+        if self.ignore_system_discovery || self.discovery() != Discovery::System {
             return;
         }
         banner(
@@ -986,6 +1201,87 @@ impl LancastApp {
         }
         ui.add_space(4.0);
     }
+}
+
+/// A checkbox for a setting the event may enforce: then it shows the
+/// event's value, disabled.
+fn enforced_checkbox(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    value: &mut bool,
+    forced: Option<bool>,
+    text: &str,
+    disabled_hint: &str,
+) {
+    let mut shown = forced.unwrap_or(*value);
+    ui.horizontal(|ui| {
+        ui.add_enabled(
+            enabled && forced.is_none(),
+            egui::Checkbox::new(&mut shown, text),
+        )
+        .on_disabled_hover_text(if forced.is_some() {
+            "Set by the event."
+        } else {
+            disabled_hint
+        });
+        if forced.is_some() {
+            ui.label(RichText::new("(set by the event)").small().color(BLUE));
+        }
+    });
+    if forced.is_none() {
+        *value = shown;
+    }
+}
+
+fn reachability(ui: &mut egui::Ui, reachable: Option<bool>) {
+    match reachable {
+        Some(true) => ui.colored_label(Color32::from_rgb(60, 190, 80), "reachable"),
+        Some(false) => ui.colored_label(RED, "NOT reachable"),
+        None => ui.weak("checking…"),
+    };
+}
+
+/// The values of one event section, for the confirmation dialog.
+fn values_grid(ui: &mut egui::Ui, id: &str, values: &EventValues) {
+    let on_off = |b: bool| if b { "on" } else { "off" };
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            let mut row = |label: &str, value: String| {
+                ui.label(label);
+                ui.strong(value);
+                ui.end_row();
+            };
+            if let Some(servers) = &values.discovery {
+                let text = if servers.is_empty() {
+                    "automatic (mDNS)".to_owned()
+                } else {
+                    servers.clone()
+                };
+                row("NDI discovery server", text);
+            }
+            if let Some((w, h)) = values.max_size {
+                row("Max. resolution", format!("{w}×{h}"));
+            }
+            if let Some(fps) = values.max_fps {
+                row("Max. frame rate", format!("{fps} fps"));
+            }
+            if let Some(gain) = values.audio_gain_db {
+                let text = if gain == 0.0 {
+                    "Unity (OBS / DistroAV)"
+                } else {
+                    "NDI standard +20 dB"
+                };
+                row("Receiver level", text.to_owned());
+            }
+            if let Some(border) = values.show_border {
+                row("Show capture border", on_off(border).to_owned());
+            }
+            if let Some(cursor) = values.capture_cursor {
+                row("Capture cursor", on_off(cursor).to_owned());
+            }
+        });
 }
 
 /// Lowercase exe name, the key for remembered source names.

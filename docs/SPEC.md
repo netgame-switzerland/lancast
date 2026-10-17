@@ -263,6 +263,12 @@ An event website can configure every LANcast with one click:
 
 LANcast always asks before applying and never starts sending by itself. The settings show the event with a "Leave event" button. The `lancast:` scheme is registered by the installer, or per user by LANcast itself.
 
+### 5.4.2 Event edition / LAN distro (D28)
+An event can build its own LANcast package with the organizer's public key compiled in. It sends only with a valid event configuration signed by the organizer (Ed25519): `LANcast.event` in the download, or a signed `lancast://event?p=…&s=…` link.
+- **Enforced** section: signed, with a validity window (local dates), fixed while the event is active.
+- **Defaults** section: unsigned starting values the user may change.
+- Built with `tools/package.ps1 -EventConfig event.toml -SigningKey secret.key`; signed with the `lancast-event` tool.
+
 ### 5.5 Performance roadmap (GPU)
 - **v1:** WGC (GPU) → CPU readback of BGRA → optional CPU downscale → NDI as BGRX. Measured readback cost: 1–5.6 ms per frame at 2560×1392 (D8).
 - **v2 (M5):** scaling and BGRA→**UYVY** conversion on the GPU (D3D11 pixel/compute shader into a half-width RGBA8 texture), a ring of 2–3 staging textures, then send UYVY.
