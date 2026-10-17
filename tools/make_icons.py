@@ -6,6 +6,7 @@ Run from the project root: python tools/make_icons.py
 Outputs:
   assets/LANcast.ico        multi-size icon embedded into LANcast.exe (build.rs)
   assets/icon-<N>.png       small PNGs embedded for the window and tray icons
+  docs/images/icon-preview-1x.png / -4x.png   all sizes on light and dark backgrounds
 """
 
 from pathlib import Path
@@ -68,4 +69,22 @@ for size in PNG_SIZES:
 # The .ico gets the same per-size renderings (the writer picks frames by size).
 frames = [render(s) for s in ICO_SIZES]
 frames[-1].save(ASSETS / "LANcast.ico", sizes=[(s, s) for s in ICO_SIZES], append_images=frames[:-1])
-print("icons written to", ASSETS)
+
+# Preview of all sizes on a light and a dark background, for docs/ICON.md.
+PREVIEW_SIZES = [16, 20, 24, 32, 48, 64]
+width = sum(PREVIEW_SIZES) + 16 * len(PREVIEW_SIZES) + 16
+preview = Image.new("RGBA", (width, 192))
+for row, background in enumerate([(243, 243, 243, 255), (32, 32, 32, 255)]):
+    strip = Image.new("RGBA", (width, 96), background)
+    x = 16
+    for size in PREVIEW_SIZES:
+        strip.alpha_composite(render(size), (x, 16 + 64 - size))
+        x += size + 16
+    preview.paste(strip, (0, row * 96))
+DOCS = Path("docs/images")
+DOCS.mkdir(parents=True, exist_ok=True)
+preview.save(DOCS / "icon-preview-1x.png", optimize=True)
+preview.resize((width * 4, 192 * 4), Image.Resampling.NEAREST).save(
+    DOCS / "icon-preview-4x.png", optimize=True
+)
+print("icons written to", ASSETS, "and previews to", DOCS)

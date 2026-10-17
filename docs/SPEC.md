@@ -252,7 +252,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - An EULA with the clauses from NDI License Agreement §3d.
   - Ship the latest SDK version at release time.
   - "NDI" must not be part of the product name.
-- Ship `LANcast.exe`. Its icon and version info are embedded by `build.rs` via `winresource` from `assets/LANcast.ico`. The window and the tray use the pre-scaled `assets/icon-<N>.png`; `tools/make_icons.py` regenerates all of them from `assets/icon-source.png`.
+- Ship `LANcast.exe`. Its icon and version info are embedded by `build.rs` via `winresource` from `assets/LANcast.ico`. The window and the tray use the pre-scaled `assets/icon-<N>.png`; `tools/make_icons.py` regenerates all of them from `assets/icon-source.png`. See `docs/ICON.md` for previews and details.
 - The exe is unsigned, so a SmartScreen warning is expected. That is acceptable for a LAN party; note it in the README.
 - Windows Firewall: see §5.4; note it in the README.
 - Single instance: a second launch brings the running instance's window to the front (named mutex + `FindWindowW`).
