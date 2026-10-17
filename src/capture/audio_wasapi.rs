@@ -39,9 +39,24 @@ const MAX_SURPLUS: Duration = Duration::from_millis(100);
 pub const ACTIVITY_THRESHOLD_DB: f32 = -60.0;
 pub const SILENCE_DB: f32 = -100.0;
 
+/// When set, process loopback fails as on systems without it, so the
+/// fallback and warning paths (Windows 10, D13) can be tested on Windows 11.
+pub const SIMULATE_NO_PROCESS_LOOPBACK: &str = "LANCAST_SIMULATE_NO_PROCESS_LOOPBACK";
+
 /// One 10 ms block of interleaved stereo samples.
 pub struct AudioChunk {
     pub interleaved: Vec<f32>,
+}
+
+/// What to capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSource {
+    /// The process tree of `pid`. With `fallback_to_system`, a failed
+    /// activation switches to system audio with only a log warning (CLI only;
+    /// the GUI must ask first, SPEC §3.1).
+    Process { pid: u32, fallback_to_system: bool },
+    /// Everything the default output device plays.
+    System,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,11 +76,15 @@ impl fmt::Display for AudioMode {
     }
 }
 
-/// Latest per-channel levels of the last chunk, in dBFS. The UI applies the
-/// meter ballistics (SPEC §5.2).
+/// Per-channel levels for the meter: the maximum sample peak since the last
+/// [`AudioLevels::take_peak_db`] (so short peaks between UI frames are not
+/// lost) and the RMS of the latest chunk. The UI applies the ballistics
+/// (SPEC §5.2).
 #[derive(Debug)]
 pub struct AudioLevels {
-    peak_db: [AtomicU32; CHANNELS],
+    /// Linear peak amplitude as `f32` bits. Non-negative floats order like
+    /// their bit patterns, so `fetch_max` on the bits is a float maximum.
+    peak: [AtomicU32; CHANNELS],
     rms_db: [AtomicU32; CHANNELS],
     /// Chunks produced so far; lets readers detect a stalled capture.
     pub chunks: AtomicU64,
@@ -81,7 +100,7 @@ impl Default for AudioLevels {
     fn default() -> Self {
         let silent = || AtomicU32::new(SILENCE_DB.to_bits());
         Self {
-            peak_db: [silent(), silent()],
+            peak: [AtomicU32::new(0), AtomicU32::new(0)],
             rms_db: [silent(), silent()],
             chunks: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -92,8 +111,11 @@ impl Default for AudioLevels {
 }
 
 impl AudioLevels {
-    pub fn peak_db(&self, channel: usize) -> f32 {
-        f32::from_bits(self.peak_db[channel].load(Ordering::Relaxed))
+    /// Maximum peak since the previous call, in dBFS; resets it.
+    pub fn take_peak_db(&self, channel: usize) -> f32 {
+        to_db(f32::from_bits(
+            self.peak[channel].swap(0, Ordering::Relaxed),
+        ))
     }
 
     pub fn rms_db(&self, channel: usize) -> f32 {
@@ -108,7 +130,9 @@ impl AudioLevels {
                 sum += s * s;
             }
             let rms = (sum / (interleaved.len() / CHANNELS) as f32).sqrt();
-            self.peak_db[channel].store(to_db(peak).to_bits(), Ordering::Relaxed);
+            // NaN would break the bit-order trick; treat it as silence.
+            let peak = if peak.is_nan() { 0.0 } else { peak };
+            self.peak[channel].fetch_max(peak.to_bits(), Ordering::Relaxed);
             self.rms_db[channel].store(to_db(rms).to_bits(), Ordering::Relaxed);
         }
     }
@@ -131,9 +155,8 @@ pub struct AudioCapture {
 }
 
 impl AudioCapture {
-    /// Starts capturing the audio of `pid`'s process tree, or system audio if
-    /// `pid` is `None` or process loopback cannot be activated.
-    pub fn start(pid: Option<u32>, chunks: Sender<AudioChunk>) -> Result<Self> {
+    /// Starts capturing `source` on a new thread.
+    pub fn start(source: AudioSource, chunks: Sender<AudioChunk>) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let levels = Arc::new(AudioLevels::default());
         let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<AudioMode>>(1);
@@ -149,7 +172,7 @@ impl AudioCapture {
                         let _ = ready_tx.send(Err(anyhow!("CoInitializeEx failed: {err}")));
                         return;
                     }
-                    let stream = match open_stream(pid) {
+                    let stream = match open_stream(source) {
                         Ok(stream) => stream,
                         Err(err) => {
                             let _ = ready_tx.send(Err(err));
@@ -206,22 +229,53 @@ struct Stream {
     mode: AudioMode,
 }
 
-fn open_stream(pid: Option<u32>) -> Result<Stream> {
-    if let Some(pid) = pid {
-        match open_client(Some(pid)) {
-            Ok(stream) => return Ok(stream),
-            Err(err) => warn!(
-                "process loopback for PID {pid} failed ({err:#}); \
-                 falling back to system audio, which includes Discord etc."
-            ),
-        }
+/// Checks whether process loopback can be activated for `pid` (the GUI's
+/// pre-flight check, SPEC §3.1). Opens and releases a client on a short-lived
+/// MTA thread; takes a few milliseconds.
+pub fn check_process_loopback(pid: u32) -> Result<()> {
+    std::thread::Builder::new()
+        .name("audio-check".into())
+        .spawn(move || {
+            wasapi::initialize_mta()
+                .ok()
+                .map_err(|e| anyhow!("CoInitializeEx failed: {e}"))?;
+            let stream = open_client(Some(pid))?;
+            let _ = stream.client.stop_stream();
+            Ok(())
+        })
+        .context("failed to spawn the audio check thread")?
+        .join()
+        .map_err(|_| anyhow!("audio check thread panicked"))?
+}
+
+fn open_stream(source: AudioSource) -> Result<Stream> {
+    match source {
+        AudioSource::Process {
+            pid,
+            fallback_to_system,
+        } => match open_client(Some(pid)) {
+            Ok(stream) => Ok(stream),
+            Err(err) if fallback_to_system => {
+                warn!(
+                    "process loopback for PID {pid} failed ({err:#}); \
+                     falling back to system audio, which includes Discord etc."
+                );
+                open_client(None).context("system loopback failed as well")
+            }
+            Err(err) => Err(err.context(format!("process loopback for PID {pid} failed"))),
+        },
+        AudioSource::System => open_client(None),
     }
-    open_client(None).context("system loopback failed as well")
 }
 
 /// Process loopback for `pid` (including its child processes), or loopback
 /// of the default render device for `None`.
 fn open_client(pid: Option<u32>) -> Result<Stream> {
+    if pid.is_some() && std::env::var_os(SIMULATE_NO_PROCESS_LOOPBACK).is_some() {
+        return Err(anyhow!(
+            "process loopback disabled by {SIMULATE_NO_PROCESS_LOOPBACK} (test mode)"
+        ));
+    }
     let (mut client, mode) = match pid {
         Some(pid) => (
             AudioClient::new_application_loopback_client(pid, true)
@@ -351,9 +405,12 @@ mod tests {
             }
         }
         levels.store(&block);
-        assert!(levels.peak_db(0).abs() < 1e-3);
         assert!(levels.rms_db(0).abs() < 1e-3);
-        assert_eq!(levels.peak_db(1), SILENCE_DB);
         assert_eq!(levels.rms_db(1), SILENCE_DB);
+        // A later, quieter chunk does not lower the held peak before it is taken.
+        levels.store(&vec![0.0; CHUNK_FRAMES * CHANNELS]);
+        assert!(levels.take_peak_db(0).abs() < 1e-3);
+        assert_eq!(levels.take_peak_db(0), SILENCE_DB);
+        assert_eq!(levels.take_peak_db(1), SILENCE_DB);
     }
 }

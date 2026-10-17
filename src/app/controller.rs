@@ -1,0 +1,386 @@
+//! Controller thread: owns the send session and publishes [`AppState`] for
+//! the UI and the tray. Runs independently of the UI, so stop-on-close and
+//! notifications also work while the window is hidden (D18).
+
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use crossbeam_channel::{Receiver, select};
+use tracing::{debug, info, warn};
+
+use crate::{
+    capture::{
+        audio_wasapi::{self, AudioLevels, AudioMode, AudioSource},
+        video::{PreviewSlot, VideoOptions},
+    },
+    os_caps::OsCaps,
+    session::{POLL_INTERVAL, Session, SessionConfig, SessionEvent, SessionStatus},
+    tray::{TrayHandle, TrayState},
+    windows_list::WindowInfo,
+};
+
+const STATUS_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Result of the process-loopback pre-flight check (SPEC §3.1 item 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioCheck {
+    Idle,
+    GameAudio,
+    Unavailable(String),
+}
+
+/// How the user chose to send audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioChoice {
+    Game,
+    /// Explicitly confirmed after the warning.
+    System,
+    None,
+}
+
+/// User settings the UI edits and the controller uses on start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Settings {
+    pub source_name: String,
+    pub video: VideoOptions,
+    pub audio_gain_db: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub level: NoticeLevel,
+    pub text: String,
+}
+
+/// A running session as the UI sees it.
+#[derive(Clone)]
+pub struct Sending {
+    pub source_name: String,
+    pub audio_mode: Option<AudioMode>,
+    /// Set when game audio was requested but failed after "Send".
+    pub audio_error: Option<String>,
+    pub levels: Option<Arc<AudioLevels>>,
+    pub preview: Arc<PreviewSlot>,
+    pub status: SessionStatus,
+    pub minimized: bool,
+    pub frames_missing: bool,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub caps: OsCaps,
+    pub selected: Option<WindowInfo>,
+    pub audio_check: AudioCheck,
+    pub sending: Option<Sending>,
+    pub notice: Option<Notice>,
+}
+
+pub enum Command {
+    Select(WindowInfo),
+    Settings(Settings),
+    Start(AudioChoice),
+    /// "Start sending" from the tray: game audio only, never system audio.
+    TrayStart,
+    Stop,
+    SwitchToSystemAudio,
+    Quit,
+}
+
+pub type SharedState = Arc<Mutex<AppState>>;
+
+pub struct Controller {
+    state: SharedState,
+    tray: TrayHandle,
+    /// Wakes the UI (egui `request_repaint`).
+    wake: Box<dyn Fn() + Send>,
+    settings: Option<Settings>,
+    session: Option<Session>,
+    last_status: Instant,
+}
+
+impl Controller {
+    pub fn new(state: SharedState, tray: TrayHandle, wake: Box<dyn Fn() + Send>) -> Self {
+        Self {
+            state,
+            tray,
+            wake,
+            settings: None,
+            session: None,
+            last_status: Instant::now(),
+        }
+    }
+
+    /// Runs until `Quit`; stops the session cleanly before returning.
+    pub fn run(mut self, commands: Receiver<Command>) {
+        self.publish_tray();
+        loop {
+            select! {
+                recv(commands) -> cmd => match cmd {
+                    Ok(Command::Quit) | Err(_) => break,
+                    Ok(cmd) => self.handle(cmd),
+                },
+                default(POLL_INTERVAL) => {}
+            }
+            self.poll_session();
+        }
+        if let Some(session) = self.session.take() {
+            session.stop();
+        }
+        info!("controller stopped");
+    }
+
+    fn handle(&mut self, command: Command) {
+        match command {
+            Command::Select(window) => self.select(window),
+            Command::Settings(settings) => self.settings = Some(settings),
+            Command::Start(choice) => self.start(choice),
+            Command::TrayStart => {
+                let check = self.state().audio_check.clone();
+                if check == AudioCheck::GameAudio {
+                    self.start(AudioChoice::Game);
+                } else {
+                    // Never send system audio without the explicit choice in
+                    // the window (SPEC §3.1 item 6).
+                    self.set_notice(
+                        NoticeLevel::Warning,
+                        "Choose the audio option in the window before sending.",
+                    );
+                    self.tray.show_main_window();
+                }
+            }
+            Command::Stop => self.stop("stopped by the user", NoticeLevel::Info),
+            Command::SwitchToSystemAudio => self.switch_to_system_audio(),
+            Command::Quit => {}
+        }
+        (self.wake)();
+    }
+
+    fn select(&mut self, window: WindowInfo) {
+        info!(
+            pid = window.pid,
+            process = window.process_name.as_deref().unwrap_or("?"),
+            "window selected"
+        );
+        let check = match audio_wasapi::check_process_loopback(window.pid) {
+            Ok(()) => AudioCheck::GameAudio,
+            Err(err) => {
+                warn!("game-only audio unavailable: {err:#}");
+                AudioCheck::Unavailable(format!("{err:#}"))
+            }
+        };
+        let mut state = self.state();
+        state.selected = Some(window);
+        state.audio_check = check;
+        state.notice = None;
+        drop(state);
+        self.publish_tray();
+    }
+
+    fn start(&mut self, choice: AudioChoice) {
+        if self.session.is_some() {
+            return;
+        }
+        let (Some(window), Some(settings)) = (self.state().selected.clone(), self.settings.clone())
+        else {
+            return;
+        };
+        let caps = self.state().caps;
+        let audio = match choice {
+            AudioChoice::Game => Some(AudioSource::Process {
+                pid: window.pid,
+                fallback_to_system: false,
+            }),
+            AudioChoice::System => Some(AudioSource::System),
+            AudioChoice::None => None,
+        };
+        let config = SessionConfig {
+            window,
+            source_name: settings.source_name.clone(),
+            video: settings.video.clone(),
+            audio,
+            audio_gain_db: settings.audio_gain_db,
+        };
+        match Session::start(&config, &caps) {
+            Ok((session, audio_error)) => {
+                let audio_error = audio_error.map(|e| format!("{e:#}"));
+                if audio_error.is_some() {
+                    self.tray.notify(
+                        "lancast: game audio failed",
+                        "Sending without audio. Open lancast to switch to system audio.",
+                        true,
+                    );
+                } else if session.audio_mode() == Some(AudioMode::SystemLoopback) {
+                    self.tray.notify(
+                        "lancast is sending ALL system audio",
+                        "Everyone hears your Discord, music and notifications.",
+                        true,
+                    );
+                }
+                let mut state = self.state();
+                state.sending = Some(Sending {
+                    source_name: session.source_name().to_owned(),
+                    audio_mode: session.audio_mode(),
+                    audio_error,
+                    levels: session.audio_levels(),
+                    preview: session.preview.clone(),
+                    status: SessionStatus::default(),
+                    minimized: false,
+                    frames_missing: false,
+                });
+                state.notice = None;
+                drop(state);
+                self.session = Some(session);
+                self.last_status = Instant::now();
+            }
+            Err(err) => {
+                warn!("failed to start sending: {err:#}");
+                self.set_notice(
+                    NoticeLevel::Error,
+                    &format!("Could not start sending: {err:#}"),
+                );
+            }
+        }
+        self.publish_tray();
+    }
+
+    fn stop(&mut self, reason: &str, level: NoticeLevel) {
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        info!("stopping: {reason}");
+        session.stop();
+        let mut state = self.state();
+        state.sending = None;
+        state.notice = Some(Notice {
+            level,
+            text: format!("Sending stopped: {reason}."),
+        });
+        drop(state);
+        self.publish_tray();
+    }
+
+    fn switch_to_system_audio(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        match session.set_audio(AudioSource::System) {
+            Ok(()) => {
+                let (mode, levels) = (session.audio_mode(), session.audio_levels());
+                let mut state = self.state();
+                if let Some(sending) = state.sending.as_mut() {
+                    sending.audio_mode = mode;
+                    sending.levels = levels;
+                    sending.audio_error = None;
+                }
+                drop(state);
+                self.tray.notify(
+                    "lancast is sending ALL system audio",
+                    "Everyone hears your Discord, music and notifications.",
+                    true,
+                );
+            }
+            Err(err) => self.set_notice(
+                NoticeLevel::Error,
+                &format!("System audio failed too: {err:#}"),
+            ),
+        }
+        self.publish_tray();
+    }
+
+    fn poll_session(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let mut changed = false;
+        for event in session.poll() {
+            changed = true;
+            match event {
+                SessionEvent::WindowClosed => {
+                    self.tray.notify(
+                        "lancast stopped sending",
+                        "The game window was closed.",
+                        true,
+                    );
+                    self.stop("the game window was closed", NoticeLevel::Warning);
+                    (self.wake)();
+                    return;
+                }
+                other => debug!(?other, "session event"),
+            }
+        }
+        if self.last_status.elapsed() >= STATUS_INTERVAL {
+            self.last_status = Instant::now();
+            let status = session.status();
+            let (minimized, frames_missing) = (session.is_minimized(), session.frames_missing());
+            if let Some(sending) = self.state().sending.as_mut() {
+                sending.status = status;
+                sending.minimized = minimized;
+                sending.frames_missing = frames_missing;
+            }
+            self.publish_tray();
+            changed = true;
+        }
+        if changed {
+            (self.wake)();
+        }
+    }
+
+    fn set_notice(&self, level: NoticeLevel, text: &str) {
+        self.state().notice = Some(Notice {
+            level,
+            text: text.to_owned(),
+        });
+    }
+
+    fn publish_tray(&self) {
+        let state = self.state();
+        let (tray_state, tooltip) = match &state.sending {
+            Some(s) => {
+                let audio = match s.audio_mode {
+                    Some(AudioMode::SystemLoopback) => " – SYSTEM audio",
+                    Some(AudioMode::ProcessLoopback { .. }) => "",
+                    None => " – no audio",
+                };
+                let (w, h) = s.status.output_size;
+                let tooltip = format!(
+                    "lancast – sending {}{audio}\n{w}×{h} {:.0} fps, {} receivers",
+                    s.source_name, s.status.send_fps, s.status.receivers
+                );
+                let tray_state = if s.audio_mode == Some(AudioMode::SystemLoopback) {
+                    TrayState::SendingSystemAudio
+                } else {
+                    TrayState::Sending
+                };
+                (tray_state, tooltip)
+            }
+            None if state.notice.as_ref().is_some_and(|n| {
+                n.level == NoticeLevel::Error || n.level == NoticeLevel::Warning
+            }) =>
+            {
+                (
+                    TrayState::Error,
+                    "lancast – stopped (see window)".to_owned(),
+                )
+            }
+            None => (TrayState::Idle, "lancast – idle".to_owned()),
+        };
+        let can_start = state.selected.is_some() && state.audio_check == AudioCheck::GameAudio;
+        let sending = state.sending.is_some();
+        drop(state);
+        self.tray
+            .set_state(tray_state, &tooltip, can_start, sending);
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, AppState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}

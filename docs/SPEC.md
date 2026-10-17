@@ -83,12 +83,11 @@ The app shows a small live preview and an audio level meter, so the participant 
 - **Left click** shows or hides the main window.
 - **Menu**: `Show window`, `Start sending` / `Stop sending` (Start uses the last selected window), separator, `Quit`.
 - **Closing the main window (×) hides it to the tray.** Only `Quit` (tray or main window) exits. The first time the window is hidden, a tray notification explains this.
-- Implementation constraint (D12): eframe does not call `update()` for a hidden window. Tray and menu events are therefore handled in `set_event_handler` callbacks, which:
-  - show or hide the window directly via Win32 `ShowWindow` on the eframe HWND (not via `ViewportCommand::Visible`)
-  - forward commands to the controller through a channel
-  - call `ctx.request_repaint()`
-
-  Preview and meter rendering are skipped while the window is hidden.
+- Implementation (D18): the tray is lancast's own `Shell_NotifyIconW` icon on a dedicated thread with its own message loop, so it is independent of eframe, which does not paint a hidden window.
+  - The send session lives in a controller thread, so stop-on-close, tray state and notifications keep working while the window is hidden.
+  - The window is hidden and shown with Win32 `ShowWindow` on the eframe HWND.
+  - Preview and meter rendering are skipped while the window is hidden.
+  - "Start sending" in the tray uses game audio only. If the pre-flight check failed, it opens the window instead, so system audio is never sent without the explicit choice.
 
 ## 4. Architecture
 ```
@@ -244,7 +243,12 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
     - `examples/av_sync_source` is a window that flashes and beeps once per second; `--silent` only flashes.
     - `ndi_probe --av` measures the flash→beep offset at the receiver.
   - Still to check by hand: YouTube in a browser, and Discord on a real system.
-- **M3:** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options), including the system-audio pre-flight check and warning (§3.1 item 6), and tray icon per §3.2.
+- **M3 (done, D18):** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options), including the system-audio pre-flight check and warning (§3.1 item 6), and tray icon per §3.2.
+  - `lancast` without arguments opens the window; with arguments it runs as the CLI (`--list`, `--help`).
+  - Release builds are GUI-subsystem exes; the CLI attaches to the parent console.
+  - The window list refreshes whenever the dropdown is opened.
+  - The preview is shown while sending. A preview before sending, to confirm the right window, is a possible later addition.
+  - Test switch: env `LANCAST_SIMULATE_NO_PROCESS_LOOPBACK=1` makes process loopback fail, to exercise the Windows 10 warning path.
 - **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 

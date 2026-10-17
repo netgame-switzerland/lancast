@@ -61,6 +61,24 @@ pub fn copy_or_scale(
         });
 }
 
+/// Nearest-neighbour downscale of a packed BGRX frame to RGBA for the UI
+/// preview (quality is secondary there). Returns the size and the pixels.
+pub fn preview_rgba(src: &[u8], src_size: (u32, u32), max: (u32, u32)) -> ((u32, u32), Vec<u8>) {
+    let (w, h) = fit_size(src_size, max);
+    let (src_w, src_h) = (src_size.0 as usize, src_size.1 as usize);
+    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h as usize {
+        let sy = (y * src_h / h as usize).min(src_h - 1);
+        let row = &src[sy * src_w * 4..][..src_w * 4];
+        for x in 0..w as usize {
+            let sx = (x * src_w / w as usize).min(src_w - 1);
+            let px = &row[sx * 4..sx * 4 + 3];
+            rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
+        }
+    }
+    ((w, h), rgba)
+}
+
 /// Source indices and 8-bit weight of the second index for destination
 /// index `i`.
 fn taps(i: usize, dst_len: usize, src_len: usize) -> (usize, usize, u32) {
@@ -89,6 +107,14 @@ mod tests {
         let mut dst = [0u8; 8];
         copy_or_scale(&src, (1, 2), 6, &mut dst, (1, 2));
         assert_eq!(dst, [1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn preview_swizzles_to_rgba() {
+        let src: Vec<u8> = [10, 20, 30, 0].repeat(640 * 360);
+        let ((w, h), rgba) = preview_rgba(&src, (640, 360), (320, 180));
+        assert_eq!((w, h), (320, 180));
+        assert!(rgba.chunks(4).all(|p| p == [30, 20, 10, 255]));
     }
 
     #[test]

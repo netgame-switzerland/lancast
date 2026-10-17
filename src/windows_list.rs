@@ -43,6 +43,16 @@ impl WindowInfo {
     pub fn hwnd(&self) -> HWND {
         HWND(self.hwnd as *mut c_void)
     }
+
+    /// Proposed NDI source name: the process name without `.exe`. NDI
+    /// prepends the machine name itself (D4).
+    pub fn default_source_name(&self) -> String {
+        self.process_name
+            .as_deref()
+            .map(|name| name.strip_suffix(".exe").unwrap_or(name).to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "lancast".to_owned())
+    }
 }
 
 /// Returns visible, non-cloaked, unowned top-level windows that have a title,

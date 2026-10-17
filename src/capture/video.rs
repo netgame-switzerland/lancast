@@ -8,7 +8,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -34,7 +34,7 @@ use crate::os_caps::OsCaps;
 
 type HandlerError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VideoOptions {
     pub fps_cap: u32,
     /// Larger windows are downscaled to fit, keeping the aspect ratio.
@@ -70,6 +70,37 @@ pub struct VideoStats {
     pub height: AtomicU32,
 }
 
+/// Preview size and rate limit for the UI miniview (SPEC §3.1).
+const PREVIEW_MAX: (u32, u32) = (320, 180);
+const PREVIEW_INTERVAL: Duration = Duration::from_millis(80);
+
+/// A small RGBA image for the UI preview.
+pub struct PreviewImage {
+    pub size: [usize; 2],
+    pub rgba: Vec<u8>,
+}
+
+/// Latest preview image, produced by the capture thread only while
+/// `enabled` (i.e. while the UI is visible).
+#[derive(Default)]
+pub struct PreviewSlot {
+    pub enabled: AtomicBool,
+    image: Mutex<Option<PreviewImage>>,
+}
+
+impl PreviewSlot {
+    /// Takes the newest image, if one arrived since the last call.
+    pub fn take(&self) -> Option<PreviewImage> {
+        self.image.lock().ok()?.take()
+    }
+
+    fn put(&self, image: PreviewImage) {
+        if let Ok(mut slot) = self.image.lock() {
+            *slot = Some(image);
+        }
+    }
+}
+
 /// A running capture session. Stops when dropped.
 pub struct VideoCapture {
     control: Option<CaptureControl<Handler, HandlerError>>,
@@ -86,6 +117,7 @@ impl VideoCapture {
         caps: &OsCaps,
         frames: Sender<VideoFrame>,
         recycled: Receiver<VideoFrame>,
+        preview: Arc<PreviewSlot>,
     ) -> Result<Self> {
         if !caps.wgc {
             bail!("Windows Graphics Capture is not supported on this system");
@@ -131,6 +163,7 @@ impl VideoCapture {
             recycled,
             stats: stats.clone(),
             closed: closed.clone(),
+            preview,
         };
         let settings = Settings::new(
             Window::from_raw_hwnd(hwnd as *mut _),
@@ -191,6 +224,7 @@ struct HandlerConfig {
     recycled: Receiver<VideoFrame>,
     stats: Arc<VideoStats>,
     closed: Arc<AtomicBool>,
+    preview: Arc<PreviewSlot>,
 }
 
 struct Handler {
@@ -198,6 +232,7 @@ struct Handler {
     /// A frame that could not be sent, kept for reuse.
     spare: Option<VideoFrame>,
     last_size: (u32, u32),
+    last_preview: Option<Instant>,
 }
 
 impl Handler {
@@ -232,6 +267,7 @@ impl GraphicsCaptureApiHandler for Handler {
             config: ctx.flags,
             spare: None,
             last_size: (0, 0),
+            last_preview: None,
         })
     }
 
@@ -268,6 +304,20 @@ impl GraphicsCaptureApiHandler for Handler {
         let pitch = buffer.row_pitch() as usize;
         scale::copy_or_scale(buffer.as_raw_buffer(), source, pitch, out.data_mut(), size);
         drop(buffer);
+
+        let preview = &self.config.preview;
+        if preview.enabled.load(Ordering::Relaxed)
+            && self
+                .last_preview
+                .is_none_or(|t| t.elapsed() >= PREVIEW_INTERVAL)
+        {
+            self.last_preview = Some(now);
+            let ((w, h), rgba) = scale::preview_rgba(out.data(), size, PREVIEW_MAX);
+            preview.put(PreviewImage {
+                size: [w as usize, h as usize],
+                rgba,
+            });
+        }
 
         stats
             .readback_us

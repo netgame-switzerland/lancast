@@ -409,6 +409,62 @@ Versions checked with `cargo info` on 2026-10-17.
   - **Open:** check with the current Resolume version whether NDI audio arrives at all, and at which
     level. If it doesn't, game audio must reach the PA another way (event setup, outside lancast).
 
+---
+
+## M3 – 2026-10-17
+
+### D18. GUI architecture: controller thread, own tray, eframe 0.37
+- **eframe 0.37 API change:** `App::ui(&mut self, ui, frame)` replaces `update`. A new `App::logic`
+  also runs while hidden when `request_repaint` is called. Panels use `Panel::top/bottom(..).show(ui, ..)`
+  (`show_inside` is deprecated). The renderer is glow (`default-features = false`).
+- **Threads:**
+  - The **controller** owns the `Session` (shared with the CLI, `src/session.rs`), runs the pre-flight
+    check, polls the session every 250 ms and publishes `AppState` (`Arc<Mutex>`).
+  - The **UI** only renders `AppState` and sends `Command`s.
+  - The **tray** has its own thread.
+  - So closing the window, notifications and tray state work while the window is hidden; this sidesteps
+    the hidden-window issues listed in D12.
+- **Tray: own `Shell_NotifyIconW` implementation instead of the `tray-icon` crate.** `tray-icon` has no
+  API for balloon/toast notifications, which SPEC §3.1 item 6 requires. A small Win32 module
+  (`src/tray.rs`, all `unsafe` there) is enough:
+  - a hidden window (not message-only, because the context menu needs a foreground-capable window)
+  - `NOTIFYICON_VERSION_4`: left click arrives as `NIN_SELECT` and right click as `WM_CONTEXTMENU`
+  - re-adding the icon on `TaskbarCreated`, i.e. after an Explorer restart
+  - icons drawn in code (circle per state), so no asset files are needed
+  - `NIN_KEYSELECT` is missing from windows-rs 0.62 and is defined locally as `NIN_SELECT | 1`
+    (shellapi.h).
+- **Meter:** the UI samples at about 30 fps while audio arrives at 100 chunks/s, so `AudioLevels` keeps
+  the maximum peak since the last read via a lock-free `fetch_max` on the f32 bits (valid for
+  non-negative floats). Ballistics are as in D12.
+- **Fonts:** egui's default fonts lack ⟳ → ▶ ■ ⚠ ✔ (rendered as boxes; eframe logs "No font has …"), so
+  labels are plain text ("Refresh", "Send", "WARNING:").
+- **Quit:** eframe does not return while its window is hidden, so the controller exits the process
+  after stopping the session cleanly and removing the tray icon.
+- **Testing without a human at the screen:**
+  - eframe/AccessKit exposes widgets to Windows UI Automation (buttons with InvokePattern, the window
+    with WindowPattern).
+  - Combo boxes cannot be expanded through UIA, so the test simulated mouse clicks on them.
+  - Tray icons are visible as `SystemTray.NormalButton`. Their context menu items are not visible to
+    UIA, so the test used the keyboard.
+  - Screenshots via `PrintWindow(PW_RENDERFULLCONTENT)` of the lancast window only.
+- **Verified by those tests (Win11 26200):**
+  - The GUI starts and the window list is filled.
+  - **The window list refreshes when opened** (a window started after lancast appeared). This was a real
+    usability bug found by the test.
+  - Pre-flight "game only (checked)"; Send; the probe receives video plus -20 dBFS audio.
+  - Preview shows the window; the meter shows -20 dB with peak hold and the activity dot.
+  - Closing hides to the tray while the stream continues. The tray tooltip shows the source, resolution,
+    fps and receivers, and a left click on the tray icon restores the window.
+  - Target window closed → session stops, tray goes red ("stopped (see window)").
+  - Tray menu Quit and the Quit button exit cleanly.
+  - With `LANCAST_SIMULATE_NO_PROCESS_LOOPBACK=1`:
+    - amber warning banner after selection, with "Send with system audio" / "Send without audio" instead
+      of "Send"
+    - after choosing system audio: a permanent amber banner, and the tray tooltip says "– SYSTEM audio"
+  - The CLI still works in the GUI-subsystem exe (`--list`, `--help`, piped output).
+- **Not verified automatically:** how the Windows toast notifications look (Focus Assist may suppress
+  them), the amber tray icon colour, and the tray menu's Start/Stop items. Left for a manual check.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
