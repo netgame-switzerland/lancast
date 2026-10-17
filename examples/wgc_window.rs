@@ -33,13 +33,57 @@ const FPS_CAP: u32 = 60;
 #[derive(Default)]
 struct Stats {
     frames: AtomicU32,
+    dropped: AtomicU32,
     width: AtomicU32,
     height: AtomicU32,
     readback_us: AtomicU64,
 }
 
+/// Deadline-based frame pacer. WGC delivers frames on the display's refresh
+/// grid (e.g. 6.94 ms at 144 Hz), so a fixed minimum interval of 1/60 s
+/// rounds up to every third tick (48 fps). Advancing the deadline by exactly
+/// one period per accepted frame alternates 2- and 3-tick gaps and averages
+/// to the target rate.
+struct Pacer {
+    period: Duration,
+    due: Option<Instant>,
+}
+
+impl Pacer {
+    /// Accepts frames up to this early, to absorb delivery jitter.
+    const TOLERANCE: Duration = Duration::from_millis(1);
+
+    fn new(fps: u32) -> Self {
+        Self {
+            period: Duration::from_secs(1) / fps,
+            due: None,
+        }
+    }
+
+    fn accept(&mut self, now: Instant) -> bool {
+        match self.due {
+            Some(due) if now + Self::TOLERANCE < due => false,
+            // Fell behind by more than a period (e.g. after a stall): restart
+            // the schedule instead of bursting to catch up.
+            Some(due) if now > due + self.period => {
+                self.due = Some(now + self.period);
+                true
+            }
+            Some(due) => {
+                self.due = Some(due + self.period);
+                true
+            }
+            None => {
+                self.due = Some(now + self.period);
+                true
+            }
+        }
+    }
+}
+
 struct Capture {
     stats: Arc<Stats>,
+    pacer: Pacer,
     /// Tightly packed BGRA copy of the latest frame, as M1 will hand it to NDI.
     pixels: Vec<u8>,
 }
@@ -51,6 +95,7 @@ impl GraphicsCaptureApiHandler for Capture {
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
         Ok(Self {
             stats: ctx.flags,
+            pacer: Pacer::new(FPS_CAP),
             pixels: Vec::new(),
         })
     }
@@ -61,6 +106,11 @@ impl GraphicsCaptureApiHandler for Capture {
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         let start = Instant::now();
+        // Drop surplus frames before the GPU → CPU readback, which is the cost.
+        if !self.pacer.accept(start) {
+            self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
         let buffer = frame.buffer()?;
         let (width, height) = (buffer.width(), buffer.height());
         let packed = buffer.as_nopadding_buffer(&mut self.pixels);
@@ -128,8 +178,10 @@ fn main() -> Result<()> {
         warn!("border control not supported; the yellow capture border stays");
         DrawBorderSettings::Default
     };
+    // Only a coarse prefilter at twice the target rate; the exact cap is the
+    // Pacer's job (an interval of exactly 1/FPS_CAP yields 48 fps at 144 Hz).
     let interval = if GraphicsCaptureApi::is_minimum_update_interval_supported()? {
-        MinimumUpdateIntervalSettings::Custom(Duration::from_secs(1) / FPS_CAP)
+        MinimumUpdateIntervalSettings::Custom(Duration::from_secs(1) / (2 * FPS_CAP))
     } else {
         MinimumUpdateIntervalSettings::Default
     };
@@ -156,6 +208,7 @@ fn main() -> Result<()> {
         let elapsed = last.elapsed().as_secs_f64();
         last = Instant::now();
         let frames = stats.frames.swap(0, Ordering::Relaxed);
+        let dropped = stats.dropped.swap(0, Ordering::Relaxed);
         let readback_us = stats.readback_us.swap(0, Ordering::Relaxed);
         if frames == 0 {
             let minimized = windows_list::window_by_hwnd(window.hwnd).is_none_or(|w| w.minimized);
@@ -164,6 +217,7 @@ fn main() -> Result<()> {
         }
         info!(
             fps = format!("{:.1}", frames as f64 / elapsed),
+            dropped,
             resolution = format!(
                 "{}x{}",
                 stats.width.load(Ordering::Relaxed),

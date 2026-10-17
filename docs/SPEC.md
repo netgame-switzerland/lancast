@@ -132,7 +132,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - Pixel format is BGRA8, sent as `BGRX` (alpha is irrelevant; with alpha NDI uses a costlier codec, D6).
 - Size changes at runtime are handled by windows-capture (frame pool recreation). A minimized window produces no frames. The sender keeps the last frame, and NDI re-sends it to new receivers.
 - WGC delivers frames only when the content changes. The NDI thread sends at most the FPS cap and does not duplicate frames in v1.
-- FPS cap: default 60, configurable.
+- FPS cap: default 60, configurable. Enforced by a deadline pacer on the capture thread that drops surplus frames before the readback. `MinUpdateInterval` (where supported) is set to only half the target period. Setting it to the full period quantizes to the refresh grid, e.g. 48 fps on 144 Hz displays (D8).
 - Max resolution: default 1920×1080. Downscale larger windows on the CPU, keeping the aspect ratio; a box or bilinear filter is enough in v1.
 - Preview: produced on the capture thread from the CPU frame, downscaled to ≤ 320×180 and swizzled to RGBA in one pass, at most 15 fps. It is produced only when the UI is visible.
 - Known limitation: games in **exclusive fullscreen** may deliver black frames or none at all. The UI shows the hint "Please use borderless windowed mode".

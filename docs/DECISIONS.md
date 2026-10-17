@@ -156,7 +156,18 @@ Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.p
   - `wgc_window --border` sets `WithBorder` for the comparison test.
   - **Decision:** no `RequestAccessAsync` call. If a future Windows build starts ignoring the setting,
     the border just reappears, which is harmless.
-- FPS cap: on ≥ 26100 we use `MinUpdateInterval = 1/60 s`. On older systems we drop frames in our own code.
+- FPS cap, corrected 2026-10-17 after a measurement:
+  - `MinUpdateInterval = 1/60 s` gave **exactly 48.0 fps** with Rocket League on a 144 Hz display.
+    WGC delivers on the refresh grid (6.94 ms). Two ticks (13.9 ms) are shorter than 16.67 ms, so every
+    frame waits for the third tick (20.8 ms), and 144/3 = 48.
+  - **Decision:** `MinUpdateInterval` is only a coarse prefilter at **half the target period** (≥ 26100).
+    The exact cap comes from a **deadline pacer** in our code:
+    - The deadline advances by exactly one period per accepted frame.
+    - Frames up to 1 ms early are accepted.
+    - After falling behind by more than one period, the schedule restarts.
+  - The pacer drops frames *before* `frame.buffer()`, so dropped frames cost no readback.
+  - Measured: 60.0 fps, 12 of 72 delivered frames dropped per second, readback 1.1–1.4 ms at 2560×1440.
+  - On older builds without `MinUpdateInterval`, the pacer alone does the job.
 - WGC delivers frames only when the content changes, and none at all while the window is minimized
   (community knowledge: OBS, robmikh/Win32CaptureSample; Microsoft does not document it). Consequence
   for M1: the NDI thread repeats the last frame or sends nothing; NDI re-sends the last frame to new
