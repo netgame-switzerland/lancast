@@ -222,6 +222,14 @@ impl LancastApp {
         ui.horizontal(|ui| {
             ui.add_space(((available.x - total) / 2.0).max(0.0));
             let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+            // Produce the preview at the size it is shown, in physical pixels.
+            if let Some(slot) = preview_slot(state) {
+                let ppp = ui.ctx().pixels_per_point();
+                slot.set_display_size(
+                    (rect.width() * ppp).round() as u32,
+                    (rect.height() * ppp).round() as u32,
+                );
+            }
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 4.0, Color32::from_gray(16));
             if let Some(texture) = &self.preview {

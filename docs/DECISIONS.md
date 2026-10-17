@@ -548,6 +548,25 @@ Versions checked with `cargo info` on 2026-10-17.
       receiver software's features.
   - Not scheduled.
 
+### D21. Preview quality and cost (2026-10-17)
+- Symptom: the big preview looked blocky. A fixed 320×180 image, made by nearest-neighbour downscaling,
+  was stretched to about 1040×585 in a large window.
+- **Fix:**
+  - The UI reports the displayed size in physical pixels (`PreviewSlot::set_display_size`, capped at
+    1920×1080).
+  - The capture produces the preview at exactly that size, with an **area-average filter**: each
+    output pixel is the mean of the source pixels it covers. Rows run in parallel via rayon, and the
+    filter reads padded readback rows directly.
+  - Refresh interval 50 ms (about 20 fps). egui displays the image 1:1, so nothing is upscaled.
+- **Cost (Rocket League 2560×1440, preview about 1030×580 physical, before sending):**
+  - First version: 30 fps preview capture, with each frame first scaled to the NDI size (1920×1080) and
+    then reduced → **83 % of one core**.
+  - Preview-only mode now builds the image **straight from the GPU readback**, without the NDI-sized
+    frame, and captures at 20 fps (the preview rate) → **44 % of one core (≈ 2.8 % of 16 threads)**, at
+    the same visual quality.
+  - Nothing is read back while the window is hidden or in the tray.
+  - While sending, the preview is still made from the NDI frame, which exists anyway.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

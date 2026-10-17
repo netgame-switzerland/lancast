@@ -39,7 +39,8 @@ Before sending (window picker):
 ```
 Below the carousel, as soon as a window is selected, the **live preview** and the L/R audio meter appear. They are centered and scale with the window. At the bottom: source name, status, Send/Stop, and the **Settings** panel (Window / Capture / Video / Audio in a framed grid).
 
-- **Preview before sending.** Selecting a window starts a preview capture without NDI: 15 fps, plus game audio for the meter if game-only audio is available. Video is read back only while the preview is visible.
+- **Preview before sending.** Selecting a window starts a preview capture without NDI: 20 fps, plus game audio for the meter if game-only audio is available. Video is read back only while the preview is visible, and the preview image is made straight from the readback (D21).
+- **Preview quality.** The image is produced at the size it is displayed, in physical pixels (up to 1920×1080), with area averaging, and refreshes about 20 times per second.
 - **Switching to the session.** "Send" replaces the preview capture with the session; "Stop" returns to the preview. Changing the border or cursor option restarts the preview, so the effect is visible immediately.
 - **While sending,** the carousel can still be scrolled but cannot select another window.
 

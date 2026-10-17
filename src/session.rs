@@ -269,7 +269,8 @@ impl Session {
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Frame rate of the preview capture before sending; enough for the UI.
-pub const PREVIEW_FPS: u32 = 15;
+/// Matches the preview refresh interval (50 ms).
+pub const PREVIEW_FPS: u32 = 20;
 
 /// Capture without sending: the live preview and audio levels shown as soon
 /// as a window is selected (SPEC §3.1). Video is read back only while the UI

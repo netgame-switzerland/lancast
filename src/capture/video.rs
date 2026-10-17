@@ -72,8 +72,9 @@ pub struct VideoStats {
 }
 
 /// Preview size and rate limit for the UI miniview (SPEC §3.1).
-const PREVIEW_MAX: (u32, u32) = (320, 180);
-const PREVIEW_INTERVAL: Duration = Duration::from_millis(80);
+/// Upper bound for the preview image; the UI requests its displayed size.
+const PREVIEW_MAX: (u32, u32) = (1920, 1080);
+const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A small RGBA image for the UI preview.
 pub struct PreviewImage {
@@ -86,10 +87,32 @@ pub struct PreviewImage {
 #[derive(Default)]
 pub struct PreviewSlot {
     pub enabled: AtomicBool,
+    /// Size the UI displays the preview at, in physical pixels (0 = default).
+    width: AtomicU32,
+    height: AtomicU32,
     image: Mutex<Option<PreviewImage>>,
 }
 
 impl PreviewSlot {
+    /// Sets the displayed size in physical pixels, so the preview is produced
+    /// at screen resolution (capped at `PREVIEW_MAX`).
+    pub fn set_display_size(&self, width: u32, height: u32) {
+        self.width
+            .store(width.clamp(64, PREVIEW_MAX.0), Ordering::Relaxed);
+        self.height
+            .store(height.clamp(36, PREVIEW_MAX.1), Ordering::Relaxed);
+    }
+
+    fn display_size(&self) -> (u32, u32) {
+        match (
+            self.width.load(Ordering::Relaxed),
+            self.height.load(Ordering::Relaxed),
+        ) {
+            (0, _) | (_, 0) => (640, 360),
+            size => size,
+        }
+    }
+
     /// Takes the newest image, if one arrived since the last call.
     pub fn take(&self) -> Option<PreviewImage> {
         self.image.lock().ok()?.take()
@@ -305,6 +328,34 @@ impl GraphicsCaptureApiHandler for Handler {
             );
             self.last_size = size;
         }
+        let Some(frames) = self.config.frames.clone() else {
+            // Preview only (not sending): straight from the readback to the
+            // preview size, without an NDI-sized frame. The pacer already
+            // limits this to the preview rate.
+            let mut buffer = frame.buffer()?;
+            let pitch = buffer.row_pitch() as usize;
+            let preview = &self.config.preview;
+            let ((w, h), rgba) = scale::preview_rgba(
+                buffer.as_raw_buffer(),
+                source,
+                pitch,
+                preview.display_size(),
+            );
+            drop(buffer);
+            self.last_preview = Some(now);
+            preview.put(PreviewImage {
+                size: [w as usize, h as usize],
+                rgba,
+            });
+            stats
+                .readback_us
+                .fetch_add(now.elapsed().as_micros() as u64, Ordering::Relaxed);
+            stats.source_width.store(source.0, Ordering::Relaxed);
+            stats.source_height.store(source.1, Ordering::Relaxed);
+            stats.captured.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        };
+
         let mut out = self.frame_for(size)?;
 
         let mut buffer = frame.buffer()?;
@@ -319,7 +370,12 @@ impl GraphicsCaptureApiHandler for Handler {
                 .is_none_or(|t| t.elapsed() >= PREVIEW_INTERVAL)
         {
             self.last_preview = Some(now);
-            let ((w, h), rgba) = scale::preview_rgba(out.data(), size, PREVIEW_MAX);
+            let ((w, h), rgba) = scale::preview_rgba(
+                out.data(),
+                size,
+                size.0 as usize * 4,
+                preview.display_size(),
+            );
             preview.put(PreviewImage {
                 size: [w as usize, h as usize],
                 rgba,
@@ -334,11 +390,6 @@ impl GraphicsCaptureApiHandler for Handler {
         stats.width.store(size.0, Ordering::Relaxed);
         stats.height.store(size.1, Ordering::Relaxed);
 
-        let Some(frames) = &self.config.frames else {
-            stats.captured.fetch_add(1, Ordering::Relaxed);
-            self.spare = Some(out);
-            return Ok(());
-        };
         match frames.try_send(out) {
             Ok(()) => {
                 stats.captured.fetch_add(1, Ordering::Relaxed);

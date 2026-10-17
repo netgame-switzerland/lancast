@@ -61,22 +61,53 @@ pub fn copy_or_scale(
         });
 }
 
-/// Nearest-neighbour downscale of a packed BGRX frame to RGBA for the UI
-/// preview (quality is secondary there). Returns the size and the pixels.
-pub fn preview_rgba(src: &[u8], src_size: (u32, u32), max: (u32, u32)) -> ((u32, u32), Vec<u8>) {
+/// Downscale of a BGRX frame (rows of `src_pitch` bytes) to RGBA for the UI
+/// preview by area averaging (each output pixel is the mean of the source
+/// pixels it covers), fitting `max` without upscaling. Returns the size and
+/// the pixels.
+pub fn preview_rgba(
+    src: &[u8],
+    src_size: (u32, u32),
+    src_pitch: usize,
+    max: (u32, u32),
+) -> ((u32, u32), Vec<u8>) {
     let (w, h) = fit_size(src_size, max);
     let (src_w, src_h) = (src_size.0 as usize, src_size.1 as usize);
-    let mut rgba = Vec::with_capacity(w as usize * h as usize * 4);
-    for y in 0..h as usize {
-        let sy = (y * src_h / h as usize).min(src_h - 1);
-        let row = &src[sy * src_w * 4..][..src_w * 4];
-        for x in 0..w as usize {
-            let sx = (x * src_w / w as usize).min(src_w - 1);
-            let px = &row[sx * 4..sx * 4 + 3];
-            rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
-        }
-    }
-    ((w, h), rgba)
+    let (w, h) = (w as usize, h as usize);
+    // Source column range [start, end) per output column.
+    let columns: Vec<(usize, usize)> = (0..w)
+        .map(|x| {
+            let start = x * src_w / w;
+            let end = ((x + 1) * src_w / w).clamp(start + 1, src_w);
+            (start, end)
+        })
+        .collect();
+    let mut rgba = vec![0u8; w * h * 4];
+    rgba.par_chunks_exact_mut(w * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let y0 = y * src_h / h;
+            let y1 = ((y + 1) * src_h / h).clamp(y0 + 1, src_h);
+            for (px, &(x0, x1)) in row.as_chunks_mut::<4>().0.iter_mut().zip(&columns) {
+                let mut sum = [0u32; 3];
+                for sy in y0..y1 {
+                    let line = &src[sy * src_pitch + x0 * 4..sy * src_pitch + x1 * 4];
+                    for p in line.as_chunks::<4>().0 {
+                        sum[0] += u32::from(p[2]);
+                        sum[1] += u32::from(p[1]);
+                        sum[2] += u32::from(p[0]);
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)) as u32;
+                *px = [
+                    ((sum[0] + n / 2) / n) as u8,
+                    ((sum[1] + n / 2) / n) as u8,
+                    ((sum[2] + n / 2) / n) as u8,
+                    255,
+                ];
+            }
+        });
+    ((w as u32, h as u32), rgba)
 }
 
 /// Source indices and 8-bit weight of the second index for destination
@@ -112,9 +143,21 @@ mod tests {
     #[test]
     fn preview_swizzles_to_rgba() {
         let src: Vec<u8> = [10, 20, 30, 0].repeat(640 * 360);
-        let ((w, h), rgba) = preview_rgba(&src, (640, 360), (320, 180));
+        let ((w, h), rgba) = preview_rgba(&src, (640, 360), 640 * 4, (320, 180));
         assert_eq!((w, h), (320, 180));
         assert!(rgba.chunks(4).all(|p| p == [30, 20, 10, 255]));
+    }
+
+    #[test]
+    fn preview_averages_areas() {
+        // 4x2 source: left half black, right half white -> 2x1 preview.
+        let mut src = Vec::new();
+        for _ in 0..2 {
+            src.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 0, 255, 255, 255, 0]);
+        }
+        let ((w, h), rgba) = preview_rgba(&src, (4, 2), 16, (2, 1));
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(rgba, [0, 0, 0, 255, 255, 255, 255, 255]);
     }
 
     #[test]
