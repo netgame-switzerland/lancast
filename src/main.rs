@@ -3,7 +3,8 @@
 //! M1/M2: command-line front end; the egui UI follows in M3.
 //!
 //! Usage: `lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor]
-//! [--system-audio | --no-audio]`
+//! [--system-audio | --no-audio] [--audio-gain-db DB]`
+//! `--audio-gain-db 20` matches NDI Studio Monitor's level convention (D17).
 //! Without arguments, prints the capturable windows.
 
 use std::{
@@ -40,6 +41,7 @@ struct Args {
     name: Option<String>,
     video: VideoOptions,
     audio: AudioChoice,
+    audio_gain_db: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +95,7 @@ fn run(log_path: Option<std::path::PathBuf>) -> Result<()> {
     let (audio_tx, audio_rx) = crossbeam_channel::bounded(AUDIO_QUEUE);
     let ndi = NdiOutput::start(
         &name,
+        args.audio_gain_db,
         NdiInputs {
             video: frame_rx,
             recycle: recycle_tx,
@@ -249,7 +252,7 @@ fn default_source_name(window: &WindowInfo) -> String {
         .unwrap_or_else(|| "lancast".to_owned())
 }
 
-const USAGE: &str = "usage: lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH]                      [--border] [--cursor] [--system-audio | --no-audio]";
+const USAGE: &str = "usage: lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB]";
 
 /// Returns `None` when no target was given.
 fn parse_args() -> Result<Option<Args>> {
@@ -258,6 +261,7 @@ fn parse_args() -> Result<Option<Args>> {
     let mut name = None;
     let mut video = VideoOptions::default();
     let mut audio = AudioChoice::Game;
+    let mut audio_gain_db = 0.0f32;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
@@ -289,6 +293,14 @@ fn parse_args() -> Result<Option<Args>> {
             "--cursor" => video.capture_cursor = true,
             "--system-audio" => audio = AudioChoice::System,
             "--no-audio" => audio = AudioChoice::None,
+            "--audio-gain-db" => {
+                audio_gain_db = value("--audio-gain-db")?
+                    .parse()
+                    .context("--audio-gain-db must be a number, e.g. 20")?;
+                if !(-40.0..=40.0).contains(&audio_gain_db) {
+                    bail!("--audio-gain-db must be between -40 and 40");
+                }
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -303,6 +315,7 @@ fn parse_args() -> Result<Option<Args>> {
         name,
         video,
         audio,
+        audio_gain_db,
     }))
 }
 

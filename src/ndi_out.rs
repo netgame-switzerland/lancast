@@ -18,6 +18,14 @@ use tracing::{debug, info, warn};
 
 use crate::capture::audio_wasapi::{AudioChunk, CHANNELS, CHUNK_FRAMES, SAMPLE_RATE};
 
+/// NDI defines float 1.0 as +4 dBu (SMPTE reference) and digital full scale
+/// as 10.0, i.e. 20 dB of headroom (SDK docs §21.2). NDI Studio Monitor
+/// follows this; OBS + DistroAV passes the floats through unchanged
+/// (1.0 = full scale). Sending WASAPI samples 1:1 is right for OBS and 20 dB
+/// quiet in Studio Monitor; this gain makes Studio Monitor correct instead
+/// (D17).
+pub const AUDIO_GAIN_STUDIO_MONITOR_DB: f32 = 20.0;
+
 /// How often the receiver count is refreshed.
 const CONNECTION_POLL: Duration = Duration::from_secs(1);
 
@@ -48,7 +56,9 @@ pub struct NdiOutput {
 
 impl NdiOutput {
     /// Creates the NDI source `name` and starts sending from `inputs`.
-    pub fn start(name: &str, inputs: NdiInputs) -> Result<Self> {
+    /// `audio_gain_db` is applied to all audio (see [`AUDIO_GAIN_STUDIO_MONITOR_DB`]).
+    pub fn start(name: &str, audio_gain_db: f32, inputs: NdiInputs) -> Result<Self> {
+        let audio_gain = 10f32.powf(audio_gain_db / 20.0);
         let stop = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(NdiStats::default());
         // The sender is created on its own thread; it reports success or the
@@ -64,7 +74,7 @@ impl NdiOutput {
                 move || match create_sender(&name) {
                     Ok((sender, source)) => {
                         let _ = ready_tx.send(Ok(source));
-                        run(sender, inputs, &stop, &stats);
+                        run(sender, inputs, audio_gain, &stop, &stats);
                     }
                     Err(err) => {
                         let _ = ready_tx.send(Err(err));
@@ -122,7 +132,13 @@ fn create_sender(name: &str) -> Result<(Sender, String)> {
     Ok((sender, source))
 }
 
-fn run(mut sender: Sender, inputs: NdiInputs, stop: &AtomicBool, stats: &NdiStats) {
+fn run(
+    mut sender: Sender,
+    inputs: NdiInputs,
+    audio_gain: f32,
+    stop: &AtomicBool,
+    stats: &NdiStats,
+) {
     let NdiInputs {
         video,
         recycle,
@@ -146,7 +162,7 @@ fn run(mut sender: Sender, inputs: NdiInputs, stop: &AtomicBool, stats: &NdiStat
                 }
             },
             recv(audio) -> msg => match msg {
-                Ok(chunk) => send_audio(&sender, chunk, stats),
+                Ok(chunk) => send_audio(&sender, chunk, audio_gain, stats),
                 Err(_) => {
                     debug!("audio channel closed; continuing without audio");
                     audio = crossbeam_channel::never();
@@ -156,7 +172,7 @@ fn run(mut sender: Sender, inputs: NdiInputs, stop: &AtomicBool, stats: &NdiStat
         }
         // Audio that queued up while a clocked video send was blocking.
         while let Ok(chunk) = audio.try_recv() {
-            send_audio(&sender, chunk, stats);
+            send_audio(&sender, chunk, audio_gain, stats);
         }
 
         if last_poll.elapsed() >= CONNECTION_POLL {
@@ -178,7 +194,10 @@ fn run(mut sender: Sender, inputs: NdiInputs, stop: &AtomicBool, stats: &NdiStat
 
 /// Sends one 10 ms chunk. NDI wants planar float; the frame builder converts
 /// from WASAPI's interleaved layout.
-fn send_audio(sender: &Sender, chunk: AudioChunk, stats: &NdiStats) {
+fn send_audio(sender: &Sender, mut chunk: AudioChunk, gain: f32, stats: &NdiStats) {
+    if gain != 1.0 {
+        chunk.interleaved.iter_mut().for_each(|s| *s *= gain);
+    }
     let frame = AudioFrame::builder()
         .sample_rate(SAMPLE_RATE as i32)
         .channels(CHANNELS as i32)

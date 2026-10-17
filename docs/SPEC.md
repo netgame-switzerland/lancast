@@ -174,6 +174,9 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - Sender settings: `clock_video = true`, `clock_audio = false`. One sender thread submits both (D3).
 - Video: `send_video_async` with two `VideoFrame`s alternating (the crate hands the previous frame back once the SDK has released it).
 - Audio: planar float FLTP, 10 ms frames.
+- **Audio level convention (D17).** NDI defines float 1.0 = +4 dBu, with full scale at 10.0 (20 dB headroom); NDI Studio Monitor follows this. OBS + DistroAV passes the floats through unchanged (1.0 = full scale).
+  - Default: unity gain (correct in OBS, the planned receiver).
+  - Setting "Receiver level: OBS (default) / NDI Studio Monitor (+20 dB)", as a config option and in Advanced (M4). CLI: `--audio-gain-db 20`.
 - Timecode: the default `NDIlib_send_timecode_synthesize` (the crate's default).
 - Optional: with 0 receivers, reduce the capture rate (e.g. 5 fps for the preview only) to save CPU.
 - Groups: none set (default "Public"). Receivers such as DistroAV and Studio Monitor only see their configured receive groups; a dedicated group would make the sources invisible to them (D10).
@@ -240,7 +243,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
     - `ndi_probe --av` measures the flash→beep offset at the receiver.
   - Still to check by hand: YouTube in a browser, and Discord on a real system.
 - **M3:** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options), including the system-audio pre-flight check and warning (§3.1 item 6), and tray icon per §3.2.
-- **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
+- **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 
 ## 8. Acceptance criteria

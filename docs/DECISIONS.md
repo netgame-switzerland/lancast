@@ -382,6 +382,23 @@ Versions checked with `cargo info` on 2026-10-17.
   - The audio stream was continuous (no padding) but digital silence. Probably the game mutes itself
     in the background, since it was out of focus during the test. Check by hand with the game focused.
 
+### D17. NDI audio level convention (observed 2026-10-17)
+- Symptom: the user recorded lancast in NDI Studio Monitor and the game audio was audible but very quiet.
+- NDI SDK documentation §21.2 (p.69): "a sinewave that is 2.0 floating-point units peak-to-peak (i.e.,
+  -1.0 to +1.0) is assumed to represent an audio level of +4 dBU". The SMPTE recipe maps NDI **10.0** to
+  digital full scale, giving "20 dB of headroom above the SMPTE reference level". The SDK's 16-bit
+  conversion uses `3276.8 * sample`.
+- lancast sent WASAPI samples 1:1 (full scale = 1.0), so a convention-following receiver such as Studio
+  Monitor plays them **20 dB too quiet**.
+- DistroAV (OBS), `ndi_source_thread_process_audio3` in `src/ndi-source.cpp`, hands `p_data` unchanged
+  to OBS as `AUDIO_FORMAT_FLOAT_PLANAR`. In OBS, 1.0 = 0 dBFS, so 1:1 is correct there, and ×10 would be
+  20 dB too loud and clip.
+- **Decision:** unity gain by default, because OBS + DistroAV is the planned receiver. The gain is
+  configurable: CLI `--audio-gain-db`, applied in the NDI thread just before sending; the meter shows the
+  unscaled source level. M4 adds a setting "Receiver level: OBS / NDI Studio Monitor (+20 dB)".
+- Verified: an `av_sync_source` beep at -20 dBFS arrives at `ndi_probe` as 0.0 dB (float 1.0) with
+  `--audio-gain-db 20`.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
