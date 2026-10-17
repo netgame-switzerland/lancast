@@ -287,4 +287,4 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - Resolved in M0: process loopback minimum version (D7), NDI license (D5), NDI|HX and bandwidth (D6).
 - Process loopback on Windows 10 19041–19045: untested (no test machine). Rely on the fallback.
 - CPU cost on the sender when receivers request the "Lowest" bandwidth proxy stream: measure in M2/M3.
-- **Idea: tournament mode (delayed stream).** Send the stream with a configurable delay of a few seconds, so the projector gives the opposing team no live information. Feasibility and options are in D20. Not scheduled yet.
+- **Idea: tournament mode (delayed stream).** Send the stream with a configurable delay of a few seconds, so the projector gives the opposing team no live information. Feasibility and options are in D20. **Deferred** (user decision 2026-10-17).
