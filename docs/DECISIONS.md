@@ -335,6 +335,7 @@ Versions checked with `cargo info` on 2026-10-17.
   - Restore: works.
   - Resize to 890×495: the new size is picked up (`capture size changed`).
   - Close: `on_closed` fires, lancast logs "target window closed" and exits cleanly by itself.
+- Ctrl-C: confirmed by the user (2026-10-17). The session stops cleanly ("stopping: interrupted").
 - Privacy finding from that test: a window title containing private text ended up in `lancast.log`.
   **Decision:** titles are logged at debug level only (SPEC §4.5).
 
