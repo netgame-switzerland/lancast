@@ -68,7 +68,37 @@ pub fn list_windows() -> windows::core::Result<Vec<WindowInfo>> {
     // SAFETY: the callback only runs during this call and receives a pointer to
     // `hwnds`, which outlives it and is not otherwise accessed meanwhile.
     unsafe { EnumWindows(Some(collect_hwnd), LPARAM(&raw mut hwnds as isize))? };
-    Ok(hwnds.into_iter().filter_map(window_info).collect())
+    let filter = process_filter();
+    Ok(hwnds
+        .into_iter()
+        .filter_map(window_info)
+        .filter(|w| matches_filter(&filter, w))
+        .collect())
+}
+
+/// Env var restricting the window list to some programs, e.g.
+/// `LANCAST_WINDOW_FILTER=RocketLeague.exe,obs64.exe` (case-insensitive exe
+/// names). For demos and screenshots without private windows.
+pub const WINDOW_FILTER: &str = "LANCAST_WINDOW_FILTER";
+
+fn process_filter() -> Vec<String> {
+    std::env::var(WINDOW_FILTER)
+        .map(|value| {
+            value
+                .split(',')
+                .map(|name| name.trim().to_lowercase())
+                .filter(|name| !name.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn matches_filter(filter: &[String], window: &WindowInfo) -> bool {
+    filter.is_empty()
+        || window
+            .process_name
+            .as_ref()
+            .is_some_and(|name| filter.contains(&name.to_lowercase()))
 }
 
 /// Looks up a single window by its raw HWND value, applying the same filters

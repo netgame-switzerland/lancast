@@ -67,10 +67,10 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
      4. Create the capture item from the HWND.
 
      The WGC system picker (`GraphicsCapturePicker`) is not used, because it returns neither the HWND nor the PID.
-3. **Stream name** = `Hostname (Username - Gamename)` (D26). "Your name" defaults to the Windows login name and is saved; "Game" is proposed from the window and remembered per game. Former wording, still valid for the game part — **Source name**: editable.
-   - It is pre-filled with a proposal: the process name without `.exe` (e.g. `war3`). The user may also pick the window title instead.
-   - NDI prepends the machine name itself (`MY-PC (war3)`, D4). The UI shows the resulting full name next to the field.
-   - The last name used per process is remembered in the config file (§4.6).
+3. **Stream name**: `Hostname (Username - Gamename)`, e.g. `LAN-PC-07 (Player1 - war3)` (D26).
+   - NDI prepends the hostname itself (D4); LANcast sends `Username - Gamename`. The UI shows the resulting full name.
+   - "Your name" defaults to the Windows login name, is editable, and is saved globally (§4.6).
+   - "Game" is proposed from the process name without `.exe` (e.g. `war3`), is editable, and is remembered per process.
 4. **Send / Stop**: "Send" starts streaming and "Stop" ends it. If the target window closes, sending stops automatically and a notice appears (also as a tray notification).
 5. **Preview (miniview)**: a live preview of what is sent.
    - About 320×180, letterboxed, refreshed at 10–15 fps. It is shown only while the window is visible.
