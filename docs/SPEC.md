@@ -105,6 +105,9 @@ Modules:
 - `src/tray.rs`: tray icon, menu, show/hide
 - `src/config.rs`: `lancast.toml` next to the exe (FPS cap, max resolution, discovery server, options, source name per process)
 
+### 4.5 Logging
+`tracing` to stdout and to `lancast.log` next to the exe. The previous run is kept as `lancast.prev.log`, and the level is set via env `LANCAST_LOG`. **Window titles are logged at debug level only.** Participants may share their log file for troubleshooting, and titles can contain private text (browser tabs, documents). Info level identifies windows by process name and HWND.
+
 ### 4.6 Config file
 `lancast.toml` sits next to the exe. If that folder is not writable, it goes to `%APPDATA%\lancast\`. All fields are optional. A missing or invalid file falls back to defaults and logs a warning.
 
@@ -217,7 +220,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 
 ## 7. Milestones
 - **M0 – Spikes (done, see D1–D9):** `list_windows`, `ndi_testpattern`, `wgc_window`, `process_loopback` under `examples/`.
-- **M1:** video of a selected window (CLI argument PID/HWND) → NDI, including `os_caps` and the capture options (border, cursor) with support checks.
+- **M1 (done, D15):** video of a selected window (CLI argument PID/HWND) → NDI, including `os_caps` and the capture options (border, cursor) with support checks. CLI: `lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor]`; without arguments it lists the capturable windows. `examples/ndi_probe` is a test receiver.
 - **M2:** integrate audio (process loopback + fallback + silence handling); A/V in sync at the receiver. Lip-sync test: YouTube in a browser as the "game", and `ndi_testpattern`'s flash/beep as reference.
 - **M3:** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options) and tray icon per §3.2.
 - **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.

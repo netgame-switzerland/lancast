@@ -14,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use lancast::windows_list::{self, WindowInfo};
+use lancast::{capture::pacer::Pacer, windows_list};
 use tracing::{info, warn};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
@@ -37,48 +37,6 @@ struct Stats {
     width: AtomicU32,
     height: AtomicU32,
     readback_us: AtomicU64,
-}
-
-/// Deadline-based frame pacer. WGC delivers frames on the display's refresh
-/// grid (e.g. 6.94 ms at 144 Hz), so a fixed minimum interval of 1/60 s
-/// rounds up to every third tick (48 fps). Advancing the deadline by exactly
-/// one period per accepted frame alternates 2- and 3-tick gaps and averages
-/// to the target rate.
-struct Pacer {
-    period: Duration,
-    due: Option<Instant>,
-}
-
-impl Pacer {
-    /// Accepts frames up to this early, to absorb delivery jitter.
-    const TOLERANCE: Duration = Duration::from_millis(1);
-
-    fn new(fps: u32) -> Self {
-        Self {
-            period: Duration::from_secs(1) / fps,
-            due: None,
-        }
-    }
-
-    fn accept(&mut self, now: Instant) -> bool {
-        match self.due {
-            Some(due) if now + Self::TOLERANCE < due => false,
-            // Fell behind by more than a period (e.g. after a stall): restart
-            // the schedule instead of bursting to catch up.
-            Some(due) if now > due + self.period => {
-                self.due = Some(now + self.period);
-                true
-            }
-            Some(due) => {
-                self.due = Some(due + self.period);
-                true
-            }
-            None => {
-                self.due = Some(now + self.period);
-                true
-            }
-        }
-    }
 }
 
 struct Capture {
@@ -146,12 +104,11 @@ fn main() -> Result<()> {
         Some(s) => s.parse().context("seconds must be an integer")?,
         None => 10,
     };
-    let window = resolve_target(&target)?;
+    let window = windows_list::resolve_target(&target)?;
     info!(
         hwnd = format!("0x{:x}", window.hwnd),
         pid = window.pid,
         process = window.process_name.as_deref().unwrap_or("?"),
-        title = %window.title,
         "capturing"
     );
     if window.minimized {
@@ -237,18 +194,4 @@ fn main() -> Result<()> {
     }
     info!("done");
     Ok(())
-}
-
-/// Accepts `0x…` (HWND) or a decimal PID (first matching window in Z-order).
-fn resolve_target(target: &str) -> Result<WindowInfo> {
-    if let Some(hex) = target.strip_prefix("0x") {
-        let hwnd = isize::from_str_radix(hex, 16).context("invalid HWND")?;
-        return windows_list::window_by_hwnd(hwnd)
-            .with_context(|| format!("no capturable window with HWND {target}"));
-    }
-    let pid: u32 = target.parse().context("expected 0xHWND or a decimal PID")?;
-    windows_list::list_windows()?
-        .into_iter()
-        .find(|w| w.pid == pid)
-        .with_context(|| format!("no capturable window for PID {pid}"))
 }

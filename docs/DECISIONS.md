@@ -300,6 +300,44 @@ Versions checked with `cargo info` on 2026-10-17.
   the failure is silent. M4 adds a startup check that warns about unreachable configured servers. It
   offers a lancast-only override via `NDI_CONFIG_DIR` and never modifies the system file (SPEC §5.4).
 
+---
+
+## M1 – 2026-10-17
+
+### D15. Video pipeline and results
+- Threads:
+  - The WGC capture thread (windows-capture) runs the pacer (D8). It reads back and scales on the CPU,
+    then `try_send`s into a bounded channel (2) to the NDI thread.
+  - The NDI thread owns the `Sender` and calls `send_video_async`.
+  - The frame the SDK releases goes back to the capture thread through a recycle channel (4).
+  - Frames are `grafton_ndi::VideoFrame`s throughout. Capture writes straight into `data_mut()`, so
+    there is no per-frame allocation and no copy beyond readback/scaling.
+  - If the NDI thread lags, the capture thread checks `is_full()` *before* the readback and skips the
+    frame (CLAUDE.md: drop, don't block).
+- `VideoFrame` sets the picture aspect ratio to width/height. The builder default is 16:9, which would
+  make receivers stretch non-16:9 windows.
+- Downscaling: bilinear with fixed-point weights, rows in parallel via `rayon`. The output width is
+  rounded to an even number. Unit tests cover `fit_size`, padding removal and colour preservation.
+- `frame.buffer()` in windows-capture 2.0.1 creates a new staging texture each frame and maps it
+  immediately, which stalls until the GPU copy is done. That is acceptable for v1; M5 replaces it with
+  a staging ring.
+- OS build via `RtlGetVersion`, which is manifest-independent, unlike `GetVersionEx`. Feature flags via
+  `GraphicsCaptureApi::is_*_supported()` (`src/os_caps.rs`).
+- **Measured** (Rocket League 2560×1440 → 1920×1080, Win11 26200, 16 logical cores, release build,
+  received by `examples/ndi_probe` on the same PC):
+  - capture 59.3–59.7 fps, send 59.1–59.9 fps, received 57.8–60.9 fps (per-second windows)
+  - backlogged 0
+  - readback + scaling 3.1–3.2 ms per frame
+  - **CPU ≈ 171 % of one core ≈ 10.7 % of the machine**, including NDI SpeedHQ encoding of BGRX.
+    That is just above the < 10 % guideline (SPEC §8); M5 (GPU scaling + UYVY) targets this.
+- Robustness test with a Notepad window:
+  - Minimize: logged, last frame stays on air.
+  - Restore: works.
+  - Resize to 890×495: the new size is picked up (`capture size changed`).
+  - Close: `on_closed` fires, lancast logs "target window closed" and exits cleanly by itself.
+- Privacy finding from that test: a window title containing private text ended up in `lancast.log`.
+  **Decision:** titles are logged at debug level only (SPEC §4.5).
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

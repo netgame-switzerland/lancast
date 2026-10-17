@@ -16,8 +16,8 @@ use windows::{
         },
         UI::WindowsAndMessaging::{
             EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-            WS_EX_TOOLWINDOW,
+            GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+            IsWindowVisible, WS_EX_TOOLWINDOW,
         },
     },
     core::BOOL,
@@ -59,6 +59,44 @@ pub fn list_windows() -> windows::core::Result<Vec<WindowInfo>> {
 /// as [`list_windows`].
 pub fn window_by_hwnd(hwnd: isize) -> Option<WindowInfo> {
     window_info(HWND(hwnd as *mut c_void))
+}
+
+/// Resolves a CLI target: `0x…` (HWND) or a decimal PID (that process's
+/// topmost capturable window).
+pub fn resolve_target(target: &str) -> anyhow::Result<WindowInfo> {
+    use anyhow::Context;
+    if let Some(hex) = target.strip_prefix("0x") {
+        let hwnd = isize::from_str_radix(hex, 16).context("invalid HWND")?;
+        return window_by_hwnd(hwnd)
+            .with_context(|| format!("no capturable window with HWND {target}"));
+    }
+    let pid: u32 = target.parse().context("expected 0xHWND or a decimal PID")?;
+    list_windows()?
+        .into_iter()
+        .find(|w| w.pid == pid)
+        .with_context(|| format!("no capturable window for PID {pid}"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowState {
+    Normal,
+    Minimized,
+    /// The window no longer exists.
+    Gone,
+}
+
+pub fn window_state(hwnd: isize) -> WindowState {
+    let hwnd = HWND(hwnd as *mut c_void);
+    // SAFETY: both calls only query state and accept stale handles.
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            WindowState::Gone
+        } else if IsIconic(hwnd).as_bool() {
+            WindowState::Minimized
+        } else {
+            WindowState::Normal
+        }
+    }
 }
 
 unsafe extern "system" fn collect_hwnd(hwnd: HWND, lparam: LPARAM) -> BOOL {
