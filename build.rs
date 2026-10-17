@@ -2,7 +2,10 @@
 //! runtime DLL next to the built binaries so that LANcast.exe and the
 //! examples start without the NDI Runtime being installed.
 
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 const NDI_DLL: &str = "Processing.NDI.Lib.x64.dll";
 const DEFAULT_SDK_DIR: &str = r"C:\Program Files\NDI\NDI 6 SDK";
@@ -36,8 +39,13 @@ fn main() {
     };
 
     for dir in [profile_dir.to_path_buf(), profile_dir.join("examples")] {
-        if let Err(err) = fs::create_dir_all(&dir).and_then(|()| fs::copy(&dll, dir.join(NDI_DLL)))
-        {
+        let target = dir.join(NDI_DLL);
+        // Skip identical copies: the DLL may be loaded by a running LANcast,
+        // and rewriting an unchanged file would only fail.
+        if same_file_contents(&dll, &target) {
+            continue;
+        }
+        if let Err(err) = fs::create_dir_all(&dir).and_then(|()| fs::copy(&dll, &target)) {
             println!(
                 "cargo:warning=failed to copy {NDI_DLL} to {}: {err}",
                 dir.display()
@@ -63,4 +71,16 @@ fn embed_exe_resources() {
     if let Err(err) = res.compile() {
         println!("cargo:warning=failed to embed the exe icon: {err}");
     }
+}
+
+/// The copy has the same size and is not older than the source.
+fn same_file_contents(source: &Path, target: &Path) -> bool {
+    let (Ok(src), Ok(dst)) = (fs::metadata(source), fs::metadata(target)) else {
+        return false;
+    };
+    let newer_or_equal = match (src.modified(), dst.modified()) {
+        (Ok(s), Ok(d)) => d >= s,
+        _ => false,
+    };
+    src.len() == dst.len() && newer_or_equal
 }

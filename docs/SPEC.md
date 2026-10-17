@@ -42,11 +42,15 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
 - **Preview before sending.** Selecting a window starts a preview capture without NDI: 20 fps, plus game audio for the meter if game-only audio is available. Video is read back only while the preview is visible, and the preview image is made straight from the readback (D21).
 - **Preview quality.** The image is produced at the size it is displayed, in physical pixels (up to 1920×1080), with area averaging, and refreshes about 20 times per second.
 - **Switching to the session.** "Send" replaces the preview capture with the session; "Stop" returns to the preview. Changing the border or cursor option restarts the preview, so the effect is visible immediately.
-- **While sending,** the carousel can still be scrolled but cannot select another window.
+- **While sending, the carousel is locked** (requirement 2026-10-17, D22):
+  - no clicking, scrolling, dragging or arrows; the arrows are shown disabled
+  - the cast window is scrolled into view and marked with a red frame and a **LIVE** badge
+  - all other tiles, including their live thumbnails, are dimmed
+  - the heading becomes a padlock plus "Window selection is locked while casting – press Stop to choose another window"
 
 1. The participant launches `LANcast.exe`. The main window opens and the tray icon appears.
 2. **Window picker: a carousel like Alt-Tab** (requirement 2026-10-17, D19).
-   - **Tiles:** three are visible, and the carousel cycles endlessly. Each tile shows a **live thumbnail** of the window, the exe's icon, the title and the process name. A click selects the tile and centers it.
+   - **Tiles:** four are visible, and the carousel cycles endlessly. The most recent window is on the left, like Alt-Tab. Each tile shows a **live thumbnail** of the window, the exe's icon, the title and the process name. A click selects the tile.
    - **Movement is continuous** (D20):
      - the mouse wheel or touchpad scrolls it softly over the carousel
      - it can be **dragged ("pulled")** with mouse or finger, with momentum after release

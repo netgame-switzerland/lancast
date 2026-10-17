@@ -175,11 +175,25 @@ impl eframe::App for LancastApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.label(
-                RichText::new("Choose the window to cast")
-                    .strong()
-                    .size(15.0),
-            );
+            if state.sending.is_some() {
+                ui.horizontal(|ui| {
+                    lock_icon(ui, AMBER);
+                    ui.label(
+                        RichText::new(
+                            "Window selection is locked while casting – press Stop to choose another window",
+                        )
+                        .strong()
+                        .size(15.0)
+                        .color(AMBER),
+                    );
+                });
+            } else {
+                ui.label(
+                    RichText::new("Choose the window to cast")
+                        .strong()
+                        .size(15.0),
+                );
+            }
             ui.add_space(4.0);
             let selected = state.selected.as_ref().map(|w| w.hwnd);
             let locked = state.sending.is_some();
@@ -568,4 +582,25 @@ fn activity_dot(ui: &mut egui::Ui, active: bool) {
     } else {
         "Silence (is the game muted or in the background?)"
     });
+}
+
+/// A small padlock, drawn (egui's default fonts have no lock glyph).
+fn lock_icon(ui: &mut egui::Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+    let painter = ui.painter();
+    let body = egui::Rect::from_min_max(
+        pos2(rect.left() + 1.0, rect.top() + 7.0),
+        pos2(rect.right() - 1.0, rect.bottom() - 1.0),
+    );
+    painter.rect_filled(body, 2.0, color);
+    let shackle = egui::Rect::from_min_max(
+        pos2(rect.left() + 3.5, rect.top() + 1.0),
+        pos2(rect.right() - 3.5, rect.top() + 11.0),
+    );
+    painter.rect_stroke(
+        shackle,
+        4.0,
+        egui::Stroke::new(2.0, color),
+        egui::StrokeKind::Inside,
+    );
 }

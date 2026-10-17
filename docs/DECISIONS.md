@@ -567,6 +567,29 @@ Versions checked with `cargo info` on 2026-10-17.
   - Nothing is read back while the window is hidden or in the tray.
   - While sending, the preview is still made from the NDI frame, which exists anyway.
 
+### D22. Carousel with four tiles, locked while casting; build fixes (2026-10-17)
+- **Four tiles:** with an even count there is no center tile, so `position` is now the continuous index
+  of the **leftmost** visible tile. Like Alt-Tab, the most recent window is on the left. A click
+  selects without moving the carousel.
+- **Locked while casting:**
+  - The strip senses hover only, and the wheel and drag are ignored. The arrows are greyed out via
+    `add_enabled_ui`.
+  - On locking, the cast window is scrolled into view once (shortest way).
+  - The cast tile gets a red frame and a LIVE badge.
+  - The other tiles get a dark fill and grey text, and their DWM thumbnails `opacity = 70/255` (the
+    `opacity` field of `DWM_THUMBNAIL_PROPERTIES`).
+  - The lock note sits in the heading, because DWM thumbnails are composited **above** egui content and
+    would hide any overlay text on the tiles. The padlock is drawn with shapes, since egui's default
+    fonts have no glyph for it.
+  - Verified: a click on another tile while casting does not change the selection.
+- **Default window width** 1400 (was 700).
+- **Build pitfalls found:**
+  - A running `LANcast.exe` blocks the replacement of the exe, so cargo fails with "failed to remove
+    file". A shortened output (`grep … | head`) once hid that error and an old exe was reported as
+    rebuilt. Since then the exe timestamp is checked after every build.
+  - `build.rs` now skips copying the NDI DLL if the copy already exists with the same size and is not
+    older. This avoids "failed to copy … (os error 32)" while a running LANcast has the DLL loaded.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

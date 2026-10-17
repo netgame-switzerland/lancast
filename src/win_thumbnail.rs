@@ -37,8 +37,9 @@ impl Thumbnails {
     }
 
     /// Shows `source` in `dest` (client pixels of the destination window),
-    /// cropped to `clip`, keeping the source aspect ratio within `dest`.
-    pub fn show(&mut self, source: isize, dest: [i32; 4], clip: [i32; 4]) {
+    /// cropped to `clip`, keeping the source aspect ratio within `dest`, with
+    /// `opacity` 0–255.
+    pub fn show(&mut self, source: isize, dest: [i32; 4], clip: [i32; 4], opacity: u8) {
         let Some((sw, sh)) = self.source_size(source) else {
             return;
         };
@@ -79,7 +80,7 @@ impl Thumbnails {
                 right: to_source(shown[2], full[0]),
                 bottom: to_source(shown[3], full[1]),
             },
-            opacity: 255,
+            opacity,
             fVisible: visible.into(),
             fSourceClientAreaOnly: false.into(),
         };
