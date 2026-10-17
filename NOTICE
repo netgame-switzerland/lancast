@@ -1,0 +1,13 @@
+LANcast
+Copyright 2026 Kay Huber
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The binary distribution also contains the NDI(R) runtime library, which is
+NOT covered by the Apache License: NDI(R) is a registered trademark of
+Vizrt NDI AB; the runtime is Copyright (C) 2023-2026 Vizrt NDI AB and is
+subject to the NDI SDK license terms (see EULA.txt and
+Processing.NDI.Lib.Licenses.txt). https://ndi.video/
+
+Third-party Rust crates compiled into LANcast.exe and their licenses are
+listed in THIRD-PARTY-LICENSES.txt.

@@ -112,10 +112,26 @@ impl LancastApp {
         app
     }
 
-    /// Copies the UI state into the persistent settings and saves them
-    /// shortly after the last change.
-    fn sync_config(&mut self) {
+    /// Copies the UI state (and the window geometry) into the persistent
+    /// settings and saves them shortly after the last change.
+    fn sync_config(&mut self, ctx: &egui::Context) {
         let mut config = self.config.clone();
+        let (inner, outer, minimized, maximized) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.inner_rect, v.outer_rect, v.minimized, v.maximized)
+        });
+        if minimized != Some(true) {
+            config.window_maximized = maximized == Some(true);
+            // Keep the normal size and position while maximized.
+            if maximized != Some(true)
+                && let (Some(inner), Some(outer)) = (inner, outer)
+            {
+                config.window_width = inner.width().round();
+                config.window_height = inner.height().round();
+                config.window_x = Some(outer.min.x.round());
+                config.window_y = Some(outer.min.y.round());
+            }
+        }
         config.to_tray = self.to_tray;
         config.always_on_top = self.always_on_top;
         config.fps_cap = self.settings.video.fps_cap;
@@ -219,7 +235,7 @@ impl eframe::App for LancastApp {
         }
 
         self.settings.discovery = self.discovery();
-        self.sync_config();
+        self.sync_config(&ctx);
         if self.sent_settings.as_ref() != Some(&self.settings) {
             self.sent_settings = Some(self.settings.clone());
             self.send(Command::Settings(self.settings.clone()));

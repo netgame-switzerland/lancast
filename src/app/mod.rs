@@ -14,7 +14,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::{info, warn};
 
 use crate::{
-    config::ConfigStore,
+    config::{ConfigStore, MIN_WINDOW_SIZE},
     os_caps::OsCaps,
     tray::{self, TrayCommand},
 };
@@ -96,9 +96,16 @@ pub fn run() -> Result<()> {
     };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("LANcast")
-        .with_inner_size([933.0, 1000.0])
-        .with_min_inner_size([600.0, 680.0])
+        .with_inner_size([config.window_width, config.window_height])
+        .with_min_inner_size([MIN_WINDOW_SIZE.0, MIN_WINDOW_SIZE.1])
+        .with_maximized(config.window_maximized)
         .with_icon(Arc::new(icon));
+    // Restore the position only if it is still on a connected monitor.
+    if let (Some(x), Some(y)) = (config.window_x, config.window_y)
+        && crate::windows_list::is_on_screen(x, y, config.window_width)
+    {
+        viewport = viewport.with_position([x, y]);
+    }
     if config.always_on_top {
         viewport = viewport.with_always_on_top();
     }

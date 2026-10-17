@@ -1,5 +1,7 @@
 # Builds the release ZIP (SPEC §6): dist\LANcast-<version>-win64.zip with
-# LANcast.exe, the NDI runtime DLL, its license file, README.txt and EULA.txt.
+# LANcast.exe, the NDI runtime DLL and its license file, README.txt,
+# EULA.txt, LICENSE.txt (Apache-2.0), NOTICE.txt and THIRD-PARTY-LICENSES.txt.
+# Needs Python 3 for the third-party license list.
 #
 # Usage (from the project root): powershell -File tools\package.ps1
 # LANcast must not be running (the build replaces LANcast.exe).
@@ -34,6 +36,12 @@ Copy-Item (Join-Path $sdk "Bin\x64\Processing.NDI.Lib.Licenses.txt") $stage
 (Get-Content packaging\README.txt -Raw).Replace("{VERSION}", $version) |
     Set-Content -Encoding utf8 (Join-Path $stage "README.txt")
 Copy-Item packaging\EULA.txt $stage
+Copy-Item LICENSE (Join-Path $stage "LICENSE.txt")
+Copy-Item NOTICE (Join-Path $stage "NOTICE.txt")
+# Python writes the file itself (UTF-8); piping through PowerShell 5.1 would
+# re-encode it with the console code page.
+python tools\third_party_licenses.py (Join-Path $stage "THIRD-PARTY-LICENSES.txt")
+if ($LASTEXITCODE -ne 0) { throw "third_party_licenses.py failed" }
 
 $zip = "dist\LANcast-$version-win64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

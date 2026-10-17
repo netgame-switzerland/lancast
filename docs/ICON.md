@@ -1,6 +1,6 @@
 # LANcast icon
 
-Design by Kay. The source is `assets/icon-source.png` (1000×1000, transparent background, with contour).
+Design by Kay Huber. The source is `assets/icon-source.png` (1000×1000, transparent background, with contour).
 
 ![All icon sizes on a light and a dark background, 4× enlarged](images/icon-preview-4x.png)
 

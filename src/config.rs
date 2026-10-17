@@ -38,9 +38,23 @@ pub struct Config {
     pub discovery_server: String,
     /// Ignore the discovery server configured in NDI Access Manager (D14).
     pub ignore_system_discovery: bool,
+    /// Main window: inner size and outer position in points (position
+    /// unset = let Windows choose), and whether it was maximized.
+    pub window_width: f32,
+    pub window_height: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_x: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_y: Option<f32>,
+    pub window_maximized: bool,
     /// Last source name per process (lowercase exe name).
     pub source_names: BTreeMap<String, String>,
 }
+
+/// Default inner size of the main window, in points.
+pub const DEFAULT_WINDOW_SIZE: (f32, f32) = (1050.0, 980.0);
+/// Minimum inner size of the main window, in points.
+pub const MIN_WINDOW_SIZE: (f32, f32) = (600.0, 680.0);
 
 impl Default for Config {
     fn default() -> Self {
@@ -55,6 +69,11 @@ impl Default for Config {
             audio_gain_db: 0.0,
             discovery_server: String::new(),
             ignore_system_discovery: false,
+            window_width: DEFAULT_WINDOW_SIZE.0,
+            window_height: DEFAULT_WINDOW_SIZE.1,
+            window_x: None,
+            window_y: None,
+            window_maximized: false,
             source_names: BTreeMap::new(),
         }
     }
@@ -71,6 +90,13 @@ impl Config {
         }
         self.audio_gain_db = self.audio_gain_db.clamp(-40.0, 40.0);
         self.discovery_server = self.discovery_server.trim().to_owned();
+        let finite_or = |v: f32, default: f32| if v.is_finite() { v } else { default };
+        self.window_width =
+            finite_or(self.window_width, DEFAULT_WINDOW_SIZE.0).clamp(MIN_WINDOW_SIZE.0, 8000.0);
+        self.window_height =
+            finite_or(self.window_height, DEFAULT_WINDOW_SIZE.1).clamp(MIN_WINDOW_SIZE.1, 8000.0);
+        self.window_x = self.window_x.filter(|v| v.is_finite());
+        self.window_y = self.window_y.filter(|v| v.is_finite());
         self
     }
 }

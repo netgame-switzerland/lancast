@@ -1,19 +1,23 @@
-LANcast - End User License Agreement
-====================================
+LANcast - License Terms
+=======================
 
-DRAFT - to be reviewed before public distribution (see docs/DECISIONS.md, D23).
+Copyright 2026 Kay Huber
 
-By installing, copying or using LANcast ("the Software") you agree to these
-terms.
+DRAFT - to be reviewed before public distribution (see docs/DECISIONS.md, D23, D24).
 
-1. License
-   You may use the Software free of charge and copy it unchanged, together
-   with all files of this package, for non-commercial purposes such as LAN
-   parties.
+This package contains two kinds of software under different terms:
+
+1. LANcast (LANcast.exe, excluding the NDI(R) components named below)
+   LANcast is licensed under the Apache License, Version 2.0 (LICENSE.txt,
+   NOTICE.txt). You may use, copy, modify and distribute it under those
+   terms. Third-party open-source components compiled into LANcast.exe and
+   their licenses are listed in THIRD-PARTY-LICENSES.txt.
 
 2. NDI(R) components
-   The Software includes the NDI(R) runtime library and uses the NDI(R) SDK
-   ("NDI Products"), licensed from Vizrt NDI AB ("NDI"). You agree that:
+   This package includes the NDI(R) runtime library
+   (Processing.NDI.Lib.x64.dll), and LANcast uses the NDI(R) SDK
+   ("NDI Products"), licensed from Vizrt NDI AB ("NDI"). The NDI Products are
+   NOT covered by the Apache License. By using this package you agree that:
    (a) you will not modify the NDI Products or any part thereof;
    (b) you will not reverse engineer, disassemble or recompile the NDI
        Products or any part thereof, or any protocols used by them, whether
@@ -25,12 +29,14 @@ terms.
    (d) you will not remove, obscure or alter any proprietary notices or
        labels contained on or within the NDI Products or any part thereof;
    (e) you will comply fully with all relevant export laws and regulations of
-       the United States, so that the Software or any part thereof is not
-       exported, directly or indirectly, in violation of United States law.
+       the United States, so that the NDI Products or any part thereof are
+       not exported, directly or indirectly, in violation of United States
+       law.
 
    NDI(R) is a registered trademark of Vizrt NDI AB.
    NDI runtime: Copyright (C) 2023-2026 Vizrt NDI AB. All rights reserved.
-   https://ndi.video/
+   https://ndi.video/  -  Notices for third-party components of the NDI
+   runtime: Processing.NDI.Lib.Licenses.txt (must accompany every copy).
 
 3. No warranty
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. ALL
@@ -38,12 +44,7 @@ terms.
    AND EACH OF ITS LICENSORS.
 
 4. Limitation of liability
-   TO THE EXTENT PERMITTED BY APPLICABLE LAW, NEITHER THE AUTHORS OF THE
-   SOFTWARE NOR NDI NOR ITS LICENSORS ARE LIABLE FOR ANY DAMAGES, WHETHER
-   DIRECT, INDIRECT, INCIDENTAL OR CONSEQUENTIAL, ARISING FROM THE USE OF THE
+   TO THE EXTENT PERMITTED BY APPLICABLE LAW, NEITHER THE AUTHORS OF LANCAST
+   NOR NDI NOR ITS LICENSORS ARE LIABLE FOR ANY DAMAGES, WHETHER DIRECT,
+   INDIRECT, INCIDENTAL OR CONSEQUENTIAL, ARISING FROM THE USE OF THE
    SOFTWARE.
-
-5. Third-party software
-   Notices for third-party components of the NDI runtime are listed in
-   Processing.NDI.Lib.Licenses.txt, which must accompany every copy of the
-   Software.

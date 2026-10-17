@@ -85,4 +85,9 @@ Copyright (C) 2023-2026 Vizrt NDI AB. All rights reserved. See
 Processing.NDI.Lib.Licenses.txt. Free NDI Tools (e.g. NDI Studio Monitor):
 https://ndi.video/tools/
 
-Use of LANcast is subject to EULA.txt.
+LICENSE
+-------
+LANcast is Copyright 2026 Kay Huber and licensed under the Apache License,
+Version 2.0 (LICENSE.txt, NOTICE.txt). The NDI(R) runtime is not covered by
+that license; see EULA.txt. Open-source components compiled into
+LANcast.exe: THIRD-PARTY-LICENSES.txt.

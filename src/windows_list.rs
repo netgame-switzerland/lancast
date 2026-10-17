@@ -9,11 +9,15 @@ use std::{ffi::c_void, path::Path};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HWND, LPARAM, RECT},
-        Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+        Graphics::{
+            Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+            Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect},
+        },
         System::Threading::{
             OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
             QueryFullProcessImageNameW,
         },
+        UI::HiDpi::GetDpiForSystem,
         UI::WindowsAndMessaging::{
             EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongPtrW,
             GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
@@ -108,6 +112,24 @@ pub fn window_state(hwnd: isize) -> WindowState {
         } else {
             WindowState::Normal
         }
+    }
+}
+
+/// Whether the top part of a window at `(x, y)` with `width` (logical
+/// units at the system DPI) lies on a connected monitor; used before
+/// restoring a saved window position.
+pub fn is_on_screen(x: f32, y: f32, width: f32) -> bool {
+    // SAFETY: plain queries; the rectangle is a local.
+    unsafe {
+        let scale = GetDpiForSystem() as f32 / 96.0;
+        // The title bar region must be reachable, not just a corner.
+        let rect = RECT {
+            left: ((x + 40.0) * scale) as i32,
+            top: (y * scale) as i32,
+            right: ((x + (width - 40.0).max(80.0)) * scale) as i32,
+            bottom: ((y + 30.0) * scale) as i32,
+        };
+        !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid()
     }
 }
 

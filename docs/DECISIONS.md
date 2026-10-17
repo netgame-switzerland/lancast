@@ -647,6 +647,34 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Default window size** 933×1000 (user: ⅓ narrower, ¼ higher than 1400×800).
 - The footer shows the version and links to the data folder.
 
+### D24. License, window geometry, release check (2026-10-17)
+- **License:** LANcast is **Apache-2.0**, copyright **Kay Huber** (user decision).
+  - `LICENSE` is the official text with the appendix, taken verbatim from a crate's `LICENSE-APACHE`
+    (201 lines).
+  - `NOTICE` names the holder and points out that the NDI runtime is *not* covered.
+  - `Cargo.toml` has `license`; the exe version info has `LegalCopyright`.
+- **EULA restructured:** part 1 is LANcast under Apache-2.0, which permits modification. Part 2 holds
+  the NDI §3d clauses, which apply only to the NDI components. Parts 3 and 4 are the disclaimers.
+  Still a draft for review.
+- **Third-party licenses:** `tools/third_party_licenses.py` walks `cargo metadata` (normal dependencies
+  only; build-time tools like bindgen are not shipped).
+  - Result: **150 crates**, with their license files and repeated texts deduplicated.
+  - Licenses: mostly MIT/Apache-2.0 dual, plus Zlib, BSD-3, Unlicense, and OFL-1.1 / Ubuntu Font
+    Licence for egui's bundled fonts (from the `fonts/` folder).
+  - 12 crates ship no license file; they are all used under Apache-2.0, whose text is included.
+  - The script writes UTF-8 itself, because a pipe through PowerShell 5.1 would re-encode it.
+- **Package contents** (`dist\LANcast-0.1.0-win64.zip`, 7.5 MB): `LANcast.exe`,
+  `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt`, `EULA.txt`,
+  `LICENSE.txt`, `NOTICE.txt`, `THIRD-PARTY-LICENSES.txt`. Verified: unpacked into an empty folder,
+  LANcast starts.
+- **Window geometry:**
+  - Inner size and outer position (points) plus the maximized flag are saved in `LANcast.toml`; while
+    maximized, the normal geometry is kept.
+  - A saved position is only applied if its title-bar area lies on a connected monitor
+    (`MonitorFromRect`, `MONITOR_DEFAULTTONULL`).
+  - Default inner size **1050×980**.
+  - Verified: moved to (200,120) and resized to 1134×861, quit, restarted → identical.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

@@ -264,7 +264,8 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - Hardware encoders (NVENC/AMF/QSV): only useful for NDI|HX via the Advanced SDK (v3 at the earliest, with a commercial licence).
 
 ## 6. Distribution
-- Ship `LANcast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt` and `EULA.txt` in the same folder, as a ZIP. `build.rs` copies the DLL next to the exe on build (done in M0).
+- **License:** LANcast is Apache-2.0, Copyright 2026 Kay Huber (`LICENSE`, `NOTICE`, D24).
+- Ship `LANcast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt`, `EULA.txt`, `LICENSE.txt`, `NOTICE.txt` and `THIRD-PARTY-LICENSES.txt` in the same folder, as a ZIP (`tools\package.ps1`). `build.rs` copies the DLL next to the exe on build (done in M0).
 - NDI SDK license requirements (verified, D5):
   - The DLL may be redistributed in the app folder.
   - The license file must accompany it.

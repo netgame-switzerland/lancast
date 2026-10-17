@@ -67,7 +67,11 @@ fn embed_exe_resources() {
             "FileDescription",
             "LANcast – send a game window as an NDI source",
         )
-        .set("OriginalFilename", "LANcast.exe");
+        .set("OriginalFilename", "LANcast.exe")
+        .set(
+            "LegalCopyright",
+            "Copyright 2026 Kay Huber. Apache License 2.0.",
+        );
     if let Err(err) = res.compile() {
         println!("cargo:warning=failed to embed the exe icon: {err}");
     }

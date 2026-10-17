@@ -2,6 +2,9 @@
 name = "lancast"
 version = "0.1.0"
 edition = "2024"
+description = "Send a game window and its audio as an NDI source at LAN parties"
+authors = ["Kay Huber"]
+license = "Apache-2.0"
 
 # The project is "lancast"; the shipped program is "LANcast".
 [[bin]]
@@ -23,7 +26,7 @@ toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 wasapi = "0.26.0"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm", "Win32_System_Threading", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm", "Win32_System_Threading", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_UI_HiDpi"] }
 windows-capture = "2.0.1"
 
 [dev-dependencies]
