@@ -55,6 +55,19 @@ The app shows a small live preview and an audio level meter, so the participant 
    - Scale −60…0 dBFS. Zones: green below −20, yellow −20…−9, red from −9 dB (OBS defaults, D12).
    - Each bar shows the RMS level, the peak level and a peak-hold marker.
    - Next to the meter, the audio mode is shown: "Game only" (process loopback) or "System audio – includes Discord etc." (fallback, §5.2). A dot marks whether non-silent audio is arriving.
+   - **System-audio warning (requirement 2026-10-17).** The fallback must be impossible to miss, and the user must see it **before** switching to the game, because nobody reads the window or the log while playing.
+     1. **Pre-flight check on selection.** As soon as the user selects a window (not only on "Send"), lancast checks whether process loopback can be activated for that PID. The check activates and initializes the client, then releases it; this takes a few milliseconds (D7, D16).
+     2. **If it fails, show a prominent warning banner** (amber/red, icon, above the Send button):
+        > ⚠ Game-only audio is not available on this system. lancast would send **all system audio** – everyone will hear your Discord, music and notifications.
+
+        The Send button is replaced by two explicit choices: **"Send with system audio"** and **"Send without audio"**. A plain "Send" that silently uses system audio is not allowed.
+     3. **While sending with system audio:**
+        - The tray icon shows a distinct warning state (amber, not the normal green).
+        - The tray tooltip says "sending SYSTEM audio".
+        - A Windows notification appears when sending starts: "lancast is sending ALL system audio (incl. Discord)".
+        - The main-window banner stays visible.
+     4. **Mid-session fallback:** if process loopback fails after "Send" despite a passing pre-flight check, lancast does **not** silently fall back. It sends without audio, shows the banner and a notification, and offers to switch to system audio.
+     5. The choice is not remembered across sessions; the warning appears every time.
    - The meter is only an indicator; there is no volume control in v1.
 7. **Status line**: resolution, FPS actually sent, and the number of connected receivers (`connection_count`).
 8. **Options**:
@@ -65,7 +78,7 @@ The app shows a small live preview and an audio level meter, so the participant 
 10. Footer or About: "NDI® is a registered trademark of Vizrt NDI AB" with a link to https://ndi.video/ (D5).
 
 ### 3.2 Tray icon
-- The tray icon is always present while lancast runs. Its state shows: grey = idle, green = sending, red = error (e.g. the window was closed).
+- The tray icon is always present while lancast runs. Its state shows: grey = idle, green = sending game audio (or no audio), **amber = sending SYSTEM audio** (§3.1 item 6), red = error (e.g. the window was closed).
 - Tooltip: `lancast – sending war3 (1920×1080 60 fps, 2 receivers)` or `lancast – idle`.
 - **Left click** shows or hides the main window.
 - **Menu**: `Show window`, `Start sending` / `Stop sending` (Start uses the last selected window), separator, `Quit`.
@@ -145,7 +158,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - Call `wasapi::initialize_mta()` on the audio thread first.
   - Pass the PID of the window's process; it is the root of the tree.
 - `GetMixFormat` is not supported, so set the format explicitly: 48 kHz, stereo, Float32, `StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: 0 }`.
-- Fallback: if activation or Initialize fails, use system loopback (default render endpoint). Show this in the UI ("System audio – includes Discord etc.").
+- Fallback: if activation or Initialize fails, use system loopback (default render endpoint). In the GUI this is never automatic: it requires the explicit choice after the pre-flight warning (§3.1 item 6). The CLI keeps the automatic fallback with a log warning.
 - Silence:
   - Measured on Win11: the client delivers 10 ms packets continuously, even when the target is silent.
   - On `AUDCLNT_BUFFERFLAGS_SILENT`, write zeros.
@@ -226,7 +239,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
     - `examples/av_sync_source` is a window that flashes and beeps once per second; `--silent` only flashes.
     - `ndi_probe --av` measures the flash→beep offset at the receiver.
   - Still to check by hand: YouTube in a browser, and Discord on a real system.
-- **M3:** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options) and tray icon per §3.2.
+- **M3:** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options), including the system-audio pre-flight check and warning (§3.1 item 6), and tray icon per §3.2.
 - **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 
