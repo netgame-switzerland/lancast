@@ -708,7 +708,7 @@ Versions checked with `cargo info` on 2026-10-17.
   saved globally in `LANcast.toml` (`user_name`).
 - The game name is proposed from the window's process, is editable ("Game"), and is remembered per exe
   as before.
-- Verified: the receiver sees `MY-PC (Kay - av_sync_source)`.
+- Verified: the receiver sees `MY-PC (<login name> - av_sync_source)`.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
