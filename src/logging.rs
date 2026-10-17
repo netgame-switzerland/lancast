@@ -1,5 +1,7 @@
-//! `tracing` setup: human-readable output to stdout and to `LANcast.log`
-//! next to the exe (the previous run's log is kept as `LANcast.prev.log`).
+//! `tracing` setup: human-readable output to stdout and to
+//! `logs\LANcast.log` in LANcast's data folder (`%LOCALAPPDATA%\LANcast\`, or
+//! next to the exe in portable mode). The previous run's log is kept as
+//! `LANcast.prev.log`.
 
 use std::{
     fs::{self, File},
@@ -25,14 +27,14 @@ pub fn init() -> Option<PathBuf> {
         .init();
 
     if path.is_none() {
-        tracing::warn!("could not create a log file next to the exe; logging to stdout only");
+        tracing::warn!("could not create the log file; logging to stdout only");
     }
     path
 }
 
 fn open_log_file() -> std::io::Result<(File, PathBuf)> {
-    let exe = std::env::current_exe()?;
-    let dir = exe.parent().ok_or(std::io::ErrorKind::NotFound)?;
+    let dir = crate::config::data_dir().join("logs");
+    fs::create_dir_all(&dir)?;
     let path = dir.join("LANcast.log");
     if path.exists() {
         let _ = fs::rename(&path, dir.join("LANcast.prev.log"));

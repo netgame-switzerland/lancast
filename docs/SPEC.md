@@ -151,10 +151,17 @@ Modules:
 - `src/config.rs`: `lancast.toml` next to the exe (FPS cap, max resolution, discovery server, options, source name per process)
 
 ### 4.5 Logging
-`tracing` to stdout and to `lancast.log` next to the exe. The previous run is kept as `lancast.prev.log`, and the level is set via env `LANCAST_LOG`. **Window titles are logged at debug level only.** Participants may share their log file for troubleshooting, and titles can contain private text (browser tabs, documents). Info level identifies windows by process name and HWND.
+`tracing` to stdout and to `logs\LANcast.log` in the data folder (§4.6). The previous run is kept as `LANcast.prev.log`, and the level is set via env `LANCAST_LOG`. **Window titles are logged at debug level only.** Participants may share their log file for troubleshooting, and titles can contain private text (browser tabs, documents). Info level identifies windows by process name and HWND.
 
-### 4.6 Config file
-`lancast.toml` sits next to the exe. If that folder is not writable, it goes to `%APPDATA%\lancast\`. All fields are optional. A missing or invalid file falls back to defaults and logs a warning.
+### 4.6 Config file and data folder (D23)
+Following Windows conventions, everything LANcast writes is per-user, machine-specific data and lives in `%LOCALAPPDATA%\LANcast\`; nothing is written into the program folder:
+- `LANcast.toml`: the settings.
+- `ndi\ndi-config.v1.json`: LANcast's NDI configuration (§5.4).
+- `logs\LANcast.log`: the log; the previous run is kept as `LANcast.prev.log`.
+
+**Portable mode:** if a `LANcast.toml` exists next to the exe, that folder is used instead, e.g. on a USB stick. An empty file is enough.
+
+All settings are optional. A missing file means defaults; an invalid one is kept as `LANcast.toml.bak`, and defaults are used. Settings are saved about 0.7 s after a change. The source name is remembered per game (exe name). The footer links to the folder ("Settings & logs folder").
 
 ## 5. Technical details
 
@@ -221,8 +228,10 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - OBS + DistroAV: add an "NDI Source" → "Source name" dropdown.
 - **Default: mDNS** (UDP 5353). This works when sender and receiver share a subnet / L2 segment, as on a typical LAN party network. No configuration is needed.
 - **Optional: NDI Discovery Server**, for networks with several subnets/VLANs or blocked multicast. "Advanced → Discovery server" takes an IP (or `ip:port`, default port 5959).
-  - The standard SDK has no API for this. lancast writes `ndi-config.v1.json` with `{"ndi":{"networks":{"discovery":"<ip>"}}}` to `%APPDATA%\lancast\ndi\` and sets `NDI_CONFIG_DIR` to that folder **before** NDI is initialized.
-  - Changing the value therefore takes effect only at the next send start, after the NDI instance has been dropped and recreated (or after restarting the app). The UI says so.
+  - The standard SDK has no API for this.
+    - At startup, before any thread exists, LANcast sets `NDI_CONFIG_DIR` to `<data folder>\ndi\`.
+    - Before each send it writes `ndi-config.v1.json` there: a copy of the system file with only `ndi.networks.discovery` adjusted. Without an override, the behaviour equals the system setting.
+  - The value takes effect at the next "Send", because each session initializes NDI anew. The UI says so (D23).
   - Caveat shown in the UI: with a discovery server set, the sender **stops announcing via mDNS**, so receivers must use the same server.
   - The server ships with NDI Tools / the NDI SDK (`NDI Discovery Service.exe`) and runs on the central machine or any server.
 - Alternative without a server, configured on the receiver: "Extra IPs" in NDI Access Manager on the central machine. Documented in the README only.
@@ -282,7 +291,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - The window list refreshes whenever the dropdown is opened.
   - The preview is shown while sending. A preview before sending, to confirm the right window, is a possible later addition.
   - Test switch: env `LANCAST_SIMULATE_NO_PROCESS_LOOPBACK=1` makes process loopback fail, to exercise the Windows 10 warning path.
-- **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, release ZIP with README/EULA/license file.
+- **M4 (done, D23):** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for LANcast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, release ZIP with README/EULA/license file (`tools\package.ps1` → `dist\LANcast-<version>-win64.zip`). The EULA is a draft and needs review before public distribution.
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 
 ## 8. Acceptance criteria

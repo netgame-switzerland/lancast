@@ -15,6 +15,7 @@ use crate::{
         audio_wasapi::{self, AudioLevels, AudioMode, AudioSource},
         video::{PreviewSlot, VideoOptions},
     },
+    ndi_config::{self, Discovery},
     os_caps::OsCaps,
     session::{POLL_INTERVAL, Preview, Session, SessionConfig, SessionEvent, SessionStatus},
     tray::{TrayHandle, TrayState},
@@ -46,6 +47,21 @@ pub struct Settings {
     pub source_name: String,
     pub video: VideoOptions,
     pub audio_gain_db: f32,
+    /// Discovery server choice, applied at the next send (D23).
+    pub discovery: Discovery,
+}
+
+/// Reachability of NDI discovery servers (SPEC §5.4, D14).
+#[derive(Debug, Clone, Default)]
+pub struct NetworkStatus {
+    /// Discovery server(s) configured in NDI Access Manager.
+    pub system_servers: Option<String>,
+    /// `None` while checking.
+    pub system_reachable: Option<bool>,
+    /// LANcast's own discovery server setting that was last checked.
+    pub own_servers: String,
+    /// `None` while checking (or nothing set).
+    pub own_reachable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +93,7 @@ pub struct Sending {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub network: NetworkStatus,
     pub caps: OsCaps,
     pub selected: Option<WindowInfo>,
     pub audio_check: AudioCheck,
@@ -101,16 +118,20 @@ pub enum Command {
     TrayStart,
     Stop,
     SwitchToSystemAudio,
+    /// Check whether these discovery servers are reachable (UI setting).
+    CheckDiscovery(String),
     Quit,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
+/// Wakes the UI (egui `request_repaint`); callable from any thread.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 pub struct Controller {
     state: SharedState,
     tray: TrayHandle,
     /// Wakes the UI (egui `request_repaint`).
-    wake: Box<dyn Fn() + Send>,
+    wake: Wake,
     settings: Option<Settings>,
     session: Option<Session>,
     preview: Option<Preview>,
@@ -118,7 +139,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn new(state: SharedState, tray: TrayHandle, wake: Box<dyn Fn() + Send>) -> Self {
+    pub fn new(state: SharedState, tray: TrayHandle, wake: Wake) -> Self {
         Self {
             state,
             tray,
@@ -133,6 +154,7 @@ impl Controller {
     /// Runs until `Quit`; stops the session cleanly before returning.
     pub fn run(mut self, commands: Receiver<Command>) {
         self.publish_tray();
+        self.check_system_discovery();
         loop {
             select! {
                 recv(commands) -> cmd => match cmd {
@@ -180,6 +202,7 @@ impl Controller {
             }
             Command::Stop => self.stop("stopped by the user", NoticeLevel::Info),
             Command::SwitchToSystemAudio => self.switch_to_system_audio(),
+            Command::CheckDiscovery(servers) => self.check_own_discovery(servers),
             Command::Quit => {}
         }
         (self.wake)();
@@ -285,6 +308,10 @@ impl Controller {
             audio,
             audio_gain_db: settings.audio_gain_db,
         };
+        // NDI reads its configuration when the session initializes it.
+        if let Err(err) = ndi_config::write_effective(&settings.discovery) {
+            warn!("failed to apply the discovery setting: {err:#}");
+        }
         // One capture of the window at a time: the session replaces the preview.
         self.stop_preview();
         match Session::start(&config, &caps) {
@@ -422,6 +449,51 @@ impl Controller {
         });
     }
 
+    /// Checks the discovery server from NDI Access Manager in the background.
+    fn check_system_discovery(&self) {
+        let servers = ndi_config::system_discovery();
+        self.state().network.system_servers = servers.clone();
+        let Some(servers) = servers else { return };
+        info!(%servers, "NDI Access Manager sets a discovery server; checking it");
+        let (state, wake) = (self.state.clone(), self.wake.clone());
+        std::thread::spawn(move || {
+            let reachable = ndi_config::check_reachable(&servers)
+                .iter()
+                .all(|(_, ok)| *ok);
+            if !reachable {
+                warn!(%servers, "the configured NDI discovery server is not reachable");
+            }
+            lock(&state).network.system_reachable = Some(reachable);
+            wake();
+        });
+    }
+
+    /// Checks LANcast's own discovery server setting in the background.
+    fn check_own_discovery(&self, servers: String) {
+        let servers = servers.trim().to_owned();
+        {
+            let mut state = self.state();
+            state.network.own_servers = servers.clone();
+            state.network.own_reachable = None;
+        }
+        if servers.is_empty() {
+            return;
+        }
+        let (state, wake) = (self.state.clone(), self.wake.clone());
+        std::thread::spawn(move || {
+            let reachable = ndi_config::check_reachable(&servers)
+                .iter()
+                .all(|(_, ok)| *ok);
+            let mut state = lock(&state);
+            // Ignore results for a setting the user has changed meanwhile.
+            if state.network.own_servers == servers {
+                state.network.own_reachable = Some(reachable);
+            }
+            drop(state);
+            wake();
+        });
+    }
+
     fn publish_tray(&self) {
         let state = self.state();
         let (tray_state, tooltip) = match &state.sending {
@@ -462,6 +534,10 @@ impl Controller {
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, AppState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.state)
     }
+}
+
+fn lock(state: &SharedState) -> std::sync::MutexGuard<'_, AppState> {
+    state.lock().unwrap_or_else(|e| e.into_inner())
 }

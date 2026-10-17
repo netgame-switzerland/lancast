@@ -9,7 +9,7 @@
 // The binary is deliberately named "LANcast".
 #![allow(non_snake_case)]
 
-use lancast::{app, cli, logging};
+use lancast::{app, cli, logging, ndi_config};
 use tracing::{error, info};
 
 fn main() {
@@ -19,6 +19,8 @@ fn main() {
         attach_parent_console();
     }
     let log_path = logging::init();
+    // SAFETY: still single-threaded here; no thread has been spawned yet.
+    unsafe { ndi_config::init_before_threads() };
     info!(version = env!("CARGO_PKG_VERSION"), log = ?log_path, gui, "LANcast starting");
 
     let result = if gui { app::run() } else { cli::run(args) };

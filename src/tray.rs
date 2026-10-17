@@ -9,8 +9,10 @@ use crossbeam_channel::{Receiver, Sender};
 use tracing::warn;
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-        System::LibraryLoader::GetModuleHandleW,
+        Foundation::{
+            CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
+        },
+        System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
         UI::{
             Shell::{
                 NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_WARNING,
@@ -18,9 +20,10 @@ use windows::{
                 NOTIFYICONDATAW, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
-                AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-                DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
-                GetMessageW, GetSystemMetrics, HICON, IsIconic, IsWindowVisible, MF_GRAYED,
+                AllowSetForegroundWindow, AppendMenuW, CreateIcon, CreatePopupMenu,
+                CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
+                DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, GetSystemMetrics,
+                GetWindowThreadProcessId, HICON, IsIconic, IsWindowVisible, MF_GRAYED,
                 MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
                 RegisterWindowMessageW, SM_CXSMICON, SW_HIDE, SW_RESTORE, SW_SHOW,
                 SetForegroundWindow, SetMenuDefaultItem, SetTimer, ShowWindow, TPM_NONOTIFY,
@@ -35,6 +38,8 @@ use windows::{
 const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
 const WM_TRAY_UPDATE: u32 = WM_APP + 2;
 const WM_TRAY_EXIT: u32 = WM_APP + 3;
+/// Sent by a second LANcast instance: show the main window.
+const WM_TRAY_ACTIVATE: u32 = WM_APP + 4;
 const ICON_ID: u32 = 1;
 const WATCH_TIMER: usize = 1;
 /// `NIN_SELECT | NINF_KEY` from shellapi.h (missing in windows-rs).
@@ -312,6 +317,15 @@ unsafe extern "system" fn wnd_proc(
             }
             WM_TIMER if wparam.0 == WATCH_TIMER => {
                 with_inner(hide_if_minimized);
+                LRESULT(0)
+            }
+            WM_TRAY_ACTIVATE => {
+                with_inner(|inner| {
+                    if let Some(main) = inner.main_window {
+                        show_window(main);
+                        (inner.on_command)(TrayCommand::WindowShown);
+                    }
+                });
                 LRESULT(0)
             }
             WM_TRAY_EXIT => {
@@ -672,6 +686,38 @@ fn over(top: [f32; 4], bottom: [f32; 4]) -> [f32; 4] {
         mix(top[2], bottom[2]),
         alpha,
     ]
+}
+
+/// Claims the single-instance mutex. Returns `false` if another LANcast GUI
+/// already runs; it is then asked to show its window (SPEC §6).
+pub fn claim_single_instance() -> bool {
+    // SAFETY: plain Win32 calls; the mutex handle is intentionally kept open
+    // for the lifetime of the process.
+    unsafe {
+        let Ok(mutex) = CreateMutexW(None, false, w!("Local\\LANcast.SingleInstance")) else {
+            return true; // cannot tell; do not block startup
+        };
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            // The handle stays open until the process exits.
+            return true;
+        }
+        let _ = CloseHandle(mutex);
+        // The other instance may still be starting: wait for its tray window.
+        for _ in 0..20 {
+            if let Ok(other) = FindWindowW(w!("lancast_tray"), PCWSTR::null())
+                && !other.is_invalid()
+            {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(other, Some(&raw mut pid));
+                // Let the other process take the foreground.
+                let _ = AllowSetForegroundWindow(pid);
+                let _ = PostMessageW(Some(other), WM_TRAY_ACTIVATE, WPARAM(0), LPARAM(0));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
 }
 
 /// Hides a top-level window (the main window when closed to the tray).

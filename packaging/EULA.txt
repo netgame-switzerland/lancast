@@ -1,0 +1,49 @@
+LANcast - End User License Agreement
+====================================
+
+DRAFT - to be reviewed before public distribution (see docs/DECISIONS.md, D23).
+
+By installing, copying or using LANcast ("the Software") you agree to these
+terms.
+
+1. License
+   You may use the Software free of charge and copy it unchanged, together
+   with all files of this package, for non-commercial purposes such as LAN
+   parties.
+
+2. NDI(R) components
+   The Software includes the NDI(R) runtime library and uses the NDI(R) SDK
+   ("NDI Products"), licensed from Vizrt NDI AB ("NDI"). You agree that:
+   (a) you will not modify the NDI Products or any part thereof;
+   (b) you will not reverse engineer, disassemble or recompile the NDI
+       Products or any part thereof, or any protocols used by them, whether
+       transmitted or received over a network or used internally or
+       externally to the machine (physical or virtual) they run on, and will
+       not attempt to do so;
+   (c) you will not circumvent any technical limitations in the NDI Products
+       or any part thereof;
+   (d) you will not remove, obscure or alter any proprietary notices or
+       labels contained on or within the NDI Products or any part thereof;
+   (e) you will comply fully with all relevant export laws and regulations of
+       the United States, so that the Software or any part thereof is not
+       exported, directly or indirectly, in violation of United States law.
+
+   NDI(R) is a registered trademark of Vizrt NDI AB.
+   NDI runtime: Copyright (C) 2023-2026 Vizrt NDI AB. All rights reserved.
+   https://ndi.video/
+
+3. No warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. ALL
+   WARRANTIES, EXPRESS OR IMPLIED, ARE DISCLAIMED, INCLUDING ON BEHALF OF NDI
+   AND EACH OF ITS LICENSORS.
+
+4. Limitation of liability
+   TO THE EXTENT PERMITTED BY APPLICABLE LAW, NEITHER THE AUTHORS OF THE
+   SOFTWARE NOR NDI NOR ITS LICENSORS ARE LIABLE FOR ANY DAMAGES, WHETHER
+   DIRECT, INDIRECT, INCIDENTAL OR CONSEQUENTIAL, ARISING FROM THE USE OF THE
+   SOFTWARE.
+
+5. Third-party software
+   Notices for third-party components of the NDI runtime are listed in
+   Processing.NDI.Lib.Licenses.txt, which must accompany every copy of the
+   Software.

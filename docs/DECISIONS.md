@@ -523,7 +523,7 @@ Versions checked with `cargo info` on 2026-10-17.
   - Bottom panels: footer, then controls (source name, status, Send/Stop, Settings).
   - The central panel holds the carousel, and the preview fills the rest at the image's aspect ratio,
     centered, next to the meter, so it scales with the window.
-  - Default window size 1400×800 (width doubled 2026-10-17), minimum 600×680.
+  - Default window size 933×1000 (adjusted 2026-10-17: 1400 wide was ⅓ too wide, 800 high ¼ too low), minimum 600×680.
   - Settings is a framed `Frame::group` with a 3-column grid (Window / Capture / Video / Audio). The
     "Advanced" fold-out is gone.
 - **Icon v2:** the user's updated design (`Gaming-Streaming-App-Symbol.png`) has **no alpha channel**
@@ -589,6 +589,63 @@ Versions checked with `cargo info` on 2026-10-17.
     rebuilt. Since then the exe timestamp is checked after every build.
   - `build.rs` now skips copying the NDI DLL if the copy already exists with the same size and is not
     older. This avoids "failed to copy … (os error 32)" while a running LANcast has the DLL loaded.
+
+---
+
+## M4 – 2026-10-17
+
+### D23. Settings, data folder, NDI discovery, single instance, release package
+- **Data folder (user question: "Windows best practice?"):**
+  - Microsoft's guidance: no writing into the program folder (`Program Files` is read-only anyway).
+    Per-user, machine-specific data goes in `%LOCALAPPDATA%`; roaming data in `%APPDATA%`.
+  - LANcast's settings, NDI config and logs are machine/network-specific, so everything lives in
+    `%LOCALAPPDATA%\LANcast\`.
+  - Opt-in **portable mode:** a `LANcast.toml` next to the exe redirects everything there.
+  - Earlier drafts wrote next to the exe, or to `%APPDATA%` as a fallback; that is replaced.
+- **Settings** `LANcast.toml` (serde + toml 1.1):
+  - All fields are optional (`#[serde(default)]`) and clamped to the UI ranges.
+  - An invalid file is renamed to `.bak`.
+  - Writes go through a temp file, then a rename. Saves are debounced (0.7 s); the source name per exe
+    is saved on "Send".
+  - Verified: file written with the expected content, source name remembered.
+- **NDI discovery:**
+  - `NDI_CONFIG_DIR` is set exactly once, at the start of `main`, before any thread exists:
+    `set_var` is `unsafe` in edition 2024 because it races with other threads.
+  - Before each session, a copy of `C:\ProgramData\NDI\ndi-config.v1.json` with an adjusted
+    `ndi.networks.discovery` is written: own server, `""` for "Ignore it for LANcast", or unchanged.
+    grafton-ndi destroys the runtime when the last handle drops, so each session re-reads the file.
+  - **Verified end to end:** with `discovery_server = "10.255.255.1"` (unreachable) an mDNS receiver
+    (`ndi_probe`) does **not** find the source; with an empty value it does. So the SDK honours
+    LANcast's file, and a configured server disables mDNS announcing (as documented, D10).
+- **Stale system discovery server (D14):**
+  - At startup the system value is read and checked in the background with a TCP connect to port 5959
+    (1.5 s timeout).
+  - If it is unreachable and not overridden, an amber banner offers "Ignore it for LANcast", which is
+    persisted in the settings.
+  - The network row of the settings shows the system value and its status, plus LANcast's own
+    discovery server field with a reachability check when editing ends.
+  - Verified with a fake `ProgramData` (10.0.18.19) for the test process only: banner shown, button
+    removes it, the setting is saved. The real system file was not touched.
+- **Single instance:**
+  - A named mutex `Local\LANcast.SingleInstance` (per user session).
+  - A second start finds the tray window (class `lancast_tray`), calls `AllowSetForegroundWindow`
+    for that process and posts `WM_TRAY_ACTIVATE`. The first instance shows its window, even from
+    the tray.
+  - Verified: the second instance exits; the first becomes visible and foreground.
+  - CLI mode is not limited.
+- **Release package:**
+  - `tools\package.ps1` builds, checks that the exe is fresh, and stages exe, NDI DLL,
+    `Processing.NDI.Lib.Licenses.txt`, `README.txt` (from `packaging\`, with the version) and
+    `EULA.txt` into `dist\LANcast-<version>-win64.zip`.
+  - It refuses to run while LANcast is running. It did refuse once, correctly, when a LANcast was
+    started during packaging.
+  - The **EULA is a draft.** It contains the clauses required by NDI SDK License Agreement §3d:
+    no modification, no reverse engineering (including protocols), no circumvention, notices kept,
+    warranty and liability disclaimers on behalf of NDI, US export compliance, copyright notice.
+    The copyright notice follows `Processing.NDI.Lib.Licenses.txt` ("Copyright (C) 2023-2026 Vizrt NDI
+    AB"), while §3d itself still says "NDI, Inc.". Have it reviewed before public distribution.
+- **Default window size** 933×1000 (user: ⅓ narrower, ¼ higher than 1400×800).
+- The footer shows the version and links to the data folder.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

@@ -14,17 +14,27 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::{info, warn};
 
 use crate::{
+    config::ConfigStore,
     os_caps::OsCaps,
     tray::{self, TrayCommand},
 };
-use controller::{AppState, AudioCheck, Command, Controller};
+use controller::{AppState, AudioCheck, Command, Controller, NetworkStatus, Wake};
 
 /// Runs the GUI until the user quits. Exits the process.
 pub fn run() -> Result<()> {
+    // One LANcast window per user: a second start shows the first one.
+    if !tray::claim_single_instance() {
+        info!("LANcast is already running; showing its window");
+        return Ok(());
+    }
+
     let caps = OsCaps::detect();
     info!("{caps}");
+    let (store, config) = ConfigStore::load();
+    info!(path = %store.path().display(), "settings file");
 
     let state = Arc::new(Mutex::new(AppState {
+        network: NetworkStatus::default(),
         caps,
         selected: None,
         audio_check: AudioCheck::Idle,
@@ -35,13 +45,13 @@ pub fn run() -> Result<()> {
     let (commands_tx, commands_rx) = crossbeam_channel::unbounded();
     // The egui context exists only once eframe has started.
     let egui_ctx: Arc<OnceLock<egui::Context>> = Arc::new(OnceLock::new());
-    let wake = {
+    let wake: Wake = {
         let egui_ctx = egui_ctx.clone();
-        move || {
+        Arc::new(move || {
             if let Some(ctx) = egui_ctx.get() {
                 ctx.request_repaint();
             }
-        }
+        })
     };
 
     let (tray, _tray_thread) = tray::start({
@@ -60,6 +70,7 @@ pub fn run() -> Result<()> {
             }
         }
     })?;
+    tray.set_minimize_to_tray(config.to_tray);
 
     std::thread::Builder::new()
         .name("controller".into())
@@ -67,7 +78,7 @@ pub fn run() -> Result<()> {
             let state = state.clone();
             let tray = tray.clone();
             move || {
-                Controller::new(state, tray.clone(), Box::new(wake)).run(commands_rx);
+                Controller::new(state, tray.clone(), wake).run(commands_rx);
                 // Quit: the session is stopped; remove the tray icon and leave.
                 // eframe does not return while its window is hidden, so exit here.
                 tray.exit();
@@ -83,12 +94,16 @@ pub fn run() -> Result<()> {
         width: side as u32,
         height: side as u32,
     };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("LANcast")
+        .with_inner_size([933.0, 1000.0])
+        .with_min_inner_size([600.0, 680.0])
+        .with_icon(Arc::new(icon));
+    if config.always_on_top {
+        viewport = viewport.with_always_on_top();
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("LANcast")
-            .with_inner_size([1400.0, 800.0])
-            .with_min_inner_size([600.0, 680.0])
-            .with_icon(Arc::new(icon)),
+        viewport,
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -111,6 +126,8 @@ pub fn run() -> Result<()> {
                 commands_tx.clone(),
                 tray,
                 hwnd,
+                store,
+                config,
             )))
         }),
     );

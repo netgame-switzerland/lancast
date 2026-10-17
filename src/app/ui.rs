@@ -5,7 +5,10 @@
 //! filling the space below it (scales with the window), and at the bottom
 //! the source name, status, send buttons and the settings panel.
 
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::Sender;
 use eframe::egui::{
@@ -23,8 +26,11 @@ use crate::{
         audio_wasapi::{AudioLevels, AudioMode},
         video::{PreviewSlot, VideoOptions},
     },
+    config::{Config, ConfigStore},
+    ndi_config::Discovery,
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
+    windows_list::WindowInfo,
 };
 
 const MAX_SIZES: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
@@ -33,6 +39,8 @@ const RED: Color32 = Color32::from_rgb(215, 60, 50);
 /// Width reserved for the meter next to the preview.
 const METER_WIDTH: f32 = 58.0;
 const MIN_PREVIEW_HEIGHT: f32 = 90.0;
+/// Settings are written at most this often while being edited.
+const SAVE_DELAY: Duration = Duration::from_millis(700);
 
 pub struct LancastApp {
     state: SharedState,
@@ -46,6 +54,15 @@ pub struct LancastApp {
     /// Closing (×) and minimizing hide the window to the tray (SPEC §3.2).
     to_tray: bool,
     always_on_top: bool,
+    /// Discovery server setting as typed (checked when editing ends).
+    discovery_server: String,
+    ignore_system_discovery: bool,
+    /// Persistent settings (`LANcast.toml`) and when they last changed.
+    config: Config,
+    store: ConfigStore,
+    changed_at: Option<Instant>,
+    /// Process key of the selected window, for remembering source names.
+    selected_process: Option<String>,
     meter: Meter,
     preview: Option<TextureHandle>,
 }
@@ -56,8 +73,10 @@ impl LancastApp {
         commands: Sender<Command>,
         tray: TrayHandle,
         hwnd: Option<isize>,
+        store: ConfigStore,
+        config: Config,
     ) -> Self {
-        Self {
+        let app = Self {
             state,
             commands,
             tray,
@@ -66,15 +85,86 @@ impl LancastApp {
             carousel: Carousel::new(hwnd),
             settings: Settings {
                 source_name: String::new(),
-                video: VideoOptions::default(),
-                audio_gain_db: 0.0,
+                video: VideoOptions {
+                    fps_cap: config.fps_cap,
+                    max_size: (config.max_width, config.max_height),
+                    show_border: config.show_border,
+                    capture_cursor: config.capture_cursor,
+                },
+                audio_gain_db: config.audio_gain_db,
+                discovery: Discovery::System,
             },
             sent_settings: None,
-            to_tray: true,
-            always_on_top: false,
+            to_tray: config.to_tray,
+            always_on_top: config.always_on_top,
+            discovery_server: config.discovery_server.clone(),
+            ignore_system_discovery: config.ignore_system_discovery,
+            config,
+            store,
+            changed_at: None,
+            selected_process: None,
             meter: Meter::default(),
             preview: None,
+        };
+        if !app.discovery_server.is_empty() {
+            app.send(Command::CheckDiscovery(app.discovery_server.clone()));
         }
+        app
+    }
+
+    /// Copies the UI state into the persistent settings and saves them
+    /// shortly after the last change.
+    fn sync_config(&mut self) {
+        let mut config = self.config.clone();
+        config.to_tray = self.to_tray;
+        config.always_on_top = self.always_on_top;
+        config.fps_cap = self.settings.video.fps_cap;
+        (config.max_width, config.max_height) = self.settings.video.max_size;
+        config.show_border = self.settings.video.show_border;
+        config.capture_cursor = self.settings.video.capture_cursor;
+        config.audio_gain_db = self.settings.audio_gain_db;
+        config.discovery_server = self.discovery_server.trim().to_owned();
+        config.ignore_system_discovery = self.ignore_system_discovery;
+        if config != self.config {
+            self.config = config;
+            self.changed_at = Some(Instant::now());
+        }
+        if self.changed_at.is_some_and(|t| t.elapsed() >= SAVE_DELAY) {
+            self.store.save(&self.config);
+            self.changed_at = None;
+        }
+    }
+
+    /// Effective discovery choice: own server, else ignore, else system.
+    fn discovery(&self) -> Discovery {
+        let servers = self.discovery_server.trim();
+        if !servers.is_empty() {
+            Discovery::Servers(servers.to_owned())
+        } else if self.ignore_system_discovery {
+            Discovery::Mdns
+        } else {
+            Discovery::System
+        }
+    }
+
+    fn select(&mut self, window: WindowInfo) {
+        let key = process_key(&window);
+        self.settings.source_name = key
+            .as_ref()
+            .and_then(|k| self.config.source_names.get(k).cloned())
+            .unwrap_or_else(|| window.default_source_name());
+        self.selected_process = key;
+        self.send(Command::Select(window));
+    }
+
+    /// Starts sending and remembers the source name for this game.
+    fn start(&mut self, choice: AudioChoice) {
+        if let Some(key) = &self.selected_process {
+            let name = self.settings.source_name.trim().to_owned();
+            self.config.source_names.insert(key.clone(), name);
+            self.store.save(&self.config);
+        }
+        self.send(Command::Start(choice));
     }
 
     fn send(&self, command: Command) {
@@ -128,6 +218,8 @@ impl eframe::App for LancastApp {
             return;
         }
 
+        self.settings.discovery = self.discovery();
+        self.sync_config();
         if self.sent_settings.as_ref() != Some(&self.settings) {
             self.sent_settings = Some(self.settings.clone());
             self.send(Command::Settings(self.settings.clone()));
@@ -159,11 +251,33 @@ impl eframe::App for LancastApp {
                         .weak(),
                 );
                 ui.hyperlink_to(RichText::new("ndi.video").small(), "https://ndi.video/");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(concat!("LANcast ", env!("CARGO_PKG_VERSION")))
+                            .small()
+                            .weak(),
+                    );
+                    let dir = crate::config::data_dir();
+                    let mode = if crate::config::is_portable() {
+                        "portable mode: LANcast.toml next to the exe"
+                    } else {
+                        "per user"
+                    };
+                    if ui
+                        .link(RichText::new("Settings & logs folder").small())
+                        .on_hover_text(format!("{} ({mode})", dir.display()))
+                        .clicked()
+                    {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                    }
+                });
             });
         });
 
         egui::Panel::bottom("controls").show(ui, |ui| {
             ui.add_space(6.0);
+            self.discovery_warning(ui, &state);
             self.source_name(ui, &state);
             ui.add_space(4.0);
             self.audio_and_status(ui, &state);
@@ -198,8 +312,7 @@ impl eframe::App for LancastApp {
             let selected = state.selected.as_ref().map(|w| w.hwnd);
             let locked = state.sending.is_some();
             if let Some(window) = self.carousel.show(ui, selected, locked) {
-                self.settings.source_name = window.default_source_name();
-                self.send(Command::Select(window));
+                self.select(window);
             }
             ui.add_space(8.0);
             self.preview_and_meter(ui, &state);
@@ -406,15 +519,15 @@ impl LancastApp {
                         .add_enabled(ready, big("Send with system audio"))
                         .clicked()
                     {
-                        self.send(Command::Start(AudioChoice::System));
+                        self.start(AudioChoice::System);
                     }
                     if ui.add_enabled(ready, big("Send without audio")).clicked() {
-                        self.send(Command::Start(AudioChoice::None));
+                        self.start(AudioChoice::None);
                     }
                 }
                 _ => {
                     if ui.add_enabled(ready, big("Send")).clicked() {
-                        self.send(Command::Start(AudioChoice::Game));
+                        self.start(AudioChoice::Game);
                     }
                 }
             }
@@ -552,9 +665,103 @@ impl LancastApp {
                             });
                         });
                         ui.end_row();
+
+                        ui.label(RichText::new("Network").weak());
+                        self.network_settings(ui, state);
+                        ui.end_row();
                     });
             });
     }
+
+    /// Discovery server setting with its reachability, and the system
+    /// setting from NDI Access Manager (SPEC §5.4).
+    fn network_settings(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Discovery server");
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.discovery_server)
+                        .hint_text("automatic (mDNS)")
+                        .desired_width(160.0),
+                );
+                if response.lost_focus() {
+                    let servers = self.discovery_server.trim().to_owned();
+                    if servers != state.network.own_servers {
+                        self.send(Command::CheckDiscovery(servers));
+                    }
+                }
+                let network = &state.network;
+                if !self.discovery_server.trim().is_empty()
+                    && network.own_servers == self.discovery_server.trim()
+                {
+                    match network.own_reachable {
+                        Some(true) => ui.colored_label(Color32::from_rgb(60, 190, 80), "reachable"),
+                        Some(false) => ui.colored_label(RED, "NOT reachable"),
+                        None => ui.weak("checking…"),
+                    };
+                }
+                ui.label(RichText::new("Optional. Applies at the next Send.").small().weak())
+                    .on_hover_text(
+                        "Leave empty for automatic discovery (mDNS), which works when all PCs \
+                         share one network.\nWith a discovery server, receivers must use the same server.",
+                    );
+            });
+            if let Some(system) = &state.network.system_servers {
+                ui.horizontal(|ui| {
+                    let status = match state.network.system_reachable {
+                        Some(true) => "reachable",
+                        Some(false) => "NOT reachable",
+                        None => "checking…",
+                    };
+                    ui.label(
+                        RichText::new(format!("NDI Access Manager sets {system} ({status})."))
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_enabled(
+                        self.discovery_server.trim().is_empty(),
+                        egui::Checkbox::new(&mut self.ignore_system_discovery, "Ignore it for LANcast"),
+                    )
+                    .on_hover_text(
+                        "Use automatic discovery (mDNS) instead. The system setting is not changed.",
+                    );
+                });
+            }
+        });
+    }
+
+    /// Warns when the discovery server from NDI Access Manager is in use but
+    /// unreachable: receivers would not find the stream (D14).
+    fn discovery_warning(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        let network = &state.network;
+        let (Some(system), Some(false)) = (&network.system_servers, network.system_reachable)
+        else {
+            return;
+        };
+        if self.ignore_system_discovery || !self.discovery_server.trim().is_empty() {
+            return;
+        }
+        banner(
+            ui,
+            AMBER,
+            &format!(
+                "WARNING: NDI Access Manager sets the discovery server {system}, which is not \
+                 reachable. Receivers will not find your stream."
+            ),
+        );
+        if ui
+            .button("Ignore it for LANcast (use automatic discovery)")
+            .clicked()
+        {
+            self.ignore_system_discovery = true;
+        }
+        ui.add_space(4.0);
+    }
+}
+
+/// Lowercase exe name, the key for remembered source names.
+fn process_key(window: &WindowInfo) -> Option<String> {
+    window.process_name.as_ref().map(|name| name.to_lowercase())
 }
 
 fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {
