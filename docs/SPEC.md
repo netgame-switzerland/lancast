@@ -100,12 +100,18 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
 10. Footer or About: "NDI® is a registered trademark of Vizrt NDI AB" with a link to https://ndi.video/ (D5).
 
 ### 3.2 Tray icon
-- The tray icon is always present while LANcast runs. Its state dot shows: none = idle, green = sending game audio (or no audio), **amber = sending SYSTEM audio** (§3.1 item 6), red = error (e.g. the window was closed).
+- The tray icon is always present while LANcast runs. Its overlays show the state: red REC dot = casting, **REC + amber dot = casting SYSTEM audio** (§3.1 item 6), amber dot alone = stopped unexpectedly (e.g. the window was closed).
 - Tooltip: `lancast – sending war3 (1920×1080 60 fps, 2 receivers)` or `lancast – idle`.
 - **Left click** shows or hides the main window.
 - **Menu**: `Show window`, `Start sending` / `Stop sending` (Start uses the last selected window), separator, `Quit`.
 - **× and minimize hide the main window to the tray** while "Close and minimize to tray" is on (the default). `Quit` in the tray menu exits. The first time the window is hidden, a tray notification explains this.
-- **Icon:** the LANcast icon (`assets/icon-source.png`). The state is shown as a small dot in the lower right corner: none = idle, green = sending, amber = sending SYSTEM audio, red = error.
+- **Icon:** the LANcast icon (`assets/icon-source.png`) with state overlays (preview in `docs/ICON.md`):
+  - idle: plain icon
+  - **casting: a glowing red REC dot, top right**
+  - casting with SYSTEM audio: REC dot plus an amber dot, bottom right
+  - stopped unexpectedly (error): amber dot only
+
+  Red always means "on air", amber always means "attention".
 - Implementation (D18): the tray is lancast's own `Shell_NotifyIconW` icon on a dedicated thread with its own message loop, so it is independent of eframe, which does not paint a hidden window.
   - The send session lives in a controller thread, so stop-on-close, tray state and notifications keep working while the window is hidden.
   - The window is hidden and shown with Win32 `ShowWindow` on the eframe HWND.

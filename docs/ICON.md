@@ -8,6 +8,11 @@ Actual size (16, 20, 24, 32, 48 and 64 px), as they appear in the tray, taskbar 
 
 ![All icon sizes at actual size](images/icon-preview-1x.png)
 
+## Tray states
+Rows from the top: idle, casting (glowing red REC dot), casting with system audio (REC dot plus amber dot), and stopped unexpectedly (amber dot). Sizes 16–32 px on a light and a dark background, 4× enlarged. Generate it with `cargo run --release --example tray_preview`; the drawing is in `src/tray.rs` (`tray_icon_rgba`).
+
+![Tray icon states](images/tray-states-4x.png)
+
 ## How the sizes are made
 `python tools/make_icons.py` (needs Pillow) generates everything from the source:
 

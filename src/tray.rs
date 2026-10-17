@@ -55,14 +55,15 @@ pub enum TrayState {
 }
 
 impl TrayState {
-    /// Color of the status dot on the icon; no dot when idle.
-    fn dot_color(self) -> Option<[u8; 3]> {
-        match self {
-            Self::Idle => None,
-            Self::Sending => Some([60, 200, 90]),
-            Self::SendingSystemAudio => Some([245, 170, 0]),
-            Self::Error => Some([225, 50, 50]),
-        }
+    /// Casting: a glowing red "REC" dot, top right.
+    fn on_air(self) -> bool {
+        matches!(self, Self::Sending | Self::SendingSystemAudio)
+    }
+
+    /// Attention (system audio, or stopped unexpectedly): an amber dot,
+    /// bottom right.
+    fn warning(self) -> bool {
+        matches!(self, Self::SendingSystemAudio | Self::Error)
     }
 }
 
@@ -559,13 +560,45 @@ fn show_menu(window: HWND) {
     }
 }
 
-/// The LANcast icon with a status dot in the lower right corner (none when
-/// idle), as an `HICON` of `size` pixels.
-fn make_icon(size: i32, state: TrayState) -> Result<HICON> {
-    let (side, mut rgba) = crate::app_icon::icon_rgba(size as usize);
-    if let Some(color) = state.dot_color() {
-        draw_dot(&mut rgba, side, color);
+/// The tray icon for `state` as RGBA: the LANcast icon, plus a glowing red
+/// REC dot (top right) while casting and an amber dot (bottom right) for
+/// system audio or an error. Returns `(side, rgba)`.
+pub fn tray_icon_rgba(size: usize, state: TrayState) -> (usize, Vec<u8>) {
+    let (side, mut rgba) = crate::app_icon::icon_rgba(size);
+    let s = side as f32;
+    if state.warning() {
+        let radius = s * 0.17;
+        let ring = (s * 0.05).max(1.0);
+        let c = s - radius - ring;
+        draw_dot(&mut rgba, side, (c, c), radius, ring, AMBER_DOT, None);
     }
+    if state.on_air() {
+        let radius = s * 0.19;
+        let ring = (s * 0.05).max(1.0);
+        let glow = (s * 0.11).max(1.3);
+        let inset = radius + ring + glow * 0.4;
+        draw_dot(
+            &mut rgba,
+            side,
+            (s - inset, inset),
+            radius,
+            ring,
+            REC_DOT,
+            Some(glow),
+        );
+    }
+    (side, rgba)
+}
+
+/// REC dot: bright center, deeper red edge.
+const REC_DOT: ([f32; 3], [f32; 3]) = ([255.0, 95.0, 80.0], [205.0, 20.0, 25.0]);
+const AMBER_DOT: ([f32; 3], [f32; 3]) = ([255.0, 200.0, 60.0], [235.0, 150.0, 0.0]);
+const RING: [f32; 3] = [18.0, 12.0, 14.0];
+/// Halo around the REC dot; brighter than the dot's edge so it reads as light.
+const GLOW: [f32; 3] = [255.0, 45.0, 35.0];
+
+fn make_icon(size: i32, state: TrayState) -> Result<HICON> {
+    let (side, mut rgba) = tray_icon_rgba(size as usize, state);
     // CreateIcon wants BGRA with straight alpha.
     for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
@@ -578,35 +611,67 @@ fn make_icon(size: i32, state: TrayState) -> Result<HICON> {
     Ok(icon)
 }
 
-/// Paints an anti-aliased dot with a dark ring over the lower right corner.
-fn draw_dot(rgba: &mut [u8], side: usize, [r, g, b]: [u8; 3]) {
-    let radius = side as f32 * 0.24;
-    let ring = (side as f32 * 0.06).max(1.0);
-    let center = side as f32 - radius - ring;
+/// Paints an anti-aliased dot (radial gradient from the first to the second
+/// color) with a dark contrast ring and an optional soft glow of width `glow`.
+fn draw_dot(
+    rgba: &mut [u8],
+    side: usize,
+    (cx, cy): (f32, f32),
+    radius: f32,
+    ring: f32,
+    (center_color, edge_color): ([f32; 3], [f32; 3]),
+    glow: Option<f32>,
+) {
+    let reach = radius + ring + glow.unwrap_or(0.0);
     for y in 0..side {
         for x in 0..side {
-            let d = ((x as f32 + 0.5 - center).powi(2) + (y as f32 + 0.5 - center).powi(2)).sqrt();
-            let outer = (radius + ring - d + 0.5).clamp(0.0, 1.0);
-            if outer == 0.0 {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            if d > reach + 0.5 {
                 continue;
             }
-            let inner = (radius - d + 0.5).clamp(0.0, 1.0);
-            // Dark ring for contrast, colored fill inside.
-            let color = [
-                f32::from(r) * inner + 15.0 * (1.0 - inner),
-                f32::from(g) * inner + 15.0 * (1.0 - inner),
-                f32::from(b) * inner + 20.0 * (1.0 - inner),
-            ];
-            let px = &mut rgba[(y * side + x) * 4..][..4];
-            let base_alpha = f32::from(px[3]) / 255.0;
-            let alpha = outer + base_alpha * (1.0 - outer);
-            for c in 0..3 {
-                let blended = color[c] * outer + f32::from(px[c]) * base_alpha * (1.0 - outer);
-                px[c] = (blended / alpha.max(1e-6)).round() as u8;
+            // Layers from bottom to top: glow, ring, fill (straight alpha).
+            let mut layer = [0.0f32; 4];
+            if let Some(width) = glow {
+                let t = ((d - radius - ring) / width).clamp(0.0, 1.0);
+                let a = 0.65 * (1.0 - t).powi(2);
+                layer = over([GLOW[0], GLOW[1], GLOW[2], a], layer);
             }
-            px[3] = (alpha * 255.0).round() as u8;
+            let ring_cover = (radius + ring - d + 0.5).clamp(0.0, 1.0);
+            layer = over([RING[0], RING[1], RING[2], ring_cover], layer);
+            let fill_cover = (radius - d + 0.5).clamp(0.0, 1.0);
+            let t = (d / radius).clamp(0.0, 1.0);
+            let fill = [0, 1, 2].map(|c| center_color[c] + (edge_color[c] - center_color[c]) * t);
+            layer = over([fill[0], fill[1], fill[2], fill_cover], layer);
+
+            let px = &mut rgba[(y * side + x) * 4..][..4];
+            let base = [
+                f32::from(px[0]),
+                f32::from(px[1]),
+                f32::from(px[2]),
+                f32::from(px[3]) / 255.0,
+            ];
+            let out = over(layer, base);
+            for c in 0..3 {
+                px[c] = out[c].round().clamp(0.0, 255.0) as u8;
+            }
+            px[3] = (out[3] * 255.0).round() as u8;
         }
     }
+}
+
+/// `top` over `bottom`, straight (non-premultiplied) RGBA with alpha 0..1.
+fn over(top: [f32; 4], bottom: [f32; 4]) -> [f32; 4] {
+    let alpha = top[3] + bottom[3] * (1.0 - top[3]);
+    if alpha <= 0.0 {
+        return [0.0; 4];
+    }
+    let mix = |t: f32, b: f32| (t * top[3] + b * bottom[3] * (1.0 - top[3])) / alpha;
+    [
+        mix(top[0], bottom[0]),
+        mix(top[1], bottom[1]),
+        mix(top[2], bottom[2]),
+        alpha,
+    ]
 }
 
 /// Hides a top-level window (the main window when closed to the tray).
