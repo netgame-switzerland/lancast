@@ -1,5 +1,6 @@
 //! NDI sender thread (SPEC §5.3). It owns the `grafton_ndi::Sender`, takes
-//! video frames from the capture thread and returns released frames for reuse.
+//! video frames and audio chunks from the capture threads and returns released
+//! video frames for reuse.
 
 use std::{
     sync::{
@@ -11,9 +12,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender as ChannelSender};
-use grafton_ndi::{NDI, Sender, SenderOptions, VideoFrame};
+use crossbeam_channel::{Receiver, Sender as ChannelSender, select};
+use grafton_ndi::{AudioFrame, AudioLayout, NDI, Sender, SenderOptions, VideoFrame};
 use tracing::{debug, info, warn};
+
+use crate::capture::audio_wasapi::{AudioChunk, CHANNELS, CHUNK_FRAMES, SAMPLE_RATE};
 
 /// How often the receiver count is refreshed.
 const CONNECTION_POLL: Duration = Duration::from_secs(1);
@@ -21,7 +24,17 @@ const CONNECTION_POLL: Duration = Duration::from_secs(1);
 #[derive(Debug, Default)]
 pub struct NdiStats {
     pub video_sent: AtomicU64,
+    pub audio_sent: AtomicU64,
     pub connections: AtomicU32,
+}
+
+/// The channels the sender thread works from.
+pub struct NdiInputs {
+    pub video: Receiver<VideoFrame>,
+    /// Video frames released by the SDK, back to the capture thread.
+    pub recycle: ChannelSender<VideoFrame>,
+    /// Audio chunks; a disconnected channel simply means "no audio".
+    pub audio: Receiver<AudioChunk>,
 }
 
 /// The running sender thread. Stops when dropped.
@@ -34,13 +47,8 @@ pub struct NdiOutput {
 }
 
 impl NdiOutput {
-    /// Creates the NDI source `name` and starts sending frames from `frames`.
-    /// Frames released by the SDK go back through `recycle`.
-    pub fn start(
-        name: &str,
-        frames: Receiver<VideoFrame>,
-        recycle: ChannelSender<VideoFrame>,
-    ) -> Result<Self> {
+    /// Creates the NDI source `name` and starts sending from `inputs`.
+    pub fn start(name: &str, inputs: NdiInputs) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(NdiStats::default());
         // The sender is created on its own thread; it reports success or the
@@ -56,7 +64,7 @@ impl NdiOutput {
                 move || match create_sender(&name) {
                     Ok((sender, source)) => {
                         let _ = ready_tx.send(Ok(source));
-                        run(sender, &frames, &recycle, &stop, &stats);
+                        run(sender, inputs, &stop, &stats);
                     }
                     Err(err) => {
                         let _ = ready_tx.send(Err(err));
@@ -114,29 +122,41 @@ fn create_sender(name: &str) -> Result<(Sender, String)> {
     Ok((sender, source))
 }
 
-fn run(
-    mut sender: Sender,
-    frames: &Receiver<VideoFrame>,
-    recycle: &ChannelSender<VideoFrame>,
-    stop: &AtomicBool,
-    stats: &NdiStats,
-) {
+fn run(mut sender: Sender, inputs: NdiInputs, stop: &AtomicBool, stats: &NdiStats) {
+    let NdiInputs {
+        video,
+        recycle,
+        mut audio,
+    } = inputs;
     let mut last_poll = Instant::now() - CONNECTION_POLL;
     while !stop.load(Ordering::Relaxed) {
-        match frames.recv_timeout(Duration::from_millis(100)) {
-            Ok(frame) => {
-                // With clock_video this blocks until the frame's slot.
-                if let Some(released) = sender.send_video_async(frame) {
-                    // A full pool just means the capture side has enough.
-                    let _ = recycle.try_send(released);
+        select! {
+            recv(video) -> msg => match msg {
+                Ok(frame) => {
+                    // With clock_video this blocks until the frame's slot.
+                    if let Some(released) = sender.send_video_async(frame) {
+                        // A full pool just means the capture side has enough.
+                        let _ = recycle.try_send(released);
+                    }
+                    stats.video_sent.fetch_add(1, Ordering::Relaxed);
                 }
-                stats.video_sent.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                debug!("video channel closed");
-                break;
-            }
+                Err(_) => {
+                    debug!("video channel closed");
+                    break;
+                }
+            },
+            recv(audio) -> msg => match msg {
+                Ok(chunk) => send_audio(&sender, chunk, stats),
+                Err(_) => {
+                    debug!("audio channel closed; continuing without audio");
+                    audio = crossbeam_channel::never();
+                }
+            },
+            default(Duration::from_millis(100)) => {}
+        }
+        // Audio that queued up while a clocked video send was blocking.
+        while let Ok(chunk) = audio.try_recv() {
+            send_audio(&sender, chunk, stats);
         }
 
         if last_poll.elapsed() >= CONNECTION_POLL {
@@ -154,4 +174,23 @@ fn run(
     }
     // Wait until the SDK has released the last async frame before dropping it.
     sender.finish_video_async();
+}
+
+/// Sends one 10 ms chunk. NDI wants planar float; the frame builder converts
+/// from WASAPI's interleaved layout.
+fn send_audio(sender: &Sender, chunk: AudioChunk, stats: &NdiStats) {
+    let frame = AudioFrame::builder()
+        .sample_rate(SAMPLE_RATE as i32)
+        .channels(CHANNELS as i32)
+        .samples(CHUNK_FRAMES as i32)
+        .layout(AudioLayout::Interleaved)
+        .data(chunk.interleaved)
+        .build();
+    match frame {
+        Ok(frame) => {
+            sender.send_audio(&frame);
+            stats.audio_sent.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(err) => warn!(%err, "invalid audio frame"),
+    }
 }

@@ -339,6 +339,49 @@ Versions checked with `cargo info` on 2026-10-17.
 - Privacy finding from that test: a window title containing private text ended up in `lancast.log`.
   **Decision:** titles are logged at debug level only (SPEC §4.5).
 
+---
+
+## M2 – 2026-10-17
+
+### D16. Audio pipeline and results
+- `src/capture/audio_wasapi.rs`: its own thread with `initialize_mta()`, then
+  `new_application_loopback_client(pid, include_tree = true)`. If that fails, it falls back to loopback
+  of the default render device. `--system-audio` forces system loopback, `--no-audio` turns audio off.
+  - Format: 48 kHz / 2 ch / f32, `EventsShared { autoconvert: true, buffer_duration_hns: 0 }` (D7).
+  - Output: continuous 10 ms chunks (480 frames, interleaved), sent to the NDI thread through a bounded
+    channel of 50 (500 ms), dropped when full.
+  - Wall-clock correction: if capture is more than **50 ms** short, it pads with silence; if more than
+    **100 ms** ahead, it trims the oldest samples. Synthesized NDI audio timecodes follow the sample
+    count, so this bounds drift between the device clock and the wall clock.
+  - Peak and RMS per channel and chunk go into atomics (`AudioLevels`) for the M3 meter.
+  - No `unsafe` needed; the `wasapi` crate wraps everything.
+- NDI thread: `crossbeam select!` over video and audio. After a (clocked, blocking) video send it drains
+  the queued audio. Audio goes out via `AudioFrame` with `AudioLayout::Interleaved`, which the crate
+  converts to FLTP.
+- Observation: **system loopback delivers no packets at all while nothing plays** (5.2 s padded in 6 s).
+  Process loopback, by contrast, delivers continuous zero packets (D7). The padding covers both.
+- **Measured: A/V sync** (`ndi_probe --av`, positive = audio late):
+  - Calibration with `ndi_testpattern` (pure NDI): **0.0 ms** by timecode. By arrival, audio comes
+    about 27 ms *before* video; that is NDI's own video pipeline.
+  - End-to-end `av_sync_source` → lancast (process loopback) → probe: **+23 to +40 ms** by timecode
+    (mean +28.4 ms over 16 flashes), +17 to +25 ms by arrival. The source schedules its beep by
+    *playback* time, while loopback captures at mix time.
+  - ITU-R BT.1359 puts the detectability limit for late audio at about 125 ms, so this is imperceptible.
+  - **Decision:** keep the synthesized timecodes.
+  - Possible later improvement if needed: explicit timecodes from QPC on both paths (WGC
+    `SystemRelativeTime`, WASAPI `BufferInfo` QPC timestamp), shifted to UTC.
+- **Measured: isolation** (`av_sync_source --silent` captured by lancast while another process plays
+  `Alarm01.wav`):
+  - `--system-audio`: peak -10 to -16 dBFS, the foreign sound is audible.
+  - Process loopback: **-200 dBFS (digital zero)**, the foreign sound is not in the stream.
+  - This is the technical stand-in for "Discord not audible" (SPEC §8); the Discord test itself remains
+    manual.
+- **Measured: Rocket League:**
+  - Video stays at 59.9–60 fps, and lancast CPU is 10.4 % of the machine, i.e. audio costs practically
+    nothing.
+  - The audio stream was continuous (no padding) but digital silence. Probably the game mutes itself
+    in the background, since it was out of focus during the test. Check by hand with the game focused.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

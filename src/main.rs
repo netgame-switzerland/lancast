@@ -1,8 +1,9 @@
 //! lancast – send a game window as an NDI® source.
 //!
-//! M1: command-line front end; the egui UI follows in M3.
+//! M1/M2: command-line front end; the egui UI follows in M3.
 //!
-//! Usage: `lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor]`
+//! Usage: `lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor]
+//! [--system-audio | --no-audio]`
 //! Without arguments, prints the capturable windows.
 
 use std::{
@@ -15,9 +16,12 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use lancast::{
-    capture::video::{NO_FRAMES_HINT_AFTER, VideoCapture, VideoOptions},
+    capture::{
+        audio_wasapi::{AudioCapture, AudioMode},
+        video::{NO_FRAMES_HINT_AFTER, VideoCapture, VideoOptions},
+    },
     logging,
-    ndi_out::NdiOutput,
+    ndi_out::{NdiInputs, NdiOutput},
     os_caps::{self, OsCaps},
     windows_list::{self, WindowInfo, WindowState},
 };
@@ -27,12 +31,24 @@ use tracing::{debug, error, info, warn};
 /// Two frames in flight to NDI; the pool holds the frames NDI hands back.
 const VIDEO_QUEUE: usize = 2;
 const RECYCLE_POOL: usize = 4;
+/// 500 ms of 10 ms audio chunks.
+const AUDIO_QUEUE: usize = 50;
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
 struct Args {
     target: String,
     name: Option<String>,
     video: VideoOptions,
+    audio: AudioChoice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioChoice {
+    /// Process loopback of the window's process tree, falling back to system audio.
+    Game,
+    /// Force system loopback (everything the default device plays).
+    System,
+    None,
 }
 
 fn main() {
@@ -74,7 +90,39 @@ fn run(log_path: Option<std::path::PathBuf>) -> Result<()> {
 
     let (frame_tx, frame_rx) = crossbeam_channel::bounded(VIDEO_QUEUE);
     let (recycle_tx, recycle_rx) = crossbeam_channel::bounded(RECYCLE_POOL);
-    let ndi = NdiOutput::start(&name, frame_rx, recycle_tx)?;
+    let (audio_tx, audio_rx) = crossbeam_channel::bounded(AUDIO_QUEUE);
+    let ndi = NdiOutput::start(
+        &name,
+        NdiInputs {
+            video: frame_rx,
+            recycle: recycle_tx,
+            audio: audio_rx,
+        },
+    )?;
+    if args.audio == AudioChoice::Game && !caps.process_loopback_documented() {
+        info!(
+            "process loopback is documented from build {}; trying anyway",
+            os_caps::PROCESS_LOOPBACK_BUILD
+        );
+    }
+    let audio = match args.audio {
+        AudioChoice::None => None,
+        choice => {
+            let pid = (choice == AudioChoice::Game).then_some(window.pid);
+            match AudioCapture::start(pid, audio_tx) {
+                Ok(audio) => {
+                    if audio.mode == AudioMode::SystemLoopback && choice == AudioChoice::Game {
+                        warn!("sending SYSTEM audio: other apps (Discord etc.) are audible too");
+                    }
+                    Some(audio)
+                }
+                Err(err) => {
+                    warn!("no audio capture possible, sending video only: {err:#}");
+                    None
+                }
+            }
+        }
+    };
     let capture = VideoCapture::start(window.hwnd, &args.video, &caps, frame_tx, recycle_rx)?;
 
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -85,9 +133,12 @@ fn run(log_path: Option<std::path::PathBuf>) -> Result<()> {
     .context("failed to install the Ctrl-C handler")?;
     info!(source = %ndi.source_name, "sending; press Ctrl-C to stop");
 
-    let reason = supervise(&window, &capture, &ndi, &interrupted);
+    let reason = supervise(&window, &capture, audio.as_ref(), &ndi, &interrupted);
     info!("stopping: {reason}");
     capture.stop()?;
+    if let Some(audio) = audio {
+        audio.stop();
+    }
     ndi.stop();
     info!("stopped");
     Ok(())
@@ -97,6 +148,7 @@ fn run(log_path: Option<std::path::PathBuf>) -> Result<()> {
 fn supervise(
     window: &WindowInfo,
     capture: &VideoCapture,
+    audio: Option<&AudioCapture>,
     ndi: &NdiOutput,
     interrupted: &AtomicBool,
 ) -> &'static str {
@@ -168,6 +220,19 @@ fn supervise(
                 receivers = ndi.stats.connections.load(Ordering::Relaxed),
                 "status"
             );
+            if let Some(audio) = audio {
+                let levels = &audio.levels;
+                info!(
+                    mode = %audio.mode,
+                    peak_db = format!("{:.1}/{:.1}", levels.peak_db(0), levels.peak_db(1)),
+                    rms_db = format!("{:.1}/{:.1}", levels.rms_db(0), levels.rms_db(1)),
+                    chunks_sent = ndi.stats.audio_sent.load(Ordering::Relaxed),
+                    dropped = levels.dropped.load(Ordering::Relaxed),
+                    padded_ms = levels.padded_frames.load(Ordering::Relaxed) / 48,
+                    trimmed_ms = levels.trimmed_frames.load(Ordering::Relaxed) / 48,
+                    "audio"
+                );
+            }
             captured = now_captured;
             sent = now_sent;
         }
@@ -184,8 +249,7 @@ fn default_source_name(window: &WindowInfo) -> String {
         .unwrap_or_else(|| "lancast".to_owned())
 }
 
-const USAGE: &str =
-    "usage: lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor]";
+const USAGE: &str = "usage: lancast <0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH]                      [--border] [--cursor] [--system-audio | --no-audio]";
 
 /// Returns `None` when no target was given.
 fn parse_args() -> Result<Option<Args>> {
@@ -193,6 +257,7 @@ fn parse_args() -> Result<Option<Args>> {
     let mut target = None;
     let mut name = None;
     let mut video = VideoOptions::default();
+    let mut audio = AudioChoice::Game;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
@@ -222,6 +287,8 @@ fn parse_args() -> Result<Option<Args>> {
             }
             "--border" => video.show_border = true,
             "--cursor" => video.capture_cursor = true,
+            "--system-audio" => audio = AudioChoice::System,
+            "--no-audio" => audio = AudioChoice::None,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -235,6 +302,7 @@ fn parse_args() -> Result<Option<Args>> {
         target,
         name,
         video,
+        audio,
     }))
 }
 
