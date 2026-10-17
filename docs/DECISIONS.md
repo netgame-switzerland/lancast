@@ -398,9 +398,20 @@ Versions checked with `cargo info` on 2026-10-17.
   unscaled source level. M4 adds a setting "Receiver level: OBS / NDI Studio Monitor (+20 dB)".
 - Verified: an `av_sync_source` beep at -20 dBFS arrives at `ndi_probe` as 0.0 dB (float 1.0) with
   `--audio-gain-db 20`.
+- **Resolume** may also be the receiver (requirement 2026-10-17). It has no official documentation on NDI
+  audio levels.
+  - Resolume forum posts (about 2016–2024) say NDI audio *input* is not supported: staff "not supported
+    currently", feature ticket; the only audio input is the external FFT input
+    (https://resolume.com/forum/viewtopic.php?t=20627, https://resolume.com/forum/viewtopic.php?t=18627).
+  - The streaming support page (https://resolume.com/support/en/streaming) does not mention audio.
+  - The convention conflict is known elsewhere too (vMix forum,
+    https://forums.vmix.com/posts/t21599-NDI-output---audio-levels-low).
+  - **Open:** check with the current Resolume version whether NDI audio arrives at all, and at which
+    level. If it doesn't, game audio must reach the PA another way (event setup, outside lancast).
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
 - Process loopback on Windows 10: no test machine, so built against the docs (D13).
 - Discord isolation and lip sync: M2.
+- Resolume as receiver: does it accept NDI audio, and at which level convention (D17)?

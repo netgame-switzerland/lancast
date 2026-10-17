@@ -175,8 +175,10 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - Video: `send_video_async` with two `VideoFrame`s alternating (the crate hands the previous frame back once the SDK has released it).
 - Audio: planar float FLTP, 10 ms frames.
 - **Audio level convention (D17).** NDI defines float 1.0 = +4 dBu, with full scale at 10.0 (20 dB headroom); NDI Studio Monitor follows this. OBS + DistroAV passes the floats through unchanged (1.0 = full scale).
-  - Default: unity gain (correct in OBS, the planned receiver).
-  - Setting "Receiver level: OBS (default) / NDI Studio Monitor (+20 dB)", as a config option and in Advanced (M4). CLI: `--audio-gain-db 20`.
+  - Receivers at the party may be OBS + DistroAV, NDI Studio Monitor or **Resolume** (requirement 2026-10-17).
+  - Default: unity gain (correct in OBS + DistroAV).
+  - Setting "Receiver audio level: Unity – OBS/DistroAV (default) / NDI standard +20 dB – Studio Monitor and SDK-compliant apps", as a config option and in Advanced (M4). CLI: `--audio-gain-db 20`.
+  - Resolume: unverified. Its forum says NDI audio input is not supported at all (D17). Measure on site before the event with a known test tone.
 - Timecode: the default `NDIlib_send_timecode_synthesize` (the crate's default).
 - Optional: with 0 receivers, reduce the capture rate (e.g. 5 fps for the preview only) to save CPU.
 - Groups: none set (default "Public"). Receivers such as DistroAV and Studio Monitor only see their configured receive groups; a dedicated group would make the sources invisible to them (D10).
