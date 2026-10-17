@@ -27,6 +27,7 @@ use crate::{
         video::{PreviewSlot, VideoOptions},
     },
     config::{Config, ConfigStore},
+    event_link::EventLink,
     ndi_config::Discovery,
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
@@ -157,6 +158,136 @@ impl LancastApp {
         }
     }
 
+    /// Asks before applying an event link; nothing is applied silently.
+    fn confirm_link(&mut self, ctx: &egui::Context, link: &EventLink) {
+        let mut decision = None;
+        egui::Modal::new(egui::Id::unique("event_link")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            let title = link.event.as_deref().unwrap_or("an event");
+            ui.heading(format!("Apply settings for {title}?"));
+            ui.add_space(6.0);
+            ui.label("An event link wants to set:");
+            egui::Grid::new("link_settings")
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    if let Some(servers) = &link.discovery {
+                        ui.label("NDI discovery server");
+                        ui.strong(if servers.is_empty() {
+                            "automatic (mDNS)"
+                        } else {
+                            servers
+                        });
+                        ui.end_row();
+                    }
+                    if let Some((w, h)) = link.max_size {
+                        ui.label("Max. resolution (limit)");
+                        ui.strong(format!("{w}×{h}"));
+                        ui.end_row();
+                    }
+                    if let Some(fps) = link.max_fps {
+                        ui.label("Max. frame rate (limit)");
+                        ui.strong(format!("{fps} fps"));
+                        ui.end_row();
+                    }
+                    if let Some(gain) = link.audio_gain_db {
+                        ui.label("Receiver level");
+                        ui.strong(if gain == 0.0 {
+                            "Unity (OBS / DistroAV)"
+                        } else {
+                            "NDI standard +20 dB"
+                        });
+                        ui.end_row();
+                    }
+                    if let Some(border) = link.show_border {
+                        ui.label("Show capture border");
+                        ui.strong(if border { "on" } else { "off" });
+                        ui.end_row();
+                    }
+                    if let Some(cursor) = link.capture_cursor {
+                        ui.label("Capture cursor");
+                        ui.strong(if cursor { "on" } else { "off" });
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Only settings are changed; nothing is sent until you click Send.")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        match decision {
+            Some(true) => {
+                self.apply_link(link);
+                self.send(Command::DismissLink);
+            }
+            Some(false) => self.send(Command::DismissLink),
+            None => {}
+        }
+    }
+
+    fn apply_link(&mut self, link: &EventLink) {
+        if let Some(event) = &link.event {
+            self.config.event_name = event.clone();
+        }
+        if let Some(servers) = &link.discovery {
+            self.discovery_server = servers.clone();
+            self.send(Command::CheckDiscovery(servers.clone()));
+        }
+        if let Some((w, h)) = link.max_size {
+            (self.config.event_max_width, self.config.event_max_height) = (Some(w), Some(h));
+        }
+        if let Some(fps) = link.max_fps {
+            self.config.event_max_fps = Some(fps);
+        }
+        if let Some(gain) = link.audio_gain_db {
+            self.settings.audio_gain_db = gain;
+        }
+        if let Some(border) = link.show_border {
+            self.settings.video.show_border = border;
+        }
+        if let Some(cursor) = link.capture_cursor {
+            self.settings.video.capture_cursor = cursor;
+        }
+        self.changed_at = Some(Instant::now());
+    }
+
+    /// The resolutions offered: the presets within the event limit, plus the
+    /// limit itself if it is not a preset.
+    fn allowed_sizes(&self) -> Vec<(u32, u32)> {
+        let fits = |(w, h): (u32, u32)| {
+            self.config.event_max_width.is_none_or(|max| w <= max)
+                && self.config.event_max_height.is_none_or(|max| h <= max)
+        };
+        let mut sizes: Vec<(u32, u32)> = MAX_SIZES.into_iter().filter(|&s| fits(s)).collect();
+        if let (Some(w), Some(h)) = (self.config.event_max_width, self.config.event_max_height)
+            && !sizes.contains(&(w, h))
+        {
+            sizes.push((w, h));
+        }
+        sizes
+    }
+
+    /// Removes the event name, limits and discovery server (after the event).
+    fn leave_event(&mut self) {
+        self.config.event_name.clear();
+        self.config.event_max_width = None;
+        self.config.event_max_height = None;
+        self.config.event_max_fps = None;
+        self.discovery_server.clear();
+        self.changed_at = Some(Instant::now());
+    }
+
     /// Effective discovery choice: own server, else ignore, else system.
     fn discovery(&self) -> Discovery {
         let servers = self.discovery_server.trim();
@@ -240,6 +371,13 @@ impl eframe::App for LancastApp {
             return;
         }
 
+        if let Some(link) = state.pending_link.clone() {
+            self.confirm_link(&ctx, &link);
+        }
+        // Event limits (D27) cap what the user chose.
+        (self.settings.video.fps_cap, self.settings.video.max_size) = self
+            .config
+            .within_event_limits(self.settings.video.fps_cap, self.settings.video.max_size);
         self.settings.discovery = self.discovery();
         self.settings.source_name = crate::config::source_name(&self.user_name, &self.game_name);
         self.sync_config(&ctx);
@@ -576,7 +714,24 @@ impl LancastApp {
             .inner_margin(10.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new("Settings").strong().size(14.0));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Settings").strong().size(14.0));
+                    if !self.config.event_name.is_empty() {
+                        ui.label(
+                            RichText::new(format!("–  Event: {}", self.config.event_name))
+                                .color(Color32::from_rgb(90, 170, 255)),
+                        );
+                        if ui
+                            .small_button("Leave event")
+                            .on_hover_text(
+                                "Removes the event's limits and discovery server (after the event).",
+                            )
+                            .clicked()
+                        {
+                            self.leave_event();
+                        }
+                    }
+                });
                 ui.add_space(4.0);
                 egui::Grid::new("settings")
                     .num_columns(3)
@@ -642,9 +797,12 @@ impl LancastApp {
                                 ui.label("Max. frame rate");
                                 ui.add(
                                     egui::DragValue::new(&mut self.settings.video.fps_cap)
-                                        .range(10..=120)
+                                        .range(10..=self.config.event_max_fps.unwrap_or(120))
                                         .suffix(" fps"),
                                 );
+                                if let Some(fps) = self.config.event_max_fps {
+                                    ui.label(RichText::new(format!("(event limit {fps})")).small().weak());
+                                }
                             });
                         });
                         ui.add_enabled_ui(editable, |ui| {
@@ -654,7 +812,7 @@ impl LancastApp {
                                 egui::ComboBox::from_id_salt("max_size")
                                     .selected_text(format!("{w}×{h}"))
                                     .show_ui(ui, |ui| {
-                                        for size in MAX_SIZES {
+                                        for size in self.allowed_sizes() {
                                             ui.selectable_value(
                                                 &mut self.settings.video.max_size,
                                                 size,
@@ -662,6 +820,11 @@ impl LancastApp {
                                             );
                                         }
                                     });
+                                if let (Some(w), Some(h)) =
+                                    (self.config.event_max_width, self.config.event_max_height)
+                                {
+                                    ui.label(RichText::new(format!("(event limit {w}×{h})")).small().weak());
+                                }
                             });
                         });
                         ui.end_row();

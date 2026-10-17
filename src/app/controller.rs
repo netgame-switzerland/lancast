@@ -15,6 +15,7 @@ use crate::{
         audio_wasapi::{self, AudioLevels, AudioMode, AudioSource},
         video::{PreviewSlot, VideoOptions},
     },
+    event_link::{self, EventLink},
     ndi_config::{self, Discovery},
     os_caps::OsCaps,
     session::{POLL_INTERVAL, Preview, Session, SessionConfig, SessionEvent, SessionStatus},
@@ -94,6 +95,8 @@ pub struct Sending {
 #[derive(Clone)]
 pub struct AppState {
     pub network: NetworkStatus,
+    /// An event link waiting for the user's confirmation (D27).
+    pub pending_link: Option<EventLink>,
     pub caps: OsCaps,
     pub selected: Option<WindowInfo>,
     pub audio_check: AudioCheck,
@@ -120,6 +123,10 @@ pub enum Command {
     SwitchToSystemAudio,
     /// Check whether these discovery servers are reachable (UI setting).
     CheckDiscovery(String),
+    /// An event link (`lancast://…`) to confirm in the UI.
+    OpenLink(String),
+    /// The pending event link was applied or declined.
+    DismissLink,
     Quit,
 }
 
@@ -203,6 +210,20 @@ impl Controller {
             Command::Stop => self.stop("stopped by the user", NoticeLevel::Info),
             Command::SwitchToSystemAudio => self.switch_to_system_audio(),
             Command::CheckDiscovery(servers) => self.check_own_discovery(servers),
+            Command::OpenLink(url) => match event_link::parse(&url) {
+                Ok(link) => {
+                    info!(?link, "event link received");
+                    self.state().pending_link = Some(link);
+                }
+                Err(err) => {
+                    warn!("invalid event link: {err:#}");
+                    self.set_notice(
+                        NoticeLevel::Warning,
+                        &format!("Invalid event link: {err:#}"),
+                    );
+                }
+            },
+            Command::DismissLink => self.state().pending_link = None,
             Command::Quit => {}
         }
         (self.wake)();

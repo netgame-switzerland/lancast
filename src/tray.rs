@@ -12,7 +12,9 @@ use windows::{
         Foundation::{
             CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM,
         },
-        System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
+        System::{
+            DataExchange::COPYDATASTRUCT, LibraryLoader::GetModuleHandleW, Threading::CreateMutexW,
+        },
         UI::{
             Shell::{
                 NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_WARNING,
@@ -25,10 +27,11 @@ use windows::{
                 DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, GetSystemMetrics,
                 GetWindowThreadProcessId, HICON, IsIconic, IsWindowVisible, MF_GRAYED,
                 MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
-                RegisterWindowMessageW, SM_CXSMICON, SW_HIDE, SW_RESTORE, SW_SHOW,
-                SetForegroundWindow, SetMenuDefaultItem, SetTimer, ShowWindow, TPM_NONOTIFY,
-                TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_APP,
-                WM_CONTEXTMENU, WM_DESTROY, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+                RegisterWindowMessageW, SM_CXSMICON, SMTO_ABORTIFHUNG, SW_HIDE, SW_RESTORE,
+                SW_SHOW, SendMessageTimeoutW, SetForegroundWindow, SetMenuDefaultItem, SetTimer,
+                ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+                WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU, WM_COPYDATA, WM_DESTROY, WM_TIMER,
+                WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -73,14 +76,20 @@ impl TrayState {
 }
 
 /// Commands from the tray menu, delivered on the tray thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
     /// The main window was shown (by left click or the menu).
     WindowShown,
     StartSending,
     StopSending,
     Quit,
+    /// An event link (`lancast://…`) forwarded by a second instance.
+    OpenLink(String),
 }
+
+/// Marks our WM_COPYDATA messages (event links).
+const COPYDATA_LINK: usize = 0x4C41_4E43; // "LANC"
+const MAX_LINK_BYTES: u32 = 8192;
 
 enum TrayUpdate {
     State {
@@ -317,6 +326,33 @@ unsafe extern "system" fn wnd_proc(
             }
             WM_TIMER if wparam.0 == WATCH_TIMER => {
                 with_inner(hide_if_minimized);
+                LRESULT(0)
+            }
+            WM_COPYDATA => {
+                // An event link from a second LANcast instance.
+                let data = lparam.0 as *const COPYDATASTRUCT;
+                // SAFETY: for WM_COPYDATA the system guarantees a valid
+                // COPYDATASTRUCT (and data) for the duration of the call.
+                let link = (!data.is_null())
+                    .then(|| &*data)
+                    .filter(|d| d.dwData == COPYDATA_LINK && d.cbData <= MAX_LINK_BYTES)
+                    .filter(|d| !d.lpData.is_null() && d.cbData % 2 == 0)
+                    .map(|d| {
+                        let units = std::slice::from_raw_parts(
+                            d.lpData as *const u16,
+                            d.cbData as usize / 2,
+                        );
+                        String::from_utf16_lossy(units)
+                    });
+                if let Some(link) = link {
+                    with_inner(|inner| {
+                        if let Some(main) = inner.main_window {
+                            show_window(main);
+                        }
+                        (inner.on_command)(TrayCommand::OpenLink(link));
+                    });
+                    return LRESULT(1);
+                }
                 LRESULT(0)
             }
             WM_TRAY_ACTIVATE => {
@@ -689,8 +725,9 @@ fn over(top: [f32; 4], bottom: [f32; 4]) -> [f32; 4] {
 }
 
 /// Claims the single-instance mutex. Returns `false` if another LANcast GUI
-/// already runs; it is then asked to show its window (SPEC §6).
-pub fn claim_single_instance() -> bool {
+/// already runs; it is then asked to show its window and, if given, to open
+/// the event `link` (SPEC §6, D27).
+pub fn claim_single_instance(link: Option<&str>) -> bool {
     // SAFETY: plain Win32 calls; the mutex handle is intentionally kept open
     // for the lifetime of the process.
     unsafe {
@@ -711,7 +748,30 @@ pub fn claim_single_instance() -> bool {
                 GetWindowThreadProcessId(other, Some(&raw mut pid));
                 // Let the other process take the foreground.
                 let _ = AllowSetForegroundWindow(pid);
-                let _ = PostMessageW(Some(other), WM_TRAY_ACTIVATE, WPARAM(0), LPARAM(0));
+                match link {
+                    Some(link) => {
+                        let units: Vec<u16> = link.encode_utf16().collect();
+                        let data = COPYDATASTRUCT {
+                            dwData: COPYDATA_LINK,
+                            cbData: (units.len() * 2) as u32,
+                            lpData: units.as_ptr() as *mut _,
+                        };
+                        // WM_COPYDATA must be sent (not posted); `units`
+                        // lives until the call returns.
+                        SendMessageTimeoutW(
+                            other,
+                            WM_COPYDATA,
+                            WPARAM(0),
+                            LPARAM(&raw const data as isize),
+                            SMTO_ABORTIFHUNG,
+                            3000,
+                            None,
+                        );
+                    }
+                    None => {
+                        let _ = PostMessageW(Some(other), WM_TRAY_ACTIVATE, WPARAM(0), LPARAM(0));
+                    }
+                }
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));

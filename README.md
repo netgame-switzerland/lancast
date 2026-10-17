@@ -65,6 +65,24 @@ LANcast is the participant's side of a simpler setup:
 
 The full specification is in [`docs/SPEC.md`](docs/SPEC.md). Every technical decision, with sources and measurements, is in [`docs/DECISIONS.md`](docs/DECISIONS.md). The icon is described in [`docs/ICON.md`](docs/ICON.md).
 
+## Event links
+Organizers can configure every participant's LANcast with one link on the event website:
+
+```html
+<a href="lancast://config?event=NetGame%202026&discovery=10.0.0.5&max=1280x720&fps=60&level=unity">
+  Configure LANcast for NetGame 2026
+</a>
+```
+
+| Key | Meaning |
+|---|---|
+| `event` | Event name, shown in the settings |
+| `discovery` | The event's NDI Discovery Server ("gateway"), `host[:port]`; empty = automatic (mDNS) |
+| `max`, `fps` | **Limits** that keep the network bandwidth in check; users can only choose lower values |
+| `level`, `border`, `cursor` | **Defaults** (receiver audio level `unity`/`ndi`, capture border, cursor `1`/`0`) |
+
+LANcast shows the settings and asks before applying them; a link never starts sending. "Leave event" in the settings removes them again. The installer registers the `lancast:` scheme; the ZIP version registers it on first start.
+
 ## Requirements
 - **Windows 10 1903 or newer, 64-bit.** Windows 11 is recommended: process loopback (game-only audio) is documented from build 20348.
 - Games should run in **borderless windowed** mode. Exclusive fullscreen may not be captured.

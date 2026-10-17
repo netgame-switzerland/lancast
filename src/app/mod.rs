@@ -20,13 +20,17 @@ use crate::{
 };
 use controller::{AppState, AudioCheck, Command, Controller, NetworkStatus, Wake};
 
-/// Runs the GUI until the user quits. Exits the process.
-pub fn run() -> Result<()> {
-    // One LANcast window per user: a second start shows the first one.
-    if !tray::claim_single_instance() {
+/// Runs the GUI until the user quits. Exits the process. `link` is an event
+/// link from the command line (`lancast://…`, D27).
+pub fn run(link: Option<String>) -> Result<()> {
+    // One LANcast window per user: a second start shows the first one and
+    // hands over the event link.
+    if !tray::claim_single_instance(link.as_deref()) {
         info!("LANcast is already running; showing its window");
         return Ok(());
     }
+    // Event links on websites need the lancast: scheme (per user, no admin).
+    crate::url_scheme::ensure_registered();
 
     let caps = OsCaps::detect();
     info!("{caps}");
@@ -35,6 +39,7 @@ pub fn run() -> Result<()> {
 
     let state = Arc::new(Mutex::new(AppState {
         network: NetworkStatus::default(),
+        pending_link: None,
         caps,
         selected: None,
         audio_check: AudioCheck::Idle,
@@ -68,8 +73,15 @@ pub fn run() -> Result<()> {
             TrayCommand::Quit => {
                 let _ = commands.send(Command::Quit);
             }
+            TrayCommand::OpenLink(url) => {
+                let _ = commands.send(Command::OpenLink(url));
+                wake();
+            }
         }
     })?;
+    if let Some(url) = link {
+        let _ = commands_tx.send(Command::OpenLink(url));
+    }
     tray.set_minimize_to_tray(config.to_tray);
 
     std::thread::Builder::new()

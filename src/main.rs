@@ -14,7 +14,12 @@ use tracing::{error, info};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let gui = args.is_empty();
+    // An event link (lancast://…) from the browser opens the GUI (D27).
+    let link = match args.as_slice() {
+        [arg] if lancast::event_link::is_link(arg) => Some(arg.clone()),
+        _ => None,
+    };
+    let gui = args.is_empty() || link.is_some();
     if !gui {
         attach_parent_console();
     }
@@ -23,7 +28,7 @@ fn main() {
     unsafe { ndi_config::init_before_threads() };
     info!(version = env!("CARGO_PKG_VERSION"), log = ?log_path, gui, "LANcast starting");
 
-    let result = if gui { app::run() } else { cli::run(args) };
+    let result = if gui { app::run(link) } else { cli::run(args) };
     if let Err(err) = result {
         error!("{err:#}");
         std::process::exit(1);

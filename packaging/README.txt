@@ -63,6 +63,14 @@ logs folder" at the bottom of the window). Portable mode: create an empty
 file "LANcast.toml" next to LANcast.exe and LANcast keeps everything there.
 
 
+EVENT LINKS
+-----------
+Organizers may publish a "Configure LANcast" link (lancast://config?...).
+Click it after installing (or after starting LANcast once from the ZIP):
+LANcast shows the event settings (discovery server, resolution limit, ...)
+and asks before applying them. "Leave event" in the settings removes them.
+
+
 TROUBLESHOOTING
 ---------------
 - The central PC does not see my source:

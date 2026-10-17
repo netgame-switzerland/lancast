@@ -252,6 +252,17 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - **Bandwidth:** full NDI at 1080p60 is up to ~132 Mbit/s per source (D6), so a 1 GbE uplink at the central machine carries about 6 such sources.
   - Mitigations: a lower max resolution or FPS cap per participant (config), and the receiver's "Lowest" bandwidth mode for multiview tiles. The latter makes the sender produce an additional low-resolution stream and costs sender CPU.
 
+### 5.4.1 Event links (D27)
+An event website can configure every LANcast with one click:
+
+`lancast://config?event=<name>&discovery=<host[:port],…>&max=<W>x<H>&fps=<N>&level=unity|ndi&border=0|1&cursor=0|1`
+
+- `discovery` sets the event's NDI discovery server (gateway).
+- `max` and `fps` are **limits** the user cannot exceed.
+- The other keys are **defaults**.
+
+LANcast always asks before applying and never starts sending by itself. The settings show the event with a "Leave event" button. The `lancast:` scheme is registered by the installer, or per user by LANcast itself.
+
 ### 5.5 Performance roadmap (GPU)
 - **v1:** WGC (GPU) → CPU readback of BGRA → optional CPU downscale → NDI as BGRX. Measured readback cost: 1–5.6 ms per frame at 2560×1392 (D8).
 - **v2 (M5):** scaling and BGRA→**UYVY** conversion on the GPU (D3D11 pixel/compute shader into a half-width RGBA8 texture), a ring of 2–3 staging textures, then send UYVY.

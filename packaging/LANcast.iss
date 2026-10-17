@@ -79,6 +79,13 @@ Name: "{group}\LANcast"; Filename: "{app}\LANcast.exe"
 Name: "{group}\README"; Filename: "{app}\README.txt"
 Name: "{autodesktop}\LANcast"; Filename: "{app}\LANcast.exe"; Tasks: desktopicon
 
+[Registry]
+; lancast:// event links (D27). HKA = HKLM for all-users installs, HKCU otherwise.
+Root: HKA; Subkey: "Software\Classes\lancast"; ValueType: string; ValueName: ""; ValueData: "URL:LANcast event link"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\lancast"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\lancast\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\LANcast.exe"",0"
+Root: HKA; Subkey: "Software\Classes\lancast\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\LANcast.exe"" ""%1"""
+
 [Run]
 ; Replace an older rule (reinstall/update), then allow inbound connections:
 ; NDI receivers connect to the sender (SPEC §5.4).

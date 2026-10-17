@@ -710,6 +710,46 @@ Versions checked with `cargo info` on 2026-10-17.
   as before.
 - Verified: the receiver sees `MY-PC (<login name> - av_sync_source)`.
 
+### D27. Event links (`lancast://`) (2026-10-18)
+- **Requirement:** an event must hand out the same settings to every participant without anyone
+  typing them in. The settings are the NDI gateway (discovery server), a maximum resolution allowed
+  (bandwidth), and other defaults.
+- **Design:** a link on the event website, e.g.
+  `lancast://config?event=NetGame%202026&discovery=10.0.0.5&max=1280x720&fps=60&level=unity`.
+  - Keys: `event` (display name) and `discovery`.
+  - **Limits** (enforced; the user can only go lower): `max`, `fps`.
+  - **Defaults** (applied once): `level`, `border`, `cursor`.
+  - Unknown keys are ignored; invalid values reject the whole link (no half-applied link). The length
+    is capped at 2 KB, and discovery entries are restricted to plain `host[:port]` characters.
+- **Always confirmed:** a modal dialog lists what the link sets; "Apply" or "Cancel". A link never
+  starts sending, and the system NDI configuration is never touched. So the worst a malicious link can
+  do is propose settings the user sees first.
+- **Registration:**
+  - The installer writes `HKA\Software\Classes\lancast` (HKLM for all users, HKCU per user) and
+    removes it on uninstall.
+  - The ZIP/portable version registers itself in HKCU at startup if no registration exists or the
+    registered exe is gone (`src/url_scheme.rs`; no admin needed).
+- **Delivery to a running LANcast:**
+  - The browser starts `LANcast.exe "lancast://…"`.
+  - That second instance finds the first instance's tray window and sends the link with `WM_COPYDATA`
+    (marker `dwData`, max 8 KB, UTF-16), then exits.
+  - The first instance shows its window and the dialog.
+- **Stored:** `event_name` and `event_max_width/height/fps` in `LANcast.toml`. The settings panel shows
+  "Event: …" with **Leave event**, which removes the name, the limits and the discovery server.
+  - The resolution list offers only presets within the limit (plus the limit itself), and the frame
+    rate is capped.
+- **Verified end to end:**
+  - Starting LANcast registered `lancast:` for the user.
+  - `Start-Process "lancast://config?event=Test%20LAN%202026&discovery=&max=1280x720&fps=30&level=unity&border=1"`
+    started a second instance that handed the link over and exited.
+  - The dialog showed all values; Apply saved the event name and the limits (fps 30, 1280×720).
+  - Leave event removed them.
+- Notes for the event website:
+  - Browsers ask "Open LANcast?" before starting it.
+  - Chat apps (e.g. Discord) usually do not make custom schemes clickable, so link to a web page with
+    the button instead.
+  - Participants must have run LANcast once (ZIP), or installed it.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
