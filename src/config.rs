@@ -47,8 +47,27 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_y: Option<f32>,
     pub window_maximized: bool,
-    /// Last source name per process (lowercase exe name).
+    /// Who is casting; part of the stream name (D26). Defaults to the
+    /// Windows login name.
+    pub user_name: String,
+    /// Last game name per process (lowercase exe name).
     pub source_names: BTreeMap<String, String>,
+}
+
+/// The NDI source name for `user` and `game`: `User - Game` (D26). NDI
+/// prepends the computer name, giving `HOST (User - Game)`. Either part may
+/// be empty.
+pub fn source_name(user: &str, game: &str) -> String {
+    match (user.trim(), game.trim()) {
+        ("", game) => game.to_owned(),
+        (user, "") => user.to_owned(),
+        (user, game) => format!("{user} - {game}"),
+    }
+}
+
+/// The Windows login name, the default user name.
+fn login_name() -> String {
+    std::env::var("USERNAME").unwrap_or_default()
 }
 
 /// Default inner size of the main window, in points.
@@ -74,6 +93,7 @@ impl Default for Config {
             window_x: None,
             window_y: None,
             window_maximized: false,
+            user_name: login_name(),
             source_names: BTreeMap::new(),
         }
     }
@@ -90,6 +110,7 @@ impl Config {
         }
         self.audio_gain_db = self.audio_gain_db.clamp(-40.0, 40.0);
         self.discovery_server = self.discovery_server.trim().to_owned();
+        self.user_name = self.user_name.trim().to_owned();
         let finite_or = |v: f32, default: f32| if v.is_finite() { v } else { default };
         self.window_width =
             finite_or(self.window_width, DEFAULT_WINDOW_SIZE.0).clamp(MIN_WINDOW_SIZE.0, 8000.0);
@@ -205,6 +226,13 @@ mod tests {
         assert!(config.always_on_top);
         assert!(config.to_tray);
         assert_eq!((config.max_width, config.max_height), (1920, 1080));
+    }
+
+    #[test]
+    fn source_name_combines_user_and_game() {
+        assert_eq!(source_name("Kay", "RocketLeague"), "Kay - RocketLeague");
+        assert_eq!(source_name(" ", "RocketLeague"), "RocketLeague");
+        assert_eq!(source_name("Kay", ""), "Kay");
     }
 
     #[test]

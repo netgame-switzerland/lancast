@@ -61,8 +61,11 @@ pub struct LancastApp {
     config: Config,
     store: ConfigStore,
     changed_at: Option<Instant>,
-    /// Process key of the selected window, for remembering source names.
+    /// Process key of the selected window, for remembering game names.
     selected_process: Option<String>,
+    /// Parts of the stream name `User - Game` (D26).
+    user_name: String,
+    game_name: String,
     meter: Meter,
     preview: Option<TextureHandle>,
 }
@@ -99,6 +102,8 @@ impl LancastApp {
             always_on_top: config.always_on_top,
             discovery_server: config.discovery_server.clone(),
             ignore_system_discovery: config.ignore_system_discovery,
+            user_name: config.user_name.clone(),
+            game_name: String::new(),
             config,
             store,
             changed_at: None,
@@ -141,6 +146,7 @@ impl LancastApp {
         config.audio_gain_db = self.settings.audio_gain_db;
         config.discovery_server = self.discovery_server.trim().to_owned();
         config.ignore_system_discovery = self.ignore_system_discovery;
+        config.user_name = self.user_name.trim().to_owned();
         if config != self.config {
             self.config = config;
             self.changed_at = Some(Instant::now());
@@ -165,7 +171,7 @@ impl LancastApp {
 
     fn select(&mut self, window: WindowInfo) {
         let key = process_key(&window);
-        self.settings.source_name = key
+        self.game_name = key
             .as_ref()
             .and_then(|k| self.config.source_names.get(k).cloned())
             .unwrap_or_else(|| window.default_source_name());
@@ -173,10 +179,10 @@ impl LancastApp {
         self.send(Command::Select(window));
     }
 
-    /// Starts sending and remembers the source name for this game.
+    /// Starts sending and remembers the game name for this game.
     fn start(&mut self, choice: AudioChoice) {
         if let Some(key) = &self.selected_process {
-            let name = self.settings.source_name.trim().to_owned();
+            let name = self.game_name.trim().to_owned();
             self.config.source_names.insert(key.clone(), name);
             self.store.save(&self.config);
         }
@@ -235,6 +241,7 @@ impl eframe::App for LancastApp {
         }
 
         self.settings.discovery = self.discovery();
+        self.settings.source_name = crate::config::source_name(&self.user_name, &self.game_name);
         self.sync_config(&ctx);
         if self.sent_settings.as_ref() != Some(&self.settings) {
             self.sent_settings = Some(self.settings.clone());
@@ -413,21 +420,26 @@ impl LancastApp {
     }
 
     fn source_name(&mut self, ui: &mut egui::Ui, state: &AppState) {
-        ui.horizontal(|ui| {
-            ui.label("Source name:");
-            match &state.sending {
-                Some(sending) => {
-                    ui.label(RichText::new(&sending.source_name).strong());
-                }
-                None => {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.settings.source_name)
-                            .desired_width(180.0),
-                    );
-                    let name = format!("{} ({})", self.machine_name, self.settings.source_name);
-                    ui.label(RichText::new(format!("NDI name: {name}")).weak())
-                        .on_hover_text("NDI adds the computer name in front of the source name.");
-                }
+        ui.horizontal(|ui| match &state.sending {
+            Some(sending) => {
+                ui.label("Stream name:");
+                ui.label(RichText::new(&sending.source_name).strong());
+            }
+            None => {
+                ui.label("Your name:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.user_name)
+                        .hint_text("e.g. your nickname")
+                        .desired_width(130.0),
+                )
+                .on_hover_text("Shown in the stream name so the organizers know who is casting.");
+                ui.add_space(8.0);
+                ui.label("Game:");
+                ui.add(egui::TextEdit::singleline(&mut self.game_name).desired_width(150.0));
+                ui.add_space(8.0);
+                let name = format!("{} ({})", self.machine_name, self.settings.source_name);
+                ui.label(RichText::new(format!("Stream name: {name}")).weak())
+                    .on_hover_text("Computer name (added by NDI), your name and the game.");
             }
         });
     }
@@ -525,9 +537,8 @@ impl LancastApp {
                 }
                 return;
             }
-            let ready = state.selected.is_some()
-                && !self.settings.source_name.trim().is_empty()
-                && state.caps.wgc;
+            let ready =
+                state.selected.is_some() && !self.game_name.trim().is_empty() && state.caps.wgc;
             match &state.audio_check {
                 AudioCheck::Unavailable(_) if state.selected.is_some() => {
                     // No plain "Send" that silently uses system audio (SPEC §3.1).

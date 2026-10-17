@@ -67,7 +67,7 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
      4. Create the capture item from the HWND.
 
      The WGC system picker (`GraphicsCapturePicker`) is not used, because it returns neither the HWND nor the PID.
-3. **Source name**: editable.
+3. **Stream name** = `Hostname (Username - Gamename)` (D26). "Your name" defaults to the Windows login name and is saved; "Game" is proposed from the window and remembered per game. Former wording, still valid for the game part — **Source name**: editable.
    - It is pre-filled with a proposal: the process name without `.exe` (e.g. `war3`). The user may also pick the window title instead.
    - NDI prepends the machine name itself (`MY-PC (war3)`, D4). The UI shows the resulting full name next to the field.
    - The last name used per process is remembered in the config file (§4.6).

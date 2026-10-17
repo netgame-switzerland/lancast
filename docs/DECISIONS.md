@@ -700,6 +700,16 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Unsigned:** SmartScreen warns about the setup as well. Only a code-signing certificate helps (e.g.
   Azure Trusted Signing, or a classic certificate). That is not part of this change.
 
+### D26. User name in the stream name (2026-10-18)
+- **Requirement:** the organizers must see who is casting. The format is **`Hostname (Username - Gamename)`**.
+- NDI prepends the hostname itself (D4), so LANcast sets the source name to `Username - Gamename`
+  (`config::source_name`; with an empty part, only the other one is used).
+- The user name defaults to the Windows login name (`%USERNAME%`), is editable ("Your name"), and is
+  saved globally in `LANcast.toml` (`user_name`).
+- The game name is proposed from the window's process, is editable ("Game"), and is remembered per exe
+  as before.
+- Verified: the receiver sees `MY-PC (Kay - av_sync_source)`.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
