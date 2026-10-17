@@ -37,9 +37,35 @@ side = max(right - left, bottom - top)
 cx, cy = (left + right) // 2, (top + bottom) // 2
 square = source.crop((cx - side // 2, cy - side // 2, cx - side // 2 + side, cy - side // 2 + side))
 
+# Small sizes get a 1 px dark outline: the source's contour is too thin to
+# survive downscaling, and the white controller vanishes on light
+# backgrounds. The shape shrinks by 2 px so the outline is not cut off.
+OUTLINE_MAX = 32
+OUTLINE_COLOR = (20, 22, 28)
+
+
+def outline_opacity(size):
+    # Softer at 32 px, closer to the source contour at 48 px.
+    return 0.45 if size >= 32 else 0.6
+
+
+def render(size):
+    if size > OUTLINE_MAX:
+        return square.resize((size, size), Image.Resampling.LANCZOS)
+    shape = square.resize((size - 2, size - 2), Image.Resampling.LANCZOS)
+    padded = Image.new("RGBA", (size, size))
+    padded.paste(shape, (1, 1))
+    ring = padded.getchannel("A").filter(ImageFilter.MaxFilter(3))
+    opacity = outline_opacity(size)
+    icon = Image.new("RGBA", (size, size), OUTLINE_COLOR + (0,))
+    icon.putalpha(Image.eval(ring, lambda v: int(v * opacity)))
+    icon.alpha_composite(padded)
+    return icon
+
+
 for size in PNG_SIZES:
-    square.resize((size, size), Image.Resampling.LANCZOS).save(ASSETS / f"icon-{size}.png", optimize=True)
-square.resize((256, 256), Image.Resampling.LANCZOS).save(
-    ASSETS / "LANcast.ico", sizes=[(s, s) for s in ICO_SIZES]
-)
+    render(size).save(ASSETS / f"icon-{size}.png", optimize=True)
+# The .ico gets the same per-size renderings (the writer picks frames by size).
+frames = [render(s) for s in ICO_SIZES]
+frames[-1].save(ASSETS / "LANcast.ico", sizes=[(s, s) for s in ICO_SIZES], append_images=frames[:-1])
 print("icons written to", ASSETS)
