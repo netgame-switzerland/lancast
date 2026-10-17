@@ -174,6 +174,16 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - Caveat shown in the UI: with a discovery server set, the sender **stops announcing via mDNS**, so receivers must use the same server.
   - The server ships with NDI Tools / the NDI SDK (`NDI Discovery Service.exe`) and runs on the central machine or any server.
 - Alternative without a server, configured on the receiver: "Extra IPs" in NDI Access Manager on the central machine. Documented in the README only.
+- **Stale system discovery-server check (D14).** At startup, lancast reads the system-wide `C:\ProgramData\NDI\ndi-config.v1.json` (written by NDI Access Manager). If `ndi.networks.discovery` is set:
+  1. Test each listed server with a TCP connect to `ip:port` (default 5959, timeout ~1 s, in the background so the UI is not blocked).
+  2. **Unreachable:** show a warning: "A discovery server (10.0.18.19) is configured in NDI Access Manager but cannot be reached. Your source will be invisible to receivers using mDNS."
+     - Offer **"Ignore for lancast"**. It writes lancast's own `ndi-config.v1.json` (§5.4) with the discovery server cleared, so the sender uses mDNS again, and sets `NDI_CONFIG_DIR` to it.
+     - The system file is **never** modified.
+     - The choice is stored in `lancast.toml`.
+  3. **Reachable:** show an info line "Using discovery server <ip>". Receivers must use the same server.
+  4. If the user set a discovery server in lancast's own Advanced settings, that one wins and the system file is not consulted.
+
+  Also log the effective NDI network configuration (discovery servers, groups, multicast) at startup.
 - **Transport:** NDI 6 default is reliable UDP. Receivers connect to the sender on TCP 5960 and UDP/TCP 5960+.
 - **Firewall:** the sender needs **inbound** access. On first launch, Windows shows the "Allow access" dialog; the participant must allow it for **Private** networks (and check that the LAN is not classified as "Public").
   - The README documents this, including a `netsh advfirewall firewall add rule … program=… dir=in action=allow` command for admins.
@@ -211,7 +221,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - **M1:** video of a selected window (CLI argument PID/HWND) → NDI, including `os_caps` and the capture options (border, cursor) with support checks.
 - **M2:** integrate audio (process loopback + fallback + silence handling); A/V in sync at the receiver. Lip-sync test: YouTube in a browser as the "game", and `ndi_testpattern`'s flash/beep as reference.
 - **M3:** egui UI per §3.1 (window list, source name proposal, preview, audio meter, status, options) and tray icon per §3.2.
-- **M4:** config file, discovery server (§5.4), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
+- **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 
 ## 8. Acceptance criteria

@@ -269,6 +269,21 @@ Versions checked with `cargo info` on 2026-10-17.
 - Border: a user option, default off where supported (requirement 2026-10-17: the border may disturb
   players).
 
+### D14. Stale system-wide discovery server (observed 2026-10-17)
+- Symptom: `ndi_testpattern` ran and logged "NDI source created", but Studio Monitor and the NDI
+  Discovery tool on the same PC showed "No Sources on your network". Firewall rules (inbound allow,
+  Private and Public), the network profile (Private) and the listening ports (TCP 5960/5961) were all fine.
+- Cause: `C:\ProgramData\NDI\ndi-config.v1.json` (last modified 2025-12-06, probably from an earlier
+  event) contained `"networks": {"discovery": "10.0.18.19"}`. The server was unreachable (ping and TCP
+  5959 failed; the LAN is 192.168.1.0/24).
+  - With a discovery server configured, senders skip mDNS (D10), so the source was registered nowhere.
+  - Studio Monitor reads the same file and also looked only at that server.
+- Fix on the test machine: the user cleared the field in NDI Access Manager → Advanced. After that the
+  source was visible.
+- **Decision:** expect the same at LAN parties. Participants bring PCs with leftover NDI settings, and
+  the failure is silent. M4 adds a startup check that warns about unreachable configured servers. It
+  offers a lancast-only override via `NDI_CONFIG_DIR` and never modifies the system file (SPEC §5.4).
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
