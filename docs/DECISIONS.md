@@ -523,7 +523,7 @@ Versions checked with `cargo info` on 2026-10-17.
   - Bottom panels: footer, then controls (source name, status, Send/Stop, Settings).
   - The central panel holds the carousel, and the preview fills the rest at the image's aspect ratio,
     centered, next to the meter, so it scales with the window.
-  - Default window size 700×800, minimum 600×680.
+  - Default window size 1400×800 (width doubled 2026-10-17), minimum 600×680.
   - Settings is a framed `Frame::group` with a 3-column grid (Window / Capture / Video / Audio). The
     "Advanced" fold-out is gone.
 - **Icon v2:** the user's updated design (`Gaming-Streaming-App-Symbol.png`) has **no alpha channel**

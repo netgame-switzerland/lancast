@@ -86,7 +86,7 @@ pub fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("LANcast")
-            .with_inner_size([700.0, 800.0])
+            .with_inner_size([1400.0, 800.0])
             .with_min_inner_size([600.0, 680.0])
             .with_icon(Arc::new(icon)),
         ..Default::default()
