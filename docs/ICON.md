@@ -18,7 +18,7 @@ Rows from the top: idle, casting (glowing red REC dot), casting with system audi
 
 | Output | Used for |
 |---|---|
-| `assets/icon-16.png` … `icon-64.png` | Window icon and tray icon (embedded into the exe, `src/app_icon.rs`). The tray adds a state dot (green / amber / red). |
+| `assets/icon-16.png` … `icon-64.png` | Window icon and tray icon (embedded into the exe, `src/app_icon.rs`). The tray adds the state overlays (red REC dot, amber dot; see above). |
 | `assets/LANcast.ico` (16–256 px) | Icon of `LANcast.exe`, embedded by `build.rs` via `winresource`. |
 | `docs/images/icon-preview-*.png` | The previews on this page. |
 
