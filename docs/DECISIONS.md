@@ -57,8 +57,9 @@ the project root, and the `.gitignore` entry was changed to `/.cargo/config.toml
 - PDF p.18: name "My Video" on machine "MyMachine" → "MyMachine (My Video)". Duplicate names on the same
   machine get a counter.
 - **Measured:** `ndi_testpattern "lancast test"` → `MY-PC (lancast test)`.
-- **Decision:** the default source name is the **process name only** (e.g. `game.exe` → `game`). SPEC §3's
-  `<Hostname> – <process>` would show the hostname twice.
+- **Decision (confirmed 2026-10-17):** the source name is editable in the GUI. The proposed default is the
+  **process name without `.exe`** (e.g. `game.exe` → `game`). The old SPEC proposal `<Hostname> – <process>`
+  would show the hostname twice. The UI shows the resulting full name.
 
 ### D5. NDI license and distribution (SPEC §9, §6)
 Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.pdf` §3, §4.2, §4.3, §6.1,
@@ -176,8 +177,100 @@ Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.p
 - **Measured:** `list_windows` shows exactly the Alt-Tab windows, including minimized ones (marked);
   hidden UWP frames do not appear.
 
+### D10. Discovery, routing and firewall (SPEC §5.4)
+Sources: SDK headers (`Processing.NDI.Send.h` l.36–62, `Processing.NDI.Find.h` l.41–50), *NDI SDK
+Documentation.pdf* (ports table p.11, configuration p.12–14, Discovery Service p.61),
+https://docs.ndi.video/tools/tools-for-windows/studio-monitor, DistroAV `src/ndi-source.cpp` and `src/ndi-finder.cpp`.
+
+- **The sender has no target address.** `NDIlib_send_create_t` has only name, groups and the two clock
+  flags. The sender advertises itself via mDNS (UDP 5353), and receivers connect to it.
+  - In Studio Monitor you pick the source from the ☰ menu (top left) or with a right-click. Its "Web
+    Control URL" is only for remote-controlling the monitor.
+  - In DistroAV the "Source name" dropdown (editable) is filled by a finder with default groups.
+- mDNS only reaches the local segment. For several subnets there are two options:
+  - an **NDI Discovery Server** (`NDI Discovery Service.exe`, ships with the SDK and NDI Tools, TCP 5959)
+  - "extra IPs" on the *receiver's* finder (Access Manager)
+- **Configuring a discovery server on the sender**: the standard SDK has no per-instance API.
+  `send_create_v2` and JSON config are Advanced SDK only ("when using the Advanced NDI SDK … all
+  settings are per instance"). The standard way is `ndi-config.v1.json`:
+  - in `C:\ProgramData\NDI\` (system-wide, written by Access Manager), or
+  - in the folder named by env `NDI_CONFIG_DIR`, read when `NDIlib_initialize` runs.
+
+  Schema: `{"ndi":{"networks":{"discovery":"192.168.1.10"}}}`. "Senders however will avoid using mDNS
+  when a discovery server is configured."
+- **Decision:** lancast writes its own config to `%APPDATA%\lancast\ndi\` and sets `NDI_CONFIG_DIR`
+  before creating `NDI`. The system-wide ProgramData file stays untouched. grafton-ndi 2.0 only calls
+  `NDIlib_send_create`, so this env-var route is the only one available.
+- Transport: NDI 6 defaults to reliable UDP ("5960 and up UDP", one port per process). Source queries
+  use TCP 5960. Multicast is off by default. Receivers connect *to* the sender, so the sender needs
+  inbound firewall access. NDI only adjusts firewall rules itself "where the application has
+  permissions".
+- Groups: `NULL` gives "Public". DistroAV and Studio Monitor search with the default receive groups.
+  **Decision:** set no group of our own (a "lancast" group would be invisible to them).
+- Bandwidth "Lowest" is chosen by the receiver (`NDIlib_recv_bandwidth_lowest`, DistroAV "Bandwidth"
+  property). It needs no sender code. That it costs extra sender CPU is an assumption, not documented;
+  measure it.
+
+### D11. GPU vendor capture SDKs and GPU path (SPEC §5.5)
+- NVIDIA Capture SDK (https://developer.nvidia.com/capture-sdk, v9.0.0 is Linux-only): "NVFBC has been
+  deprecated on Windows 10 and above… Last supported Windows 10 version is 1803". "NvIFR headers and
+  samples are removed from the SDK" (https://developer.nvidia.com/capture-sdk-archive).
+  - NvFBC captured the whole desktop.
+  - NvIFR captured inside the game's D3D device, which would violate the no-injection rule anyway.
+- ShadowPlay / Instant Replay (NVIDIA) and ReLive (AMD) are consumer features with no public API.
+  - The NVIDIA Highlights SDK only lets a *game itself* mark clips, and NVIDIA calls it "a legacy SDK…
+    no longer supported" (https://developer.nvidia.com/highlights).
+- AMD AMF `DisplayCapture` (github.com/GPUOpen-LibrariesAndSDKs/AMF) captures a whole monitor (DXGI
+  output index, Desktop Duplication backend) and only on AMD GPUs.
+- NDI performance recommendations (docs.ndi.video, "Performance"):
+  - "Use UYVY or UYVA color, if possible, as this avoids internal color conversions."
+  - "If the data that you are sending to NDI is on the GPU, and you can have the GPU perform the color
+    conversion before downloading it to system memory, you are likely to find that this has the best
+    performance."
+  - "Sending BGRA or BGRX video will incur a performance penalty."
+  - SpeedHQ *encoding* runs on the CPU; GPU acceleration exists only for decoding.
+- **Decision:** no vendor SDKs. v1 sends BGRX from the CPU readback. v2 (M5) converts BGRA→UYVY plus
+  scaling in a D3D11 shader, with a staging ring, and halves readback traffic. Hardware encoders
+  (NVENC/AMF/QSV) would only matter for NDI|HX via the commercial Advanced SDK.
+
+### D12. UI stack: eframe, tray, preview, meter (SPEC §3)
+Versions checked with `cargo info` on 2026-10-17.
+- **eframe/egui 0.37.0** (MSRV 1.95, winit 0.30). Planned features: `default-features = false,
+  features = ["glow", "default_fonts", "accesskit"]`, because glow is lighter than wgpu for a small
+  tool window. If glow causes problems (egui #7401 reports high CPU use with pure glow), switch to wgpu.
+- **tray-icon 0.26.1** (tauri-apps, menus via the re-exported `muda` 0.21.2). On Windows the tray needs
+  a running event loop on the creating thread, so create it in the eframe creation closure on the main
+  thread (official example `examples/egui.rs` in the tray-icon repo).
+- **Hidden-window pitfall:** a hidden eframe window does not call `update()`, and
+  `ViewportCommand::Visible` cannot reliably re-show it (egui #5096, #3655, #8459; #7776 reports CPU use
+  while hidden).
+  - **Decision:** handle tray and menu events in `set_event_handler` callbacks. Show or hide the window
+    with Win32 `ShowWindow`/`SetForegroundWindow` on the HWND (from `CreationContext` via
+    `raw-window-handle`).
+  - Intercept the close button with `close_requested()` + `ViewportCommand::CancelClose`.
+- Preview: egui has no BGRA image constructor. Downscale and swizzle to `Color32` in one pass on the
+  capture thread, then `TextureHandle::set` at ≤ 15 fps (320×180 ≈ 230 KB, well under 1 ms).
+- Audio meter: no maintained egui crate exists, so paint it with `egui::Painter`. Constants from OBS
+  `frontend/components/VolumeMeter.cpp`:
+  - range −60 dB; warning −20 dB; error −9 dB
+  - peak decay 11.76 dB/s ("20 dB / 1.7 sec"); magnitude integration 0.3 s; peak hold 20 s
+- Exe icon: `winresource` 0.1.34 (maintained fork of `winres`). Tray icon via
+  `tray_icon::Icon::from_rgba` from an embedded PNG.
+- Single instance: named mutex via `windows` (`CreateMutexW` + `ERROR_ALREADY_EXISTS`), no extra crate.
+
+### D13. Minimum Windows version and graceful degradation (SPEC §5.0)
+- Requirement (2026-10-17): Windows 10 is the minimum, and a minimal version should still work on older
+  machines.
+- **Decision:** the minimum is build 18362 (Win10 1903), because `CreateForWindow` exists from there
+  (D8). Everything newer is detected at runtime and degrades (cursor setting 19041, border control
+  20348, process loopback 20348 with system-loopback fallback, `MinUpdateInterval` 26100).
+- Windows 10 paths cannot be tested on our hardware. They are implemented against the documentation,
+  with defensive fallbacks and logging.
+- Border: a user option, default off where supported (requirement 2026-10-17: the border may disturb
+  players).
+
 ### Open items after M0
-- Check visually: test pattern and tone in NDI Studio Monitor (needs NDI Tools on a receiver).
+- Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
-- Process loopback on a real Windows 10 22H2 machine (D7).
+- Process loopback on Windows 10: no test machine, so built against the docs (D13).
 - Discord isolation and lip sync: M2.
