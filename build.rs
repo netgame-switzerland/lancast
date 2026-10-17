@@ -1,5 +1,6 @@
-//! Copies the NDI runtime DLL next to the built binaries so that `lancast.exe`
-//! and the examples start without the NDI Runtime being installed.
+//! Embeds the icon and version info into LANcast.exe, and copies the NDI
+//! runtime DLL next to the built binaries so that LANcast.exe and the
+//! examples start without the NDI Runtime being installed.
 
 use std::{env, fs, path::PathBuf};
 
@@ -8,6 +9,7 @@ const DEFAULT_SDK_DIR: &str = r"C:\Program Files\NDI\NDI 6 SDK";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    embed_exe_resources();
     println!("cargo:rerun-if-env-changed=NDI_SDK_DIR");
 
     let sdk_dir = env::var_os("NDI_SDK_DIR")
@@ -41,5 +43,24 @@ fn main() {
                 dir.display()
             );
         }
+    }
+}
+
+/// Icon and version resource for LANcast.exe (Explorer, taskbar, Alt-Tab).
+fn embed_exe_resources() {
+    println!("cargo:rerun-if-changed=assets/LANcast.ico");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("assets/LANcast.ico")
+        .set("ProductName", "LANcast")
+        .set(
+            "FileDescription",
+            "LANcast – send a game window as an NDI source",
+        )
+        .set("OriginalFilename", "LANcast.exe");
+    if let Err(err) = res.compile() {
+        println!("cargo:warning=failed to embed the exe icon: {err}");
     }
 }

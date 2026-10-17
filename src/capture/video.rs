@@ -48,7 +48,8 @@ impl Default for VideoOptions {
         Self {
             fps_cap: 60,
             max_size: (1920, 1080),
-            show_border: false,
+            // Visible by default so the player sees what is captured (2026-10-17).
+            show_border: true,
             capture_cursor: false,
         }
     }

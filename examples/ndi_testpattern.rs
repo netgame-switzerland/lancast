@@ -45,7 +45,7 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let name = args
         .next()
-        .unwrap_or_else(|| "lancast test pattern".to_owned());
+        .unwrap_or_else(|| "LANcast test pattern".to_owned());
     let seconds: u64 = match args.next() {
         Some(s) => s
             .parse()

@@ -1,11 +1,13 @@
-//! lancast – send a game window and its audio as an NDI® source.
+//! LANcast – send a game window and its audio as an NDI® source.
 //!
-//! Without arguments lancast opens its window (SPEC §3). With arguments it
-//! runs as a command-line tool; see `lancast --help`.
+//! Without arguments LANcast opens its window (SPEC §3). With arguments it
+//! runs as a command-line tool; see `LANcast --help`.
 
 // Release builds are GUI applications without a console window; the CLI
 // attaches to the console it was started from.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The binary is deliberately named "LANcast".
+#![allow(non_snake_case)]
 
 use lancast::{app, cli, logging};
 use tracing::{error, info};
@@ -17,7 +19,7 @@ fn main() {
         attach_parent_console();
     }
     let log_path = logging::init();
-    info!(version = env!("CARGO_PKG_VERSION"), log = ?log_path, gui, "lancast starting");
+    info!(version = env!("CARGO_PKG_VERSION"), log = ?log_path, gui, "LANcast starting");
 
     let result = if gui { app::run() } else { cli::run(args) };
     if let Err(err) = result {

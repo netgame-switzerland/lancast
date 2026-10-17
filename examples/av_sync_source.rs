@@ -137,7 +137,7 @@ fn run_window(duration: Duration) -> Result<()> {
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("lancast_av_sync_source"),
-            w!("lancast A/V sync source"),
+            w!("LANcast A/V sync source"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,

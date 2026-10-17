@@ -1,4 +1,4 @@
-//! Command-line mode (`lancast <0xHWND | PID> [options]`), mainly for testing
+//! Command-line mode (`LANcast <0xHWND | PID> [options]`), mainly for testing
 //! and troubleshooting. The GUI is the default without arguments.
 
 use std::{
@@ -21,8 +21,8 @@ use crate::{
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
-pub const USAGE: &str = "usage: lancast [<0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB]]
-  Without arguments, lancast opens its window. `lancast --list` prints the capturable windows.
+pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB]]
+  Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
   --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +199,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
                     bail!("--max-size is too small");
                 }
             }
-            "--border" => video.show_border = true,
+            "--no-border" => video.show_border = false,
             "--cursor" => video.capture_cursor = true,
             "--system-audio" => audio = AudioChoice::System,
             "--no-audio" => audio = AudioChoice::None,

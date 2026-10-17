@@ -60,7 +60,7 @@ fn main() -> Result<()> {
     let receiver = Receiver::new(
         &ndi,
         &ReceiverOptions::builder(source)
-            .name("lancast probe")
+            .name("LANcast probe")
             .build(),
     )?;
     let start = Instant::now();

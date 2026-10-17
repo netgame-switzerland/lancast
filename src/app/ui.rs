@@ -6,10 +6,11 @@ use std::sync::atomic::Ordering;
 use crossbeam_channel::Sender;
 use eframe::egui::{
     self, Color32, ColorImage, RichText, Sense, TextureHandle, TextureOptions, ViewportCommand,
-    pos2, vec2,
+    WindowLevel, pos2, vec2,
 };
 
 use super::{
+    carousel::Carousel,
     controller::{AppState, AudioCheck, AudioChoice, Command, NoticeLevel, Settings, SharedState},
     meter::Meter,
 };
@@ -17,7 +18,7 @@ use crate::{
     capture::{audio_wasapi::AudioMode, video::VideoOptions},
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
-    windows_list::{self, WindowInfo},
+    windows_list::WindowInfo,
 };
 
 const PREVIEW_SIZE: egui::Vec2 = egui::vec2(320.0, 180.0);
@@ -31,14 +32,14 @@ pub struct LancastApp {
     tray: TrayHandle,
     hwnd: Option<isize>,
     machine_name: String,
-    windows: Vec<WindowInfo>,
+    carousel: Carousel,
     settings: Settings,
     sent_settings: Option<Settings>,
+    /// Closing (×) and minimizing hide the window to the tray (SPEC §3.2).
+    to_tray: bool,
+    always_on_top: bool,
     meter: Meter,
     preview: Option<TextureHandle>,
-    told_about_tray: bool,
-    /// Whether the window dropdown was open in the previous frame.
-    window_list_open: bool,
 }
 
 impl LancastApp {
@@ -48,35 +49,24 @@ impl LancastApp {
         tray: TrayHandle,
         hwnd: Option<isize>,
     ) -> Self {
-        let mut app = Self {
+        Self {
             state,
             commands,
             tray,
             hwnd,
             machine_name: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "THIS-PC".to_owned()),
-            windows: Vec::new(),
+            carousel: Carousel::new(hwnd),
             settings: Settings {
                 source_name: String::new(),
                 video: VideoOptions::default(),
                 audio_gain_db: 0.0,
             },
             sent_settings: None,
+            to_tray: true,
+            always_on_top: false,
             meter: Meter::default(),
             preview: None,
-            told_about_tray: false,
-            window_list_open: false,
-        };
-        app.refresh_windows();
-        app
-    }
-
-    fn refresh_windows(&mut self) {
-        let own_pid = std::process::id();
-        self.windows = windows_list::list_windows()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|w| w.pid != own_pid)
-            .collect();
+        }
     }
 
     fn send(&self, command: Command) {
@@ -87,17 +77,11 @@ impl LancastApp {
         if let Some(sending) = &state.sending {
             sending.preview.enabled.store(false, Ordering::Relaxed);
         }
+        self.carousel.hide();
         if let Some(hwnd) = self.hwnd {
             tray::hide_window(hwnd);
         }
-        if !self.told_about_tray {
-            self.told_about_tray = true;
-            self.tray.notify(
-                "lancast is still running",
-                "It keeps running in the tray. Right-click the tray icon to stop or quit.",
-                false,
-            );
-        }
+        self.tray.hidden_to_tray();
     }
 }
 
@@ -106,10 +90,15 @@ impl eframe::App for LancastApp {
         let ctx = ui.ctx().clone();
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-        // Closing the window hides it to the tray (SPEC §3.2).
+        // × and minimize go to the tray if enabled; otherwise × quits.
         if ctx.input(|i| i.viewport().close_requested()) {
+            if self.to_tray && self.hwnd.is_some() {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                self.hide_to_tray(&state);
+                return;
+            }
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            self.hide_to_tray(&state);
+            self.send(Command::Quit);
             return;
         }
 
@@ -144,18 +133,28 @@ impl eframe::App for LancastApp {
                         .weak(),
                 );
                 ui.hyperlink_to(RichText::new("ndi.video").small(), "https://ndi.video/");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Quit").clicked() {
-                        self.send(Command::Quit);
-                    }
-                });
             });
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            self.window_picker(ui, &state);
-            ui.add_space(6.0);
-            self.preview_and_meter(ui, &state);
+            if state.sending.is_some() {
+                // While sending: what is on air.
+                self.carousel.hide();
+                self.sending_header(ui, &state);
+                ui.add_space(6.0);
+                self.preview_and_meter(ui, &state);
+            } else {
+                // Before sending: pick the window.
+                ui.label(RichText::new("Choose the window of your game:").strong());
+                ui.add_space(4.0);
+                let selected = state.selected.as_ref().map(|w| w.hwnd);
+                if let Some(window) = self.carousel.show(ui, selected) {
+                    self.settings.source_name = window.default_source_name();
+                    self.send(Command::Select(window));
+                }
+                ui.add_space(6.0);
+                self.source_name(ui, &state);
+            }
             ui.add_space(6.0);
             self.audio_and_status(ui, &state);
             ui.add_space(8.0);
@@ -171,76 +170,24 @@ impl eframe::App for LancastApp {
 }
 
 impl LancastApp {
-    fn window_picker(&mut self, ui: &mut egui::Ui, state: &AppState) {
-        let sending = state.sending.is_some();
-        egui::Grid::new("picker")
-            .num_columns(2)
-            .spacing([8.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("Window:");
-                ui.horizontal(|ui| {
-                    let selected_text = state
-                        .selected
-                        .as_ref()
-                        .map_or("Select the game window…".to_owned(), window_label);
-                    ui.add_enabled_ui(!sending, |ui| {
-                        let open = egui::ComboBox::from_id_salt("window")
-                            .selected_text(selected_text)
-                            .width(380.0)
-                            .show_ui(ui, |ui| {
-                                // Games are often started after lancast:
-                                // refresh whenever the list is opened.
-                                if !self.window_list_open {
-                                    self.refresh_windows();
-                                }
-                                let mut chosen = None;
-                                for window in &self.windows {
-                                    let is_selected = state
-                                        .selected
-                                        .as_ref()
-                                        .is_some_and(|s| s.hwnd == window.hwnd);
-                                    if ui
-                                        .selectable_label(is_selected, window_label(window))
-                                        .clicked()
-                                    {
-                                        chosen = Some(window.clone());
-                                    }
-                                }
-                                if let Some(window) = chosen {
-                                    self.settings.source_name = window.default_source_name();
-                                    self.send(Command::Select(window));
-                                }
-                            })
-                            .inner
-                            .is_some();
-                        self.window_list_open = open;
-                        if ui
-                            .button("Refresh")
-                            .on_hover_text("Refresh the window list")
-                            .clicked()
-                        {
-                            self.refresh_windows();
-                        }
-                    });
-                });
-                ui.end_row();
-
-                ui.label("Source name:");
-                ui.horizontal(|ui| {
-                    ui.add_enabled(
-                        !sending,
-                        egui::TextEdit::singleline(&mut self.settings.source_name)
-                            .desired_width(200.0),
-                    );
-                    let name = state.sending.as_ref().map_or_else(
-                        || format!("{} ({})", self.machine_name, self.settings.source_name),
-                        |s| s.source_name.clone(),
-                    );
-                    ui.label(RichText::new(format!("NDI name: {name}")).weak())
-                        .on_hover_text("NDI adds the computer name in front of the source name.");
-                });
-                ui.end_row();
+    fn sending_header(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        if let (Some(window), Some(sending)) = (&state.selected, &state.sending) {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Sending:").strong());
+                ui.label(window_label(window));
             });
+            ui.label(RichText::new(format!("NDI name: {}", sending.source_name)).weak());
+        }
+    }
+
+    fn source_name(&mut self, ui: &mut egui::Ui, _state: &AppState) {
+        ui.horizontal(|ui| {
+            ui.label("Source name:");
+            ui.add(egui::TextEdit::singleline(&mut self.settings.source_name).desired_width(180.0));
+            let name = format!("{} ({})", self.machine_name, self.settings.source_name);
+            ui.label(RichText::new(format!("NDI name: {name}")).weak())
+                .on_hover_text("NDI adds the computer name in front of the source name.");
+        });
     }
 
     fn preview_and_meter(&mut self, ui: &mut egui::Ui, state: &AppState) {
@@ -345,7 +292,7 @@ impl LancastApp {
                     banner(
                         ui,
                         AMBER,
-                        "WARNING: Game-only audio is not available on this system.\nlancast would send ALL system audio – everyone will hear your Discord, music and notifications.",
+                        "WARNING: Game-only audio is not available on this system.\nLANcast would send ALL system audio – everyone will hear your Discord, music and notifications.",
                     );
                     ui.label(RichText::new(reason).small().weak());
                 }
@@ -410,6 +357,35 @@ impl LancastApp {
     fn options(&mut self, ui: &mut egui::Ui, state: &AppState) {
         let editable = state.sending.is_none();
         let caps = state.caps;
+        ui.horizontal(|ui| {
+            if ui
+                .checkbox(&mut self.to_tray, "Close and minimize to tray")
+                .on_hover_text(
+                    "× and minimize hide LANcast to the tray; sending continues.\n\
+                     Quit from the tray icon's menu.",
+                )
+                .changed()
+            {
+                // Minimizing is detected by the tray thread (eframe does not
+                // run the UI for a minimized window).
+                self.tray.set_minimize_to_tray(self.to_tray);
+            }
+            if ui
+                .checkbox(&mut self.always_on_top, "Always on top")
+                .on_hover_text(
+                    "Keeps LANcast visible over your game to check the setup.\n\
+                     Works with borderless windowed games, not exclusive fullscreen.",
+                )
+                .changed()
+            {
+                ui.ctx()
+                    .send_viewport_cmd(ViewportCommand::WindowLevel(if self.always_on_top {
+                        WindowLevel::AlwaysOnTop
+                    } else {
+                        WindowLevel::Normal
+                    }));
+            }
+        });
         ui.add_enabled_ui(editable, |ui| {
             ui.horizontal(|ui| {
                 ui.add_enabled(

@@ -1,6 +1,7 @@
 //! The GUI application (SPEC §3): eframe main window, tray icon and the
 //! controller thread that owns the send session (D18).
 
+mod carousel;
 mod controller;
 mod meter;
 mod ui;
@@ -70,26 +71,27 @@ pub fn run() -> Result<()> {
                 // eframe does not return while its window is hidden, so exit here.
                 tray.exit();
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                info!("lancast exiting");
+                info!("LANcast exiting");
                 std::process::exit(0);
             }
         })?;
 
+    let (side, rgba) = crate::app_icon::icon_rgba(64);
     let icon = egui::IconData {
-        rgba: tray::circle_rgba(64, tray::APP_ICON_COLOR),
-        width: 64,
-        height: 64,
+        rgba,
+        width: side as u32,
+        height: side as u32,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("lancast")
-            .with_inner_size([580.0, 560.0])
+            .with_title("LANcast")
+            .with_inner_size([620.0, 600.0])
             .with_min_inner_size([520.0, 480.0])
             .with_icon(Arc::new(icon)),
         ..Default::default()
     };
     let result = eframe::run_native(
-        "lancast",
+        "LANcast",
         options,
         Box::new(move |cc| {
             let _ = egui_ctx.set(cc.egui_ctx.clone());

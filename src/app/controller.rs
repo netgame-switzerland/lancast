@@ -214,13 +214,13 @@ impl Controller {
                 let audio_error = audio_error.map(|e| format!("{e:#}"));
                 if audio_error.is_some() {
                     self.tray.notify(
-                        "lancast: game audio failed",
-                        "Sending without audio. Open lancast to switch to system audio.",
+                        "LANcast: game audio failed",
+                        "Sending without audio. Open LANcast to switch to system audio.",
                         true,
                     );
                 } else if session.audio_mode() == Some(AudioMode::SystemLoopback) {
                     self.tray.notify(
-                        "lancast is sending ALL system audio",
+                        "LANcast is sending ALL system audio",
                         "Everyone hears your Discord, music and notifications.",
                         true,
                     );
@@ -283,7 +283,7 @@ impl Controller {
                 }
                 drop(state);
                 self.tray.notify(
-                    "lancast is sending ALL system audio",
+                    "LANcast is sending ALL system audio",
                     "Everyone hears your Discord, music and notifications.",
                     true,
                 );
@@ -306,7 +306,7 @@ impl Controller {
             match event {
                 SessionEvent::WindowClosed => {
                     self.tray.notify(
-                        "lancast stopped sending",
+                        "LANcast stopped sending",
                         "The game window was closed.",
                         true,
                     );
@@ -352,7 +352,7 @@ impl Controller {
                 };
                 let (w, h) = s.status.output_size;
                 let tooltip = format!(
-                    "lancast – sending {}{audio}\n{w}×{h} {:.0} fps, {} receivers",
+                    "LANcast – sending {}{audio}\n{w}×{h} {:.0} fps, {} receivers",
                     s.source_name, s.status.send_fps, s.status.receivers
                 );
                 let tray_state = if s.audio_mode == Some(AudioMode::SystemLoopback) {
@@ -368,10 +368,10 @@ impl Controller {
             {
                 (
                     TrayState::Error,
-                    "lancast – stopped (see window)".to_owned(),
+                    "LANcast – stopped (see window)".to_owned(),
                 )
             }
-            None => (TrayState::Idle, "lancast – idle".to_owned()),
+            None => (TrayState::Idle, "LANcast – idle".to_owned()),
         };
         let can_start = state.selected.is_some() && state.audio_check == AudioCheck::GameAudio;
         let sending = state.sending.is_some();

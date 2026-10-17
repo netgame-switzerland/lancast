@@ -1,5 +1,5 @@
-//! `tracing` setup: human-readable output to stdout and to `lancast.log`
-//! next to the exe (the previous run's log is kept as `lancast.prev.log`).
+//! `tracing` setup: human-readable output to stdout and to `LANcast.log`
+//! next to the exe (the previous run's log is kept as `LANcast.prev.log`).
 
 use std::{
     fs::{self, File},
@@ -33,9 +33,9 @@ pub fn init() -> Option<PathBuf> {
 fn open_log_file() -> std::io::Result<(File, PathBuf)> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or(std::io::ErrorKind::NotFound)?;
-    let path = dir.join("lancast.log");
+    let path = dir.join("LANcast.log");
     if path.exists() {
-        let _ = fs::rename(&path, dir.join("lancast.prev.log"));
+        let _ = fs::rename(&path, dir.join("LANcast.prev.log"));
     }
     Ok((File::create(&path)?, path))
 }

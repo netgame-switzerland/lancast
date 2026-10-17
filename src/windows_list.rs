@@ -33,6 +33,8 @@ pub struct WindowInfo {
     /// Executable file name, e.g. `game.exe`. `None` if the process cannot be
     /// queried (e.g. protected processes).
     pub process_name: Option<String>,
+    /// Full path of the executable, for its icon.
+    pub process_path: Option<String>,
     pub class_name: String,
     pub width: i32,
     pub height: i32,
@@ -51,7 +53,7 @@ impl WindowInfo {
             .as_deref()
             .map(|name| name.strip_suffix(".exe").unwrap_or(name).to_owned())
             .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "lancast".to_owned())
+            .unwrap_or_else(|| "LANcast".to_owned())
     }
 }
 
@@ -143,6 +145,7 @@ fn window_info(hwnd: HWND) -> Option<WindowInfo> {
             return None;
         }
 
+        let process_path = process_path(pid);
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &raw mut rect).ok()?;
 
@@ -150,7 +153,8 @@ fn window_info(hwnd: HWND) -> Option<WindowInfo> {
             hwnd: hwnd.0 as isize,
             pid,
             title,
-            process_name: process_name(pid),
+            process_name: process_path.as_deref().and_then(file_name),
+            process_path,
             class_name,
             width: rect.right - rect.left,
             height: rect.bottom - rect.top,
@@ -175,9 +179,15 @@ fn is_cloaked(hwnd: HWND) -> bool {
     result.is_ok() && cloaked != 0
 }
 
-/// Executable name via `PROCESS_QUERY_LIMITED_INFORMATION`, which (unlike
+fn file_name(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// Executable path via `PROCESS_QUERY_LIMITED_INFORMATION`, which (unlike
 /// `PROCESS_VM_READ`) is also granted for elevated processes.
-fn process_name(pid: u32) -> Option<String> {
+fn process_path(pid: u32) -> Option<String> {
     // SAFETY: the handle is closed before returning; the buffer and its size
     // are passed consistently.
     unsafe {
@@ -192,10 +202,7 @@ fn process_name(pid: u32) -> Option<String> {
         );
         let _ = CloseHandle(process);
         result.ok()?;
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        Path::new(&path)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
     }
 }
 

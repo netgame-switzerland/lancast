@@ -465,6 +465,42 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Not verified automatically:** how the Windows toast notifications look (Focus Assist may suppress
   them), the amber tray icon colour, and the tray menu's Start/Stop items. Left for a manual check.
 
+### D19. M3 refinements (2026-10-17): name, carousel, tray behaviour, icon
+- **Name:** the program is called **LANcast**. A `[[bin]] name = "LANcast"` target produces
+  `LANcast.exe` (`#![allow(non_snake_case)]` for the crate name). The window title, tray texts,
+  notifications and `LANcast.log` use the same name. Package, crate and repository stay `lancast`.
+  - Pitfall: NTFS is case-insensitive, so deleting `lancast.exe` also deletes `LANcast.exe`.
+- **Carousel instead of a dropdown** (SPEC §3.1 item 2):
+  - Live thumbnails via DWM (`DwmRegisterThumbnail` / `DwmUpdateThumbnailProperties`), the Alt-Tab
+    mechanism. They are composited by Windows: no CPU cost, and **nothing is sent to the game process**.
+    The alternatives (`PrintWindow` sends WM_PRINT to the target; one WGC frame per window flashes the
+    capture border) were rejected.
+  - Thumbnails are overlays on our window. LANcast computes their destination rectangle in physical
+    pixels (egui points × `pixels_per_point`), clips them to the carousel area and crops the source
+    rectangle accordingly. `DWM_THUMBNAIL_PROPERTIES` is `packed(1)` in windows-rs, as in dwmapi.h.
+  - Icons come from the exe file via `SHGetFileInfoW` → `GetIconInfo` → `GetDIBits`, again without
+    touching the process. Old icons without alpha are treated as opaque.
+  - Testing pitfall: a background process cannot bring a window to the foreground, so screenshots
+    via `CopyFromScreen` showed other windows on top at first. The window is now set topmost for the
+    screenshot. Thumbnails do not appear in `PrintWindow` captures.
+- **Close / minimize to tray (default on), Always on top (default off), no Quit button:**
+  - eframe does not run `App::ui` for a minimized window, so the minimize check in the UI never fired
+    (found by test). The **tray thread now checks `IsIconic` every 250 ms** and hides the window.
+  - With the option off, × quits.
+  - Always on top uses `ViewportCommand::WindowLevel`.
+  - Verified: minimize → hidden; × with the option off → process exits.
+- **Capture border on by default** (user requirement). The CLI flag changes from `--border` to
+  `--no-border`.
+- **Icon:** the user's design (`assets/icon-source.png`). `tools/make_icons.py` (Pillow) crops the
+  transparent margin and produces PNGs at 16–64 px plus a multi-size `LANcast.ico` (16–256).
+  - `build.rs` embeds the .ico and version info with `winresource` 0.1.34. Verified with
+    `ExtractAssociatedIcon` and the `VersionInfo` ProductName.
+  - Window and tray decode the embedded PNGs with `png` 0.18, which is already in the tree through
+    eframe.
+  - The tray state is a coloured dot in the lower right corner instead of the previous coloured circles.
+- Known cosmetic gap: emoji in window titles (e.g. Discord channel names) render as boxes with egui's
+  default fonts.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

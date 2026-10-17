@@ -1,4 +1,6 @@
-# lancast – Specification
+# LANcast – Specification
+
+The product and the program are called **LANcast** (`LANcast.exe`, window and tray titles). The project, repository and crate keep the name `lancast`.
 
 Findings, sources and the reasoning behind decisions are in `docs/DECISIONS.md` (referenced as D<n>).
 
@@ -17,32 +19,40 @@ The app shows a small live preview and an audio level meter, so the participant 
 ## 3. User flow and UI
 
 ### 3.1 Main window (egui)
+Before sending (window picker):
 ```
-┌─ lancast ──────────────────────────────────────────────┐
-│ Window:  [ Warcraft III (war3.exe)            ▼] [⟳]   │
-│ Source name: [ war3            ]  → MY-PC (war3)     │
-│                                                        │
-│ ┌──────────── preview 320×180 ───────────┐  ┌─┐ ┌─┐    │
-│ │                                        │  │█│ │█│ 0  │
-│ │          (live miniview)               │  │█│ │█│-20 │
-│ │                                        │  │█│ │█│-60 │
-│ └────────────────────────────────────────┘  └─┘ └─┘    │
-│                                              L   R     │
-│ Audio: Game only (process loopback)  ● active          │
-│ 1920×1080 · 60.0 fps · 2 receivers                     │
-│                                                        │
-│ [ Send ]   ☐ Show capture border  ☐ Capture cursor     │
-│ ▸ Advanced (discovery server, FPS cap, max resolution) │
+┌─ LANcast ──────────────────────────────────────────────┐
+│ Choose the window of your game:                        │
+│ ┌─┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─┐         │
+│ │<│ │ (live    │ │ (live    │ │ (live    │ │>│         │
+│ │ │ │ thumb)   │ │ thumb)   │ │ thumb)   │ │ │         │
+│ │ │ │▣ Title…  │ │▣ Title…  │ │▣ Title…  │ │ │         │
+│ └─┘ └──────────┘ └──────────┘ └──────────┘ └─┘         │
+│ Source name: [ war3 ]  NDI name: MY-PC (war3)        │
+│ Audio: game only (checked)                             │
+│ [ Send ]                                               │
+│ ☑ Close and minimize to tray   ☐ Always on top         │
+│ ☑ Show capture border          ☐ Capture cursor        │
+│ ▸ Advanced                                             │
+│ NDI® is a registered trademark of Vizrt NDI AB. ndi.video │
 └────────────────────────────────────────────────────────┘
 ```
-1. The participant launches `lancast.exe`. The main window opens and the tray icon appears.
-2. **Window list**: visible top-level windows with title and process name, plus a "Refresh" button. Implementation: `src/windows_list.rs` (D9).
-   1. Enumerate windows with `EnumWindows`.
-   2. Keep visible, non-cloaked, unowned, non-tool windows that have a title.
-   3. Get the PID with `GetWindowThreadProcessId` and the name with `QueryFullProcessImageNameW`.
-   4. Create the capture item from the HWND.
+While sending, the carousel is replaced by the window name, a 320×180 live preview and the L/R audio meter, followed by the status line and "Stop".
 
-   The WGC system picker (`GraphicsCapturePicker`) is not used, because it returns neither the HWND nor the PID.
+1. The participant launches `LANcast.exe`. The main window opens and the tray icon appears.
+2. **Window picker: a carousel like Alt-Tab** (requirement 2026-10-17, D19).
+   - **Tiles:** three are visible; the carousel cycles endlessly left and right (arrows, mouse wheel), with a smooth animation. Each tile shows a **live thumbnail** of the window, the exe's icon, the title and the process name. A click selects the tile and centers it.
+   - **Order:** like Alt-Tab, i.e. Z-order, most recently active first; LANcast's own window is excluded.
+   - **Refresh:** every 2 s. Known windows keep their place, new windows are inserted at the front, and the centered window stays centered.
+   - **Thumbnails:** DWM thumbnails (`DwmRegisterThumbnail`, the Alt-Tab mechanism). They are composited by Windows, cost no CPU and send nothing to the game process (anti-cheat safe).
+   - **Icons:** read from the exe file (`SHGetFileInfo`).
+   - **Window list:** `src/windows_list.rs` (D9).
+     1. Enumerate windows with `EnumWindows`.
+     2. Keep visible, non-cloaked, unowned, non-tool windows that have a title.
+     3. Get the PID with `GetWindowThreadProcessId` and the path with `QueryFullProcessImageNameW`.
+     4. Create the capture item from the HWND.
+
+     The WGC system picker (`GraphicsCapturePicker`) is not used, because it returns neither the HWND nor the PID.
 3. **Source name**: editable.
    - It is pre-filled with a proposal: the process name without `.exe` (e.g. `war3`). The user may also pick the window title instead.
    - NDI prepends the machine name itself (`MY-PC (war3)`, D4). The UI shows the resulting full name next to the field.
@@ -71,18 +81,21 @@ The app shows a small live preview and an audio level meter, so the participant 
    - The meter is only an indicator; there is no volume control in v1.
 7. **Status line**: resolution, FPS actually sent, and the number of connected receivers (`connection_count`).
 8. **Options**:
-   - **Show capture border**: default **off** where the OS allows it. The checkbox is disabled (always on) where the OS does not allow it (§5.1, D8).
+   - **Show capture border**: default **on** (requirement 2026-10-17; the player sees what is captured). It can be turned off where the OS allows it; the checkbox is disabled (always on) where the OS does not allow it (§5.1, D8).
    - **Capture cursor**: default off. It is disabled on systems that cannot turn the cursor off.
    - These options can change only while not sending. Changing them restarts the capture session.
+   - **Close and minimize to tray**: default **on**. When on, both × and minimize hide LANcast to the tray. When off, × quits and minimize behaves normally. There is no separate Quit button; quit from the tray menu, or with × when this option is off.
+   - **Always on top**: default off. Keeps LANcast above the game to check the setup. Works with borderless windowed games only.
 9. **Advanced** (collapsed by default): discovery server (§5.4), FPS cap, max resolution. These are stored in the config.
 10. Footer or About: "NDI® is a registered trademark of Vizrt NDI AB" with a link to https://ndi.video/ (D5).
 
 ### 3.2 Tray icon
-- The tray icon is always present while lancast runs. Its state shows: grey = idle, green = sending game audio (or no audio), **amber = sending SYSTEM audio** (§3.1 item 6), red = error (e.g. the window was closed).
+- The tray icon is always present while LANcast runs. Its state dot shows: none = idle, green = sending game audio (or no audio), **amber = sending SYSTEM audio** (§3.1 item 6), red = error (e.g. the window was closed).
 - Tooltip: `lancast – sending war3 (1920×1080 60 fps, 2 receivers)` or `lancast – idle`.
 - **Left click** shows or hides the main window.
 - **Menu**: `Show window`, `Start sending` / `Stop sending` (Start uses the last selected window), separator, `Quit`.
-- **Closing the main window (×) hides it to the tray.** Only `Quit` (tray or main window) exits. The first time the window is hidden, a tray notification explains this.
+- **× and minimize hide the main window to the tray** while "Close and minimize to tray" is on (the default). `Quit` in the tray menu exits. The first time the window is hidden, a tray notification explains this.
+- **Icon:** the LANcast icon (`assets/icon-source.png`). The state is shown as a small dot in the lower right corner: none = idle, green = sending, amber = sending SYSTEM audio, red = error.
 - Implementation (D18): the tray is lancast's own `Shell_NotifyIconW` icon on a dedicated thread with its own message loop, so it is independent of eframe, which does not paint a hidden window.
   - The send session lives in a controller thread, so stop-on-close, tray state and notifications keep working while the window is hidden.
   - The window is hidden and shown with Win32 `ShowWindow` on the eframe HWND.
@@ -222,7 +235,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - Hardware encoders (NVENC/AMF/QSV): only useful for NDI|HX via the Advanced SDK (v3 at the earliest, with a commercial licence).
 
 ## 6. Distribution
-- Ship `lancast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt` and `EULA.txt` in the same folder, as a ZIP. `build.rs` copies the DLL next to the exe on build (done in M0).
+- Ship `LANcast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt` and `EULA.txt` in the same folder, as a ZIP. `build.rs` copies the DLL next to the exe on build (done in M0).
 - NDI SDK license requirements (verified, D5):
   - The DLL may be redistributed in the app folder.
   - The license file must accompany it.
@@ -230,7 +243,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - An EULA with the clauses from NDI License Agreement §3d.
   - Ship the latest SDK version at release time.
   - "NDI" must not be part of the product name.
-- The exe has an icon (embedded via `winresource`) that the tray also uses.
+- Ship `LANcast.exe`. Its icon and version info are embedded by `build.rs` via `winresource` from `assets/LANcast.ico`. The window and the tray use the pre-scaled `assets/icon-<N>.png`; `tools/make_icons.py` regenerates all of them from `assets/icon-source.png`.
 - The exe is unsigned, so a SmartScreen warning is expected. That is acceptable for a LAN party; note it in the README.
 - Windows Firewall: see §5.4; note it in the README.
 - Single instance: a second launch brings the running instance's window to the front (named mutex + `FindWindowW`).
@@ -249,7 +262,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - The window list refreshes whenever the dropdown is opened.
   - The preview is shown while sending. A preview before sending, to confirm the right window, is a possible later addition.
   - Test switch: env `LANCAST_SIMULATE_NO_PROCESS_LOOPBACK=1` makes process loopback fail, to exercise the Windows 10 warning path.
-- **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, exe icon, release ZIP with README/EULA/license file.
+- **M4:** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for lancast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, release ZIP with README/EULA/license file.
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 
 ## 8. Acceptance criteria

@@ -23,9 +23,9 @@ use windows::{
                 GetMessageW, GetSystemMetrics, HICON, IsIconic, IsWindowVisible, MF_GRAYED,
                 MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
                 RegisterWindowMessageW, SM_CXSMICON, SW_HIDE, SW_RESTORE, SW_SHOW,
-                SetForegroundWindow, SetMenuDefaultItem, ShowWindow, TPM_NONOTIFY, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU,
-                WM_DESTROY, WNDCLASSW, WS_OVERLAPPED,
+                SetForegroundWindow, SetMenuDefaultItem, SetTimer, ShowWindow, TPM_NONOTIFY,
+                TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_APP,
+                WM_CONTEXTMENU, WM_DESTROY, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -36,6 +36,7 @@ const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
 const WM_TRAY_UPDATE: u32 = WM_APP + 2;
 const WM_TRAY_EXIT: u32 = WM_APP + 3;
 const ICON_ID: u32 = 1;
+const WATCH_TIMER: usize = 1;
 /// `NIN_SELECT | NINF_KEY` from shellapi.h (missing in windows-rs).
 const NIN_KEYSELECT: u32 = NIN_SELECT | 0x1;
 
@@ -54,13 +55,13 @@ pub enum TrayState {
 }
 
 impl TrayState {
-    /// Icon color as RGB.
-    fn color(self) -> [u8; 3] {
+    /// Color of the status dot on the icon; no dot when idle.
+    fn dot_color(self) -> Option<[u8; 3]> {
         match self {
-            Self::Idle => [140, 140, 140],
-            Self::Sending => [46, 170, 70],
-            Self::SendingSystemAudio => [235, 160, 0],
-            Self::Error => [215, 50, 50],
+            Self::Idle => None,
+            Self::Sending => Some([60, 200, 90]),
+            Self::SendingSystemAudio => Some([245, 170, 0]),
+            Self::Error => Some([225, 50, 50]),
         }
     }
 }
@@ -89,6 +90,8 @@ enum TrayUpdate {
     },
     MainWindow(isize),
     ShowMainWindow,
+    MinimizeToTray(bool),
+    HiddenToTray,
 }
 
 /// Handle to the tray thread; cheap to clone and usable from any thread.
@@ -120,6 +123,18 @@ impl TrayHandle {
     /// Tells the tray which window to show and hide.
     pub fn set_main_window(&self, hwnd: isize) {
         self.send(TrayUpdate::MainWindow(hwnd));
+    }
+
+    /// Whether minimizing the main window hides it to the tray. eframe does
+    /// not run the UI for a minimized window, so the tray thread watches it.
+    pub fn set_minimize_to_tray(&self, enabled: bool) {
+        self.send(TrayUpdate::MinimizeToTray(enabled));
+    }
+
+    /// Reports that the main window was hidden to the tray; the first time,
+    /// a notification explains where LANcast went.
+    pub fn hidden_to_tray(&self) {
+        self.send(TrayUpdate::HiddenToTray);
     }
 
     pub fn show_main_window(&self) {
@@ -174,6 +189,8 @@ struct Inner {
     can_start: bool,
     sending: bool,
     main_window: Option<isize>,
+    minimize_to_tray: bool,
+    told_about_tray: bool,
     taskbar_created: u32,
 }
 
@@ -205,7 +222,7 @@ fn run(
             Ok(CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 w!("lancast_tray"),
-                w!("lancast tray"),
+                w!("LANcast tray"),
                 WS_OVERLAPPED,
                 0,
                 0,
@@ -232,20 +249,23 @@ fn run(
             TrayState::SendingSystemAudio,
             TrayState::Error,
         ]
-        .map(|state| make_icon(size, state.color()).unwrap_or_default());
+        .map(|state| make_icon(size, state).unwrap_or_default());
         let inner = Inner {
             hwnd: window,
             rx,
             on_command,
             icons,
             state: TrayState::Idle,
-            tooltip: "lancast – idle".to_owned(),
+            tooltip: "LANcast – idle".to_owned(),
             can_start: false,
             sending: false,
             main_window: None,
+            minimize_to_tray: true,
+            told_about_tray: false,
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
         };
         add_icon(&inner);
+        SetTimer(Some(window), WATCH_TIMER, 250, None);
         INNER.with(|cell| *cell.borrow_mut() = Some(inner));
         let _ = ready.send(Ok(window.0 as isize));
 
@@ -287,6 +307,10 @@ unsafe extern "system" fn wnd_proc(
             }
             WM_TRAY_UPDATE => {
                 with_inner(apply_updates);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WATCH_TIMER => {
+                with_inner(hide_if_minimized);
                 LRESULT(0)
             }
             WM_TRAY_EXIT => {
@@ -364,6 +388,8 @@ fn apply_updates(inner: &mut Inner) {
                 let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
             }
             TrayUpdate::MainWindow(hwnd) => inner.main_window = Some(hwnd),
+            TrayUpdate::MinimizeToTray(enabled) => inner.minimize_to_tray = enabled,
+            TrayUpdate::HiddenToTray => tell_about_tray(inner),
             TrayUpdate::ShowMainWindow => {
                 if let Some(main) = inner.main_window {
                     show_window(main);
@@ -372,6 +398,45 @@ fn apply_updates(inner: &mut Inner) {
             }
         }
     }
+}
+
+/// Hides the main window when it was minimized and tray mode is on.
+fn hide_if_minimized(inner: &mut Inner) {
+    let Some(main) = inner.main_window else {
+        return;
+    };
+    if !inner.minimize_to_tray {
+        return;
+    }
+    // SAFETY: querying and hiding a (possibly stale) window.
+    let hidden = unsafe {
+        let main = hwnd(main);
+        if IsIconic(main).as_bool() && IsWindowVisible(main).as_bool() {
+            let _ = ShowWindow(main, SW_HIDE);
+            true
+        } else {
+            false
+        }
+    };
+    if hidden {
+        tell_about_tray(inner);
+    }
+}
+
+fn tell_about_tray(inner: &mut Inner) {
+    if std::mem::replace(&mut inner.told_about_tray, true) {
+        return;
+    }
+    let mut data = base_data(inner.hwnd);
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = NIIF_INFO;
+    copy_wide(&mut data.szInfoTitle, "LANcast is still running");
+    copy_wide(
+        &mut data.szInfo,
+        "It keeps running in the tray. Right-click the tray icon to stop or quit.",
+    );
+    // SAFETY: `data` is a fully initialized NOTIFYICONDATAW.
+    let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
 }
 
 fn icon_for(inner: &Inner) -> HICON {
@@ -456,7 +521,7 @@ fn show_menu(window: HWND) {
     let choice = unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let enabled = |on: bool| if on { MF_STRING } else { MF_STRING | MF_GRAYED };
-        let _ = AppendMenuW(menu, MF_STRING, MENU_SHOW, w!("Show lancast"));
+        let _ = AppendMenuW(menu, MF_STRING, MENU_SHOW, w!("Show LANcast"));
         let _ = AppendMenuW(menu, enabled(can_start), MENU_START, w!("Start sending"));
         let _ = AppendMenuW(menu, enabled(can_stop), MENU_STOP, w!("Stop sending"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -494,48 +559,54 @@ fn show_menu(window: HWND) {
     }
 }
 
-/// An anti-aliased filled circle with a darker rim, as RGBA (`size`×`size`).
-/// Also used for the main window icon.
-pub fn circle_rgba(size: usize, [r, g, b]: [u8; 3]) -> Vec<u8> {
-    let center = (size as f32 - 1.0) / 2.0;
-    let radius = size as f32 / 2.0 - 0.5;
-    let mut rgba = vec![0u8; size * size * 4];
-    for y in 0..size {
-        for x in 0..size {
-            let d = ((x as f32 - center).powi(2) + (y as f32 - center).powi(2)).sqrt();
-            let coverage = (radius - d + 0.5).clamp(0.0, 1.0);
-            if coverage == 0.0 {
-                continue;
-            }
-            // Darken the outer rim for contrast on light taskbars.
-            let shade = if d > radius * 0.8 { 0.7 } else { 1.0 };
-            let px = &mut rgba[(y * size + x) * 4..][..4];
-            px.copy_from_slice(&[
-                (f32::from(r) * shade) as u8,
-                (f32::from(g) * shade) as u8,
-                (f32::from(b) * shade) as u8,
-                (coverage * 255.0) as u8,
-            ]);
-        }
+/// The LANcast icon with a status dot in the lower right corner (none when
+/// idle), as an `HICON` of `size` pixels.
+fn make_icon(size: i32, state: TrayState) -> Result<HICON> {
+    let (side, mut rgba) = crate::app_icon::icon_rgba(size as usize);
+    if let Some(color) = state.dot_color() {
+        draw_dot(&mut rgba, side, color);
     }
-    rgba
-}
-
-/// Icon color for the main window (the "sending" green).
-pub const APP_ICON_COLOR: [u8; 3] = [46, 170, 70];
-
-fn make_icon(size: i32, color: [u8; 3]) -> Result<HICON> {
-    let n = size as usize;
     // CreateIcon wants BGRA with straight alpha.
-    let mut bgra = circle_rgba(n, color);
-    for px in bgra.as_chunks_mut::<4>().0 {
+    for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     // Monochrome AND mask, rows padded to 16 bits; all zero = use alpha.
-    let mask = vec![0u8; n.div_ceil(16) * 2 * n];
+    let mask = vec![0u8; side.div_ceil(16) * 2 * side];
+    let side = side as i32;
     // SAFETY: both buffers match the given size and bit depths.
-    let icon = unsafe { CreateIcon(None, size, size, 1, 32, mask.as_ptr(), bgra.as_ptr())? };
+    let icon = unsafe { CreateIcon(None, side, side, 1, 32, mask.as_ptr(), rgba.as_ptr())? };
     Ok(icon)
+}
+
+/// Paints an anti-aliased dot with a dark ring over the lower right corner.
+fn draw_dot(rgba: &mut [u8], side: usize, [r, g, b]: [u8; 3]) {
+    let radius = side as f32 * 0.24;
+    let ring = (side as f32 * 0.06).max(1.0);
+    let center = side as f32 - radius - ring;
+    for y in 0..side {
+        for x in 0..side {
+            let d = ((x as f32 + 0.5 - center).powi(2) + (y as f32 + 0.5 - center).powi(2)).sqrt();
+            let outer = (radius + ring - d + 0.5).clamp(0.0, 1.0);
+            if outer == 0.0 {
+                continue;
+            }
+            let inner = (radius - d + 0.5).clamp(0.0, 1.0);
+            // Dark ring for contrast, colored fill inside.
+            let color = [
+                f32::from(r) * inner + 15.0 * (1.0 - inner),
+                f32::from(g) * inner + 15.0 * (1.0 - inner),
+                f32::from(b) * inner + 20.0 * (1.0 - inner),
+            ];
+            let px = &mut rgba[(y * side + x) * 4..][..4];
+            let base_alpha = f32::from(px[3]) / 255.0;
+            let alpha = outer + base_alpha * (1.0 - outer);
+            for c in 0..3 {
+                let blended = color[c] * outer + f32::from(px[c]) * base_alpha * (1.0 - outer);
+                px[c] = (blended / alpha.max(1e-6)).round() as u8;
+            }
+            px[3] = (alpha * 255.0).round() as u8;
+        }
+    }
 }
 
 /// Hides a top-level window (the main window when closed to the tray).
