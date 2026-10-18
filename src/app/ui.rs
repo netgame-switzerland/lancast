@@ -853,7 +853,9 @@ impl LancastApp {
                         });
                     }
                     (None, None) => {
-                        ui.label("Audio: off");
+                        // Rows like the one with the activity dot, so the
+                        // layout keeps its height.
+                        ui.horizontal(|ui| ui.label("Audio: off"));
                     }
                 }
                 let s = &sending.status;
@@ -889,7 +891,9 @@ impl LancastApp {
                     ui.label(RichText::new(reason).small().weak());
                 }
                 _ => {
-                    ui.label(RichText::new("Select the window of your game.").weak());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Select the window of your game.").weak())
+                    });
                 }
             },
         }
