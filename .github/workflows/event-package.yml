@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 60
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ inputs.tag }}
 
@@ -64,7 +64,7 @@ jobs:
           Remove-Item (Join-Path $dir "secret.key")
           if ($code -ne 0) { throw "package.ps1 failed" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lancast-event-${{ inputs.environment }}-${{ inputs.tag }}
           path: |
