@@ -13,7 +13,7 @@ use tracing::{info, warn};
 
 use crate::{
     capture::{
-        audio_wasapi::{AudioCapture, AudioChunk, AudioLevels, AudioMode, AudioSource},
+        audio::{AudioCapture, AudioChunk, AudioLevels, AudioMode, AudioSource},
         video::{NO_FRAMES_HINT_AFTER, PreviewSlot, VideoCapture, VideoOptions},
     },
     ndi_out::{NdiInputs, NdiOutput},

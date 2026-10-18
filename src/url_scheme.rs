@@ -2,11 +2,14 @@
 //!
 //! The installer registers it (for all users or per user). The ZIP/portable
 //! version registers itself per user (HKCU, no admin rights) at startup if
-//! no working registration exists.
+//! no working registration exists. Other platforms have no registration
+//! yet (D32).
 
 use std::path::Path;
 
+#[cfg(windows)]
 use tracing::{info, warn};
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::ERROR_SUCCESS,
@@ -18,6 +21,7 @@ use windows::{
     core::{HSTRING, PCWSTR},
 };
 
+#[cfg(windows)]
 use crate::event_link::SCHEME;
 
 /// Where `lancast:` links currently lead.
@@ -55,6 +59,7 @@ pub fn ensure_registered() {
 
 /// Makes `lancast:` links open this copy, for the current user (HKCU wins
 /// over an all-users registration). Returns whether it worked.
+#[cfg(windows)]
 pub fn register_this_copy() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
@@ -74,7 +79,14 @@ pub fn register_this_copy() -> bool {
     ok
 }
 
+/// Not implemented on this platform yet (D32).
+#[cfg(not(windows))]
+pub fn register_this_copy() -> bool {
+    false
+}
+
 /// The open command currently registered (HKCU or HKLM, merged view).
+#[cfg(windows)]
 fn registered_command() -> Option<String> {
     let subkey = HSTRING::from(format!(r"{SCHEME}\shell\open\command"));
     let mut buffer = [0u16; 1024];
@@ -98,6 +110,11 @@ fn registered_command() -> Option<String> {
     Some(String::from_utf16_lossy(&buffer[..len]))
 }
 
+#[cfg(not(windows))]
+fn registered_command() -> Option<String> {
+    None
+}
+
 /// The exe of a `"C:\path\LANcast.exe" "%1"` command.
 fn command_target(command: &str) -> String {
     command
@@ -118,6 +135,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// Writes a string value under HKCU.
+#[cfg(windows)]
 fn set(subkey: &str, name: &str, value: &str) -> bool {
     let subkey = HSTRING::from(subkey);
     let name = HSTRING::from(name);

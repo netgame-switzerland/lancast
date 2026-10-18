@@ -1,37 +1,27 @@
-//! Enumerates capturable top-level windows and maps HWND → PID → process name.
+//! Enumerates capturable top-level windows and maps window → PID → process
+//! name.
 //!
 //! We use our own list instead of the WGC system picker because the picker
 //! does not reveal the HWND and therefore not the PID that process-loopback
 //! audio needs (SPEC §3).
+//!
+//! Backends: Win32 (`win32`); other platforms have a stub with an empty
+//! window list (D32).
 
-use std::{ffi::c_void, path::Path};
+#[cfg(windows)]
+mod win32;
+#[cfg(windows)]
+use win32 as backend;
 
-use windows::{
-    Win32::{
-        Foundation::{CloseHandle, HWND, LPARAM, RECT},
-        Graphics::{
-            Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
-            Gdi::{MONITOR_DEFAULTTONULL, MonitorFromRect},
-        },
-        System::Threading::{
-            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-            QueryFullProcessImageNameW,
-        },
-        UI::HiDpi::GetDpiForSystem,
-        UI::WindowsAndMessaging::{
-            EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-            IsWindowVisible, WS_EX_TOOLWINDOW,
-        },
-    },
-    core::BOOL,
-};
+/// A native top-level window handle: the raw HWND value on Windows. Stored
+/// as an integer so it is `Send`.
+pub type WindowHandle = isize;
 
 /// A capturable top-level window.
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
-    /// Raw HWND value. Stored as an integer so the struct is `Send`.
-    pub hwnd: isize,
+    /// Native window handle (see [`WindowHandle`]).
+    pub hwnd: WindowHandle,
     pub pid: u32,
     pub title: String,
     /// Executable file name, e.g. `game.exe`. `None` if the process cannot be
@@ -46,10 +36,6 @@ pub struct WindowInfo {
 }
 
 impl WindowInfo {
-    pub fn hwnd(&self) -> HWND {
-        HWND(self.hwnd as *mut c_void)
-    }
-
     /// Proposed NDI source name: the process name without `.exe`. NDI
     /// prepends the machine name itself (D4).
     pub fn default_source_name(&self) -> String {
@@ -63,15 +49,10 @@ impl WindowInfo {
 
 /// Returns visible, non-cloaked, unowned top-level windows that have a title,
 /// in Z-order (topmost first).
-pub fn list_windows() -> windows::core::Result<Vec<WindowInfo>> {
-    let mut hwnds: Vec<HWND> = Vec::new();
-    // SAFETY: the callback only runs during this call and receives a pointer to
-    // `hwnds`, which outlives it and is not otherwise accessed meanwhile.
-    unsafe { EnumWindows(Some(collect_hwnd), LPARAM(&raw mut hwnds as isize))? };
+pub fn list_windows() -> anyhow::Result<Vec<WindowInfo>> {
     let filter = process_filter();
-    Ok(hwnds
+    Ok(backend::list_windows()?
         .into_iter()
-        .filter_map(window_info)
         .filter(|w| matches_filter(&filter, w))
         .collect())
 }
@@ -101,10 +82,10 @@ fn matches_filter(filter: &[String], window: &WindowInfo) -> bool {
             .is_some_and(|name| filter.contains(&name.to_lowercase()))
 }
 
-/// Looks up a single window by its raw HWND value, applying the same filters
-/// as [`list_windows`].
-pub fn window_by_hwnd(hwnd: isize) -> Option<WindowInfo> {
-    window_info(HWND(hwnd as *mut c_void))
+/// Looks up a single window by its raw handle, applying the same visibility
+/// rules as [`list_windows`].
+pub fn window_by_hwnd(hwnd: WindowHandle) -> Option<WindowInfo> {
+    backend::window_info(hwnd)
 }
 
 /// Resolves a CLI target: `0x…` (HWND) or a decimal PID (that process's
@@ -131,135 +112,36 @@ pub enum WindowState {
     Gone,
 }
 
-pub fn window_state(hwnd: isize) -> WindowState {
-    let hwnd = HWND(hwnd as *mut c_void);
-    // SAFETY: both calls only query state and accept stale handles.
-    unsafe {
-        if !IsWindow(Some(hwnd)).as_bool() {
-            WindowState::Gone
-        } else if IsIconic(hwnd).as_bool() {
-            WindowState::Minimized
-        } else {
-            WindowState::Normal
-        }
-    }
+pub fn window_state(hwnd: WindowHandle) -> WindowState {
+    backend::window_state(hwnd)
 }
 
 /// Whether the top part of a window at `(x, y)` with `width` (logical
 /// units at the system DPI) lies on a connected monitor; used before
 /// restoring a saved window position.
 pub fn is_on_screen(x: f32, y: f32, width: f32) -> bool {
-    // SAFETY: plain queries; the rectangle is a local.
-    unsafe {
-        let scale = GetDpiForSystem() as f32 / 96.0;
-        // The title bar region must be reachable, not just a corner.
-        let rect = RECT {
-            left: ((x + 40.0) * scale) as i32,
-            top: (y * scale) as i32,
-            right: ((x + (width - 40.0).max(80.0)) * scale) as i32,
-            bottom: ((y + 30.0) * scale) as i32,
-        };
-        !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid()
+    backend::is_on_screen(x, y, width)
+}
+
+/// Stub for platforms without a window list backend yet (D32): no windows.
+#[cfg(not(windows))]
+mod backend {
+    use super::{WindowHandle, WindowInfo, WindowState};
+
+    pub fn list_windows() -> anyhow::Result<Vec<WindowInfo>> {
+        Ok(Vec::new())
     }
-}
 
-unsafe extern "system" fn collect_hwnd(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    // SAFETY: `lparam` is the `&mut Vec<HWND>` passed by `list_windows`.
-    let hwnds = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
-    hwnds.push(hwnd);
-    true.into()
-}
-
-fn window_info(hwnd: HWND) -> Option<WindowInfo> {
-    // SAFETY: all calls below only read window/process state; the HWND may be
-    // stale, in which case the APIs fail and we skip the window.
-    unsafe {
-        if !IsWindowVisible(hwnd).as_bool() || is_cloaked(hwnd) {
-            return None;
-        }
-        // Owned windows are dialogs/popups; tool windows are not in Alt-Tab.
-        if GetWindow(hwnd, GW_OWNER).is_ok_and(|owner| !owner.is_invalid()) {
-            return None;
-        }
-        if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW.0 as isize != 0 {
-            return None;
-        }
-
-        let title = read_utf16(|buf| GetWindowTextW(hwnd, buf), 512);
-        if title.is_empty() {
-            return None;
-        }
-        let class_name = read_utf16(|buf| GetClassNameW(hwnd, buf), 256);
-
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
-        if pid == 0 {
-            return None;
-        }
-
-        let process_path = process_path(pid);
-        let mut rect = RECT::default();
-        GetWindowRect(hwnd, &raw mut rect).ok()?;
-
-        Some(WindowInfo {
-            hwnd: hwnd.0 as isize,
-            pid,
-            title,
-            process_name: process_path.as_deref().and_then(file_name),
-            process_path,
-            class_name,
-            width: rect.right - rect.left,
-            height: rect.bottom - rect.top,
-            minimized: IsIconic(hwnd).as_bool(),
-        })
+    pub fn window_info(_hwnd: WindowHandle) -> Option<WindowInfo> {
+        None
     }
-}
 
-/// Cloaked windows are invisible despite `WS_VISIBLE`, e.g. UWP frames that
-/// are suspended or windows on another virtual desktop.
-fn is_cloaked(hwnd: HWND) -> bool {
-    let mut cloaked = 0u32;
-    // SAFETY: `cloaked` is a valid DWORD out-buffer of the size passed.
-    let result = unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            (&raw mut cloaked).cast(),
-            size_of::<u32>() as u32,
-        )
-    };
-    result.is_ok() && cloaked != 0
-}
-
-fn file_name(path: &str) -> Option<String> {
-    Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-}
-
-/// Executable path via `PROCESS_QUERY_LIMITED_INFORMATION`, which (unlike
-/// `PROCESS_VM_READ`) is also granted for elevated processes.
-fn process_path(pid: u32) -> Option<String> {
-    // SAFETY: the handle is closed before returning; the buffer and its size
-    // are passed consistently.
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buf = [0u16; 1024];
-        let mut len = buf.len() as u32;
-        let result = QueryFullProcessImageNameW(
-            process,
-            PROCESS_NAME_WIN32,
-            windows::core::PWSTR(buf.as_mut_ptr()),
-            &raw mut len,
-        );
-        let _ = CloseHandle(process);
-        result.ok()?;
-        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    pub fn window_state(_hwnd: WindowHandle) -> WindowState {
+        WindowState::Gone
     }
-}
 
-fn read_utf16(read: impl FnOnce(&mut [u16]) -> i32, capacity: usize) -> String {
-    let mut buf = vec![0u16; capacity];
-    let len = read(&mut buf).max(0) as usize;
-    String::from_utf16_lossy(&buf[..len])
+    /// Unknown: let the window manager place the window as saved.
+    pub fn is_on_screen(_x: f32, _y: f32, _width: f32) -> bool {
+        true
+    }
 }

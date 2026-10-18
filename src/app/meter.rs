@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
-use crate::capture::audio_wasapi::{AudioLevels, CHANNELS, SILENCE_DB};
+use crate::capture::audio::{AudioLevels, CHANNELS, SILENCE_DB};
 
 const MIN_DB: f32 = -60.0;
 const WARNING_DB: f32 = -20.0;

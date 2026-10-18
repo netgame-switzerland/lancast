@@ -140,15 +140,16 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
 - **Single sender thread.** One NDI sender thread owns the `Sender` (`send_video_async` needs `&mut`). It runs with `clock_video = true, clock_audio = false` and submits audio from the same thread (D3).
 
 Modules:
-- `src/windows_list.rs`: enumerate and filter windows, map HWND → PID → process name (done in M0)
+- `src/windows_list.rs`: enumerate and filter windows, map HWND → PID → process name (done in M0); Win32 backend in `windows_list/win32.rs`
 - `src/os_caps.rs`: detect the OS build and feature support at startup (§5.0)
-- `src/capture/video.rs`: WGC via `windows-capture`, produces BGRA frames (CPU buffer) and the preview image
-- `src/capture/audio_wasapi.rs`: process loopback via the `wasapi` crate, with fallback to system loopback, and level metering
+- `src/capture/video.rs`: video options, stats, preview and the per-frame pipeline (`FrameSink`: FPS cap, scaling, preview); `video_wgc.rs`: WGC via `windows-capture`, produces BGRA frames (CPU buffer)
+- `src/capture/audio.rs`: audio types and level metering; `audio_wasapi.rs`: process loopback via the `wasapi` crate, with fallback to system loopback
 - `src/ndi_out.rs`: NDI sender, frame conversion, timecode
 - `src/ndi_config.rs`: writes the NDI config JSON for the discovery server (§5.4)
 - `src/app.rs`: egui UI and controller
 - `src/ui/preview.rs`, `src/ui/meter.rs`: preview widget and audio meter
-- `src/tray.rs`: tray icon, menu, show/hide
+- `src/tray.rs`: tray states and icon image; `tray/win32.rs`: tray icon, menu, show/hide
+- Platform split (D32): Windows backends are `cfg(windows)`; other platforms compile against stubs (in the same file, or `src/unsupported/`) that report the feature as unavailable
 - `src/config.rs`: `lancast.toml` next to the exe (FPS cap, max resolution, discovery server, options, source name per process)
 
 ### 4.5 Logging

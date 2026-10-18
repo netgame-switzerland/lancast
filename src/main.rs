@@ -37,6 +37,7 @@ fn main() {
 
 /// Lets a GUI-subsystem exe print to the console it was started from, unless
 /// its output is already redirected.
+#[cfg(windows)]
 fn attach_parent_console() {
     use windows::Win32::System::Console::{
         ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
@@ -50,3 +51,7 @@ fn attach_parent_console() {
         }
     }
 }
+
+/// Only Windows separates GUI and console programs.
+#[cfg(not(windows))]
+fn attach_parent_console() {}

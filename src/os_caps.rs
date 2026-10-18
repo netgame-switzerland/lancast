@@ -1,10 +1,14 @@
 //! Runtime detection of the OS build and of optional capture features
-//! (SPEC §5.0). A missing feature only disables that feature.
+//! (SPEC §5.0). A missing feature only disables that feature. On platforms
+//! without capture backends yet, every feature counts as missing (D32).
 
 use std::fmt;
 
+#[cfg(windows)]
 use windows::Wdk::System::SystemServices::RtlGetVersion;
+#[cfg(windows)]
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+#[cfg(windows)]
 use windows_capture::graphics_capture_api::GraphicsCaptureApi;
 
 /// First build with `IGraphicsCaptureItemInterop::CreateForWindow` (Win10 1903).
@@ -29,6 +33,7 @@ pub struct OsCaps {
 
 impl OsCaps {
     /// Probes the running system. Probe failures count as "not supported".
+    #[cfg(windows)]
     pub fn detect() -> Self {
         let (major, minor, build) = os_version();
         let probe = |result: Result<bool, _>, name: &str| match result {
@@ -58,6 +63,20 @@ impl OsCaps {
         }
     }
 
+    /// No capture backends yet (D32): nothing is supported.
+    #[cfg(not(windows))]
+    pub fn detect() -> Self {
+        Self {
+            major: 0,
+            minor: 0,
+            build: 0,
+            wgc: false,
+            cursor_control: false,
+            border_control: false,
+            min_update_interval: false,
+        }
+    }
+
     /// Process loopback is documented from build 20348 but may work earlier,
     /// so this is only a hint; activation is always attempted (D7).
     pub fn process_loopback_documented(&self) -> bool {
@@ -66,6 +85,16 @@ impl OsCaps {
 }
 
 impl fmt::Display for OsCaps {
+    #[cfg(not(windows))]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (no window or audio capture on this platform yet)",
+            std::env::consts::OS
+        )
+    }
+
+    #[cfg(windows)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -84,6 +113,7 @@ impl fmt::Display for OsCaps {
 
 /// `RtlGetVersion` reports the real version regardless of the exe manifest,
 /// unlike `GetVersionEx`.
+#[cfg(windows)]
 fn os_version() -> (u32, u32, u32) {
     let mut info = OSVERSIONINFOW {
         dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,

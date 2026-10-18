@@ -17,6 +17,10 @@ fn main() {
     let version = version();
     println!("cargo:rustc-env=LANCAST_VERSION={version}");
     embed_exe_resources(&version);
+    // Elsewhere the NDI runtime is a shared library on the loader path.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
     println!("cargo:rerun-if-env-changed=NDI_SDK_DIR");
 
     let sdk_dir = env::var_os("NDI_SDK_DIR")

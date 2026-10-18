@@ -1,20 +1,21 @@
 //! Game audio via WASAPI process loopback, with fallback to system loopback
-//! (SPEC §5.2, D7). Produces a continuous stream of 10 ms interleaved stereo
-//! f32 chunks at 48 kHz, plus peak/RMS levels for the meter.
+//! (SPEC §5.2, D7): the Windows backend of [`super::audio`].
 //!
 //! All COM/WASAPI calls go through the `wasapi` crate; this module needs no
 //! `unsafe` of its own.
 
 use std::{
-    fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
+use super::audio::{
+    AudioChunk, AudioLevels, AudioMode, AudioSource, CHANNELS, CHUNK_FRAMES, SAMPLE_RATE,
+};
 use anyhow::{Context, Result, anyhow};
 use crossbeam_channel::{Sender, TrySendError};
 use tracing::{debug, info, warn};
@@ -23,11 +24,6 @@ use wasapi::{
     WaveFormat,
 };
 
-pub const SAMPLE_RATE: u32 = 48_000;
-pub const CHANNELS: usize = 2;
-/// 10 ms per chunk; about half a 60 fps video frame, as the NDI docs
-/// recommend (D3).
-pub const CHUNK_FRAMES: usize = SAMPLE_RATE as usize / 100;
 const BYTES_PER_FRAME: usize = CHANNELS * 4;
 /// Pad with silence when capture lags the wall clock by more than this
 /// (WASAPI may deliver nothing while the target is silent).
@@ -35,116 +31,9 @@ const MAX_DEFICIT: Duration = Duration::from_millis(50);
 /// Drop samples when capture runs ahead of the wall clock by more than this
 /// (bursts after a stall, or device clock drift), bounding latency.
 const MAX_SURPLUS: Duration = Duration::from_millis(100);
-/// Levels below this count as silence for the "audio active" indicator.
-pub const ACTIVITY_THRESHOLD_DB: f32 = -60.0;
-pub const SILENCE_DB: f32 = -100.0;
-
 /// When set, process loopback fails as on systems without it, so the
 /// fallback and warning paths (Windows 10, D13) can be tested on Windows 11.
 pub const SIMULATE_NO_PROCESS_LOOPBACK: &str = "LANCAST_SIMULATE_NO_PROCESS_LOOPBACK";
-
-/// One 10 ms block of interleaved stereo samples.
-pub struct AudioChunk {
-    pub interleaved: Vec<f32>,
-}
-
-/// What to capture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioSource {
-    /// The process tree of `pid`. With `fallback_to_system`, a failed
-    /// activation switches to system audio with only a log warning (CLI only;
-    /// the GUI must ask first, SPEC §3.1).
-    Process { pid: u32, fallback_to_system: bool },
-    /// Everything the default output device plays.
-    System,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioMode {
-    /// Only the target process tree is captured.
-    ProcessLoopback { pid: u32 },
-    /// Everything the default output device plays (includes Discord etc.).
-    SystemLoopback,
-}
-
-impl fmt::Display for AudioMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ProcessLoopback { pid } => write!(f, "game only (process loopback, PID {pid})"),
-            Self::SystemLoopback => write!(f, "system audio – includes Discord etc."),
-        }
-    }
-}
-
-/// Per-channel levels for the meter: the maximum sample peak since the last
-/// [`AudioLevels::take_peak_db`] (so short peaks between UI frames are not
-/// lost) and the RMS of the latest chunk. The UI applies the ballistics
-/// (SPEC §5.2).
-#[derive(Debug)]
-pub struct AudioLevels {
-    /// Linear peak amplitude as `f32` bits. Non-negative floats order like
-    /// their bit patterns, so `fetch_max` on the bits is a float maximum.
-    peak: [AtomicU32; CHANNELS],
-    rms_db: [AtomicU32; CHANNELS],
-    /// Chunks produced so far; lets readers detect a stalled capture.
-    pub chunks: AtomicU64,
-    /// Chunks dropped because the NDI thread was behind.
-    pub dropped: AtomicU64,
-    /// Silence inserted for gaps, in sample frames.
-    pub padded_frames: AtomicU64,
-    /// Samples discarded to bound latency, in sample frames.
-    pub trimmed_frames: AtomicU64,
-}
-
-impl Default for AudioLevels {
-    fn default() -> Self {
-        let silent = || AtomicU32::new(SILENCE_DB.to_bits());
-        Self {
-            peak: [AtomicU32::new(0), AtomicU32::new(0)],
-            rms_db: [silent(), silent()],
-            chunks: AtomicU64::new(0),
-            dropped: AtomicU64::new(0),
-            padded_frames: AtomicU64::new(0),
-            trimmed_frames: AtomicU64::new(0),
-        }
-    }
-}
-
-impl AudioLevels {
-    /// Maximum peak since the previous call, in dBFS; resets it.
-    pub fn take_peak_db(&self, channel: usize) -> f32 {
-        to_db(f32::from_bits(
-            self.peak[channel].swap(0, Ordering::Relaxed),
-        ))
-    }
-
-    pub fn rms_db(&self, channel: usize) -> f32 {
-        f32::from_bits(self.rms_db[channel].load(Ordering::Relaxed))
-    }
-
-    fn store(&self, interleaved: &[f32]) {
-        for channel in 0..CHANNELS {
-            let (mut peak, mut sum) = (0f32, 0f32);
-            for &s in interleaved.iter().skip(channel).step_by(CHANNELS) {
-                peak = peak.max(s.abs());
-                sum += s * s;
-            }
-            let rms = (sum / (interleaved.len() / CHANNELS) as f32).sqrt();
-            // NaN would break the bit-order trick; treat it as silence.
-            let peak = if peak.is_nan() { 0.0 } else { peak };
-            self.peak[channel].fetch_max(peak.to_bits(), Ordering::Relaxed);
-            self.rms_db[channel].store(to_db(rms).to_bits(), Ordering::Relaxed);
-        }
-    }
-}
-
-fn to_db(amplitude: f32) -> f32 {
-    if amplitude <= 0.0 {
-        SILENCE_DB
-    } else {
-        (20.0 * amplitude.log10()).max(SILENCE_DB)
-    }
-}
 
 /// A running audio capture thread. Stops when dropped.
 pub struct AudioCapture {
@@ -391,28 +280,4 @@ fn run(
 
 fn frames_for(duration: Duration) -> u64 {
     (duration.as_secs_f64() * f64::from(SAMPLE_RATE)) as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn levels_of_full_scale_square_and_silence() {
-        let levels = AudioLevels::default();
-        let mut block = vec![0.0f32; CHUNK_FRAMES * CHANNELS];
-        for (i, s) in block.iter_mut().enumerate() {
-            if i % CHANNELS == 0 {
-                *s = if i % 4 == 0 { 1.0 } else { -1.0 };
-            }
-        }
-        levels.store(&block);
-        assert!(levels.rms_db(0).abs() < 1e-3);
-        assert_eq!(levels.rms_db(1), SILENCE_DB);
-        // A later, quieter chunk does not lower the held peak before it is taken.
-        levels.store(&vec![0.0; CHUNK_FRAMES * CHANNELS]);
-        assert!(levels.take_peak_db(0).abs() < 1e-3);
-        assert_eq!(levels.take_peak_db(0), SILENCE_DB);
-        assert_eq!(levels.take_peak_db(1), SILENCE_DB);
-    }
 }

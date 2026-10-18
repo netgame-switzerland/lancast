@@ -16,7 +16,7 @@ use crossbeam_channel::{Receiver, Sender as ChannelSender, select};
 use grafton_ndi::{AudioFrame, AudioLayout, NDI, Sender, SenderOptions, VideoFrame};
 use tracing::{debug, info, warn};
 
-use crate::capture::audio_wasapi::{AudioChunk, CHANNELS, CHUNK_FRAMES, SAMPLE_RATE};
+use crate::capture::audio::{AudioChunk, CHANNELS, CHUNK_FRAMES, SAMPLE_RATE};
 
 /// NDI defines float 1.0 as +4 dBu (SMPTE reference) and digital full scale
 /// as 10.0, i.e. 20 dB of headroom (SDK docs §21.2). NDI Studio Monitor

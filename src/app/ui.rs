@@ -25,7 +25,7 @@ use super::{
 };
 use crate::{
     capture::{
-        audio_wasapi::{AudioLevels, AudioMode},
+        audio::{AudioLevels, AudioMode},
         video::{PreviewSlot, VideoOptions},
     },
     config::{Config, ConfigStore},

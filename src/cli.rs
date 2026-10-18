@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 use tracing::{debug, info, warn};
 
 use crate::{
-    capture::{audio_wasapi::AudioSource, video::VideoOptions},
-    os_caps::{self, OsCaps},
+    capture::{audio::AudioSource, video::VideoOptions},
+    os_caps::OsCaps,
     session::{POLL_INTERVAL, Session, SessionConfig, SessionEvent},
     windows_list,
 };
@@ -51,11 +51,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
 
     let caps = OsCaps::detect();
     info!("{caps}");
-    if caps.build < os_caps::MIN_BUILD {
+    #[cfg(windows)]
+    if caps.build < crate::os_caps::MIN_BUILD {
         warn!(
             "Windows build {} is older than the supported minimum {} (Windows 10 1903)",
             caps.build,
-            os_caps::MIN_BUILD
+            crate::os_caps::MIN_BUILD
         );
     }
 
@@ -87,7 +88,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     };
     let (mut session, _audio_error) = Session::start(&config, &caps)?;
     if args.audio == AudioChoice::Game
-        && session.audio_mode() == Some(crate::capture::audio_wasapi::AudioMode::SystemLoopback)
+        && session.audio_mode() == Some(crate::capture::audio::AudioMode::SystemLoopback)
     {
         warn!("sending SYSTEM audio: other apps (Discord etc.) are audible too");
     }

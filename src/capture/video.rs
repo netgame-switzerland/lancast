@@ -1,10 +1,14 @@
-//! Window capture via Windows Graphics Capture (`windows-capture`), producing
-//! packed BGRX frames for NDI (SPEC §5.1).
+//! Window video capture (SPEC §5.1): the platform-independent part. Every
+//! backend hands its CPU frames to a [`FrameSink`], which applies the FPS
+//! cap, scales into packed BGRX frames for NDI and feeds the UI preview.
 //!
 //! Frames travel as `grafton_ndi::VideoFrame`s in a closed loop: the capture
 //! thread fills a frame and sends it to the NDI thread, which returns the
 //! frame the SDK has just released. This avoids a per-frame allocation and
 //! any copy beyond the readback itself.
+//!
+//! Backends: Windows Graphics Capture (`video_wgc`); other platforms have a
+//! stub that reports window capture as unavailable (D32).
 
 use std::{
     sync::{
@@ -14,25 +18,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow, bail};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use grafton_ndi::{PixelFormat, VideoFrame};
-use tracing::{info, warn};
-use windows_capture::{
-    capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
-    frame::Frame,
-    graphics_capture_api::InternalCaptureControl,
-    settings::{
-        ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
-        MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
-    },
-    window::Window,
-};
+use tracing::info;
 
 use super::{pacer::Pacer, scale};
-use crate::os_caps::OsCaps;
 
-type HandlerError = Box<dyn std::error::Error + Send + Sync>;
+#[cfg(windows)]
+pub use super::video_wgc::VideoCapture;
+#[cfg(not(windows))]
+pub use unsupported::VideoCapture;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VideoOptions {
@@ -125,122 +120,26 @@ impl PreviewSlot {
     }
 }
 
-/// A running capture session. Stops when dropped.
-pub struct VideoCapture {
-    control: Option<CaptureControl<Handler, HandlerError>>,
-    closed: Arc<AtomicBool>,
-    pub stats: Arc<VideoStats>,
+/// How long the capture may deliver no frames before the UI should suggest
+/// borderless windowed mode (SPEC §5.1).
+pub const NO_FRAMES_HINT_AFTER: Duration = Duration::from_secs(3);
+
+/// Error type of the capture callbacks.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) type SinkError = Box<dyn std::error::Error + Send + Sync>;
+
+/// A captured frame mapped into CPU memory: packed BGRA rows of `pitch`
+/// bytes each.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) trait Readback {
+    /// The pixel data and the row pitch in bytes.
+    fn bgra(&mut self) -> (&[u8], usize);
 }
 
-impl VideoCapture {
-    /// Starts capturing `hwnd`. Options the OS cannot honour fall back to the
-    /// OS default with a warning (SPEC §5.0).
-    pub fn start(
-        hwnd: isize,
-        options: &VideoOptions,
-        caps: &OsCaps,
-        frames: Option<Sender<VideoFrame>>,
-        recycled: Receiver<VideoFrame>,
-        preview: Arc<PreviewSlot>,
-    ) -> Result<Self> {
-        if !caps.wgc {
-            bail!("Windows Graphics Capture is not supported on this system");
-        }
-
-        let cursor = match (caps.cursor_control, options.capture_cursor) {
-            (true, true) => CursorCaptureSettings::WithCursor,
-            (true, false) => CursorCaptureSettings::WithoutCursor,
-            (false, wanted) => {
-                if !wanted {
-                    warn!("this Windows version cannot hide the cursor in captures");
-                }
-                CursorCaptureSettings::Default
-            }
-        };
-        let border = match (caps.border_control, options.show_border) {
-            (true, true) => DrawBorderSettings::WithBorder,
-            (true, false) => DrawBorderSettings::WithoutBorder,
-            (false, wanted) => {
-                if !wanted {
-                    warn!("this Windows version always draws the yellow capture border");
-                }
-                DrawBorderSettings::Default
-            }
-        };
-        let pacer = Pacer::new(options.fps_cap);
-        // Only a coarse prefilter at twice the target rate; the exact cap is the
-        // pacer's job (D8).
-        let interval = if caps.min_update_interval {
-            MinimumUpdateIntervalSettings::Custom(pacer.period() / 2)
-        } else {
-            MinimumUpdateIntervalSettings::Default
-        };
-        info!(?cursor, ?border, ?interval, "capture session settings");
-
-        let stats = Arc::new(VideoStats::default());
-        let closed = Arc::new(AtomicBool::new(false));
-        let config = HandlerConfig {
-            pacer,
-            fps: options.fps_cap,
-            max_size: options.max_size,
-            frames,
-            recycled,
-            stats: stats.clone(),
-            closed: closed.clone(),
-            preview,
-        };
-        let settings = Settings::new(
-            Window::from_raw_hwnd(hwnd as *mut _),
-            cursor,
-            border,
-            SecondaryWindowSettings::Default,
-            interval,
-            DirtyRegionSettings::Default,
-            ColorFormat::Bgra8,
-            config,
-        );
-        let control = Handler::start_free_threaded(settings)
-            .map_err(|e| anyhow!("failed to start window capture: {e}"))?;
-
-        Ok(Self {
-            control: Some(control),
-            closed,
-            stats,
-        })
-    }
-
-    /// False once the window was closed or the capture thread ended.
-    pub fn is_running(&self) -> bool {
-        !self.closed.load(Ordering::Relaxed)
-            && self.control.as_ref().is_some_and(|c| !c.is_finished())
-    }
-
-    pub fn stop(mut self) -> Result<()> {
-        self.stop_inner()
-    }
-
-    fn stop_inner(&mut self) -> Result<()> {
-        let Some(control) = self.control.take() else {
-            return Ok(());
-        };
-        let result = if control.is_finished() {
-            control.wait()
-        } else {
-            control.stop()
-        };
-        result.map_err(|e| anyhow!("window capture ended with an error: {e}"))
-    }
-}
-
-impl Drop for VideoCapture {
-    fn drop(&mut self) {
-        if let Err(err) = self.stop_inner() {
-            warn!(%err, "error while stopping capture");
-        }
-    }
-}
-
-struct HandlerConfig {
+/// The per-frame work shared by all backends: FPS cap, backlog check,
+/// scaling into recycled NDI frames, and the UI preview.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) struct FrameSink {
     pacer: Pacer,
     fps: u32,
     max_size: (u32, u32),
@@ -248,78 +147,71 @@ struct HandlerConfig {
     frames: Option<Sender<VideoFrame>>,
     recycled: Receiver<VideoFrame>,
     stats: Arc<VideoStats>,
-    closed: Arc<AtomicBool>,
     preview: Arc<PreviewSlot>,
-}
-
-struct Handler {
-    config: HandlerConfig,
     /// A frame that could not be sent, kept for reuse.
     spare: Option<VideoFrame>,
     last_size: (u32, u32),
     last_preview: Option<Instant>,
 }
 
-impl Handler {
-    /// Returns a frame of `size` from the recycled pool or a new one.
-    fn frame_for(&mut self, size: (u32, u32)) -> Result<VideoFrame, HandlerError> {
-        let matches = |f: &VideoFrame| (f.width() as u32, f.height() as u32) == size;
-        if let Some(frame) = self.spare.take().filter(matches) {
-            return Ok(frame);
-        }
-        // Frames of an outdated size are dropped here.
-        while let Ok(frame) = self.config.recycled.try_recv() {
-            if matches(&frame) {
-                return Ok(frame);
-            }
-        }
-        let frame = VideoFrame::builder()
-            .resolution(size.0 as i32, size.1 as i32)
-            .pixel_format(PixelFormat::BGRX)
-            .frame_rate(self.config.fps as i32, 1)
-            .aspect_ratio(size.0 as f32 / size.1 as f32)
-            .build()?;
-        Ok(frame)
-    }
-}
-
-impl GraphicsCaptureApiHandler for Handler {
-    type Flags = HandlerConfig;
-    type Error = HandlerError;
-
-    fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            config: ctx.flags,
+#[cfg_attr(not(windows), allow(dead_code))]
+impl FrameSink {
+    pub(super) fn new(
+        pacer: Pacer,
+        options: &VideoOptions,
+        frames: Option<Sender<VideoFrame>>,
+        recycled: Receiver<VideoFrame>,
+        preview: Arc<PreviewSlot>,
+    ) -> Self {
+        Self {
+            pacer,
+            fps: options.fps_cap,
+            max_size: options.max_size,
+            frames,
+            recycled,
+            stats: Arc::new(VideoStats::default()),
+            preview,
             spare: None,
             last_size: (0, 0),
             last_preview: None,
-        })
+        }
     }
 
-    fn on_frame_arrived(
-        &mut self,
-        frame: &mut Frame,
-        control: InternalCaptureControl,
-    ) -> Result<(), Self::Error> {
-        let now = Instant::now();
-        let stats = self.config.stats.clone();
-        // Drop surplus frames before the GPU → CPU readback, which is the cost.
-        if !self.config.pacer.accept(now) {
-            stats.paced_out.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
+    pub(super) fn stats(&self) -> Arc<VideoStats> {
+        self.stats.clone()
+    }
+
+    /// Whether a frame arriving at `now` should be read back at all. Surplus
+    /// frames are dropped here, before the GPU → CPU readback, which is the
+    /// cost.
+    pub(super) fn wants_frame(&mut self, now: Instant) -> bool {
+        if !self.pacer.accept(now) {
+            self.stats.paced_out.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
-        match &self.config.frames {
+        match &self.frames {
             Some(frames) if frames.is_full() => {
-                stats.backlogged.fetch_add(1, Ordering::Relaxed);
-                return Ok(());
+                self.stats.backlogged.fetch_add(1, Ordering::Relaxed);
+                false
             }
             // Preview only: no readback at all while the UI is hidden.
-            None if !self.config.preview.enabled.load(Ordering::Relaxed) => return Ok(()),
-            _ => {}
+            None => self.preview.enabled.load(Ordering::Relaxed),
+            Some(_) => true,
         }
+    }
 
-        let source = (frame.width(), frame.height());
-        let size = scale::fit_size(source, self.config.max_size);
+    /// Processes a frame of `source` size that [`Self::wants_frame`]
+    /// accepted. `readback` maps it into CPU memory; the mapping is released
+    /// as soon as the pixels are copied. Returns `false` once the NDI sender
+    /// is gone and capture should stop.
+    pub(super) fn deliver<R: Readback>(
+        &mut self,
+        source: (u32, u32),
+        now: Instant,
+        readback: impl FnOnce() -> Result<R, SinkError>,
+    ) -> Result<bool, SinkError> {
+        let stats = self.stats.clone();
+        let size = scale::fit_size(source, self.max_size);
         if size != self.last_size {
             info!(
                 source = format!("{}x{}", source.0, source.1),
@@ -328,19 +220,14 @@ impl GraphicsCaptureApiHandler for Handler {
             );
             self.last_size = size;
         }
-        let Some(frames) = self.config.frames.clone() else {
+        let Some(frames) = self.frames.clone() else {
             // Preview only (not sending): straight from the readback to the
             // preview size, without an NDI-sized frame. The pacer already
             // limits this to the preview rate.
-            let mut buffer = frame.buffer()?;
-            let pitch = buffer.row_pitch() as usize;
-            let preview = &self.config.preview;
-            let ((w, h), rgba) = scale::preview_rgba(
-                buffer.as_raw_buffer(),
-                source,
-                pitch,
-                preview.display_size(),
-            );
+            let mut buffer = readback()?;
+            let (data, pitch) = buffer.bgra();
+            let preview = &self.preview;
+            let ((w, h), rgba) = scale::preview_rgba(data, source, pitch, preview.display_size());
             drop(buffer);
             self.last_preview = Some(now);
             preview.put(PreviewImage {
@@ -353,17 +240,17 @@ impl GraphicsCaptureApiHandler for Handler {
             stats.source_width.store(source.0, Ordering::Relaxed);
             stats.source_height.store(source.1, Ordering::Relaxed);
             stats.captured.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
+            return Ok(true);
         };
 
         let mut out = self.frame_for(size)?;
 
-        let mut buffer = frame.buffer()?;
-        let pitch = buffer.row_pitch() as usize;
-        scale::copy_or_scale(buffer.as_raw_buffer(), source, pitch, out.data_mut(), size);
+        let mut buffer = readback()?;
+        let (data, pitch) = buffer.bgra();
+        scale::copy_or_scale(data, source, pitch, out.data_mut(), size);
         drop(buffer);
 
-        let preview = &self.config.preview;
+        let preview = &self.preview;
         if preview.enabled.load(Ordering::Relaxed)
             && self
                 .last_preview
@@ -400,19 +287,69 @@ impl GraphicsCaptureApiHandler for Handler {
             }
             Err(TrySendError::Disconnected(_)) => {
                 info!("NDI sender gone; stopping capture");
-                control.stop();
+                return Ok(false);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
-    fn on_closed(&mut self) -> Result<(), Self::Error> {
-        info!("capture item closed (target window destroyed)");
-        self.config.closed.store(true, Ordering::Relaxed);
-        Ok(())
+    /// Returns a frame of `size` from the recycled pool or a new one.
+    fn frame_for(&mut self, size: (u32, u32)) -> Result<VideoFrame, SinkError> {
+        let matches = |f: &VideoFrame| (f.width() as u32, f.height() as u32) == size;
+        if let Some(frame) = self.spare.take().filter(matches) {
+            return Ok(frame);
+        }
+        // Frames of an outdated size are dropped here.
+        while let Ok(frame) = self.recycled.try_recv() {
+            if matches(&frame) {
+                return Ok(frame);
+            }
+        }
+        let frame = VideoFrame::builder()
+            .resolution(size.0 as i32, size.1 as i32)
+            .pixel_format(PixelFormat::BGRX)
+            .frame_rate(self.fps as i32, 1)
+            .aspect_ratio(size.0 as f32 / size.1 as f32)
+            .build()?;
+        Ok(frame)
     }
 }
 
-/// How long the capture may deliver no frames before the UI should suggest
-/// borderless windowed mode (SPEC §5.1).
-pub const NO_FRAMES_HINT_AFTER: Duration = Duration::from_secs(3);
+/// Stub for platforms without a capture backend yet (D32): starting a
+/// capture fails.
+#[cfg(not(windows))]
+mod unsupported {
+    use std::sync::Arc;
+
+    use anyhow::{Result, bail};
+    use crossbeam_channel::{Receiver, Sender};
+    use grafton_ndi::VideoFrame;
+
+    use super::{PreviewSlot, VideoOptions, VideoStats};
+    use crate::{os_caps::OsCaps, windows_list::WindowHandle};
+
+    pub struct VideoCapture {
+        pub stats: Arc<VideoStats>,
+    }
+
+    impl VideoCapture {
+        pub fn start(
+            _window: WindowHandle,
+            _options: &VideoOptions,
+            _caps: &OsCaps,
+            _frames: Option<Sender<VideoFrame>>,
+            _recycled: Receiver<VideoFrame>,
+            _preview: Arc<PreviewSlot>,
+        ) -> Result<Self> {
+            bail!("window capture is not supported on this platform yet")
+        }
+
+        pub fn is_running(&self) -> bool {
+            false
+        }
+
+        pub fn stop(self) -> Result<()> {
+            Ok(())
+        }
+    }
+}

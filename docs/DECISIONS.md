@@ -928,6 +928,68 @@ Versions checked with `cargo info` on 2026-10-17.
   which runs `package.ps1` without `-Release` and uploads the ZIP and setup as a workflow artifact.
   Nothing is tagged or published.
 
+### D32. Platform split: portable core, Windows backends, stubs elsewhere (2026-10-18)
+- **Goal:** first step towards a Linux version. The tree must type-check for
+  `x86_64-unknown-linux-gnu`, with no change in behavior on Windows. No Linux backends yet.
+- **Pattern:** backends are chosen at compile time with `#[cfg(windows)]`, not via traits. A build
+  only ever has one backend, so dynamic dispatch gains nothing. Each backend exposes the same
+  functions and types as its stub, and the Linux type-check enforces that.
+  - Mixed modules keep the portable part and re-export the backend:
+    - `capture/audio.rs` holds the types, levels and constants, with `audio_wasapi.rs` as backend.
+    - `capture/video.rs` holds the options, stats, preview and `FrameSink`, with `video_wgc.rs` as
+      backend.
+    - `windows_list.rs` holds `WindowInfo`, the filter and target resolution, with
+      `windows_list/win32.rs` as backend.
+    - `tray.rs` holds the states, commands and icon drawing, with `tray/win32.rs` as backend.
+    - Their stubs sit in the same file (`mod unsupported` / `mod backend`).
+  - Windows-only modules (`exe_icon`, `tray_visibility`, `win_thumbnail`) get stub files under
+    `src/unsupported/`, selected with `#[cfg_attr(not(windows), path = …)]` in `lib.rs`.
+  - Small cases are gated inline: `os_caps`, `url_scheme`, `main.rs` (console attach) and
+    `distro::today_local`.
+- **`FrameSink`:** WGC's per-frame work (pacer, backlog check, scaling into recycled NDI frames,
+  preview) moved unchanged into a portable `FrameSink`. A backend calls `wants_frame()` and then
+  `deliver()` with a closure that maps the frame (trait `Readback`). The mapping is still released
+  right after the copy, as before. A Linux backend (PipeWire, XComposite) reuses all of this.
+- **Stub behavior:**
+  - Starting a video or audio capture fails with "not supported on this platform yet".
+  - The window list is empty.
+  - `OsCaps` reports nothing supported.
+  - There is no tray: `icon_visible()` is false, so × quits.
+  - There are no thumbnails or icons, so the carousel shows placeholders.
+  - The `lancast:` scheme is not registered.
+  - `today_local()` uses the UTC date, so it can be a day off around midnight. A real
+    implementation needs a time zone source.
+- **Not renamed:** `WindowInfo::hwnd` stays as it is, typed as `WindowHandle = isize`, to avoid
+  churn across the UI. Renaming it to `id` can come with the first real Linux backend.
+- **Dependencies:** `windows`, `windows-capture` and `wasapi` are now `cfg(windows)` dependencies.
+  On Linux, eframe gets the `x11` and `wayland` features, because winit needs a backend there.
+  - A Linux build therefore needs `libwayland-dev`/pkg-config, or `WAYLAND_CLIENT_NO_PKG_CONFIG=1`
+    for a check only.
+  - `build.rs` copies the NDI DLL only for Windows targets. On Linux, `libndi.so` comes from the
+    NDI SDK/runtime on the loader path.
+- **Examples:** `av_sync_source`, `process_loopback` and `wgc_window` call Windows APIs directly.
+  Their code moved to `examples/windows/`, and the example file is a thin `cfg(windows)` wrapper
+  (elsewhere it prints "needs Windows"). `cargo run --example …` is unchanged.
+- **Verification:**
+  - Windows: fmt, clippy `-D warnings`, 25 tests and `cargo deny check` are ok. A CLI smoke test
+    (`LANcast.exe 0x… --fps 30`, game audio) captured, scaled and sent frames, and audio chunks
+    flowed (`dropped=0`).
+  - Linux: `cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings` is clean,
+    run from Windows with:
+    - a header-only stub NDI SDK (`include/` from the Windows SDK, plus an empty
+      `lib/x86_64-linux-gnu/libndi.so`),
+    - `BINDGEN_EXTRA_CLANG_ARGS="-ffreestanding -isystem <LLVM>/lib/clang/<v>/include"`,
+    - `WAYLAND_CLIENT_NO_PKG_CONFIG=1`.
+
+    Nothing was linked or run on Linux.
+  - `cargo deny --target x86_64-unknown-linux-gnu check`: licenses, bans and sources are ok.
+    Advisories fail on `zbus_names`, `zvariant` and `zvariant_derive` being unmaintained (pulled in
+    by eframe's accesskit via `accesskit_unix`/`atspi`). This is not relevant while `deny.toml` only
+    covers Windows. Revisit before shipping a Linux build.
+- **Next (see the Linux research of 2026-10-18):** an X11 backend (XComposite capture, EWMH window
+  list), then PipeWire per-app audio, then the Wayland ScreenCast portal, which needs its own
+  window-selection UX.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

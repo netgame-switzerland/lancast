@@ -12,7 +12,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     capture::{
-        audio_wasapi::{self, AudioLevels, AudioMode, AudioSource},
+        audio::{self, AudioLevels, AudioMode, AudioSource},
         video::{PreviewSlot, VideoOptions},
     },
     distro,
@@ -251,7 +251,7 @@ impl Controller {
             process = window.process_name.as_deref().unwrap_or("?"),
             "window selected"
         );
-        let check = match audio_wasapi::check_process_loopback(window.pid) {
+        let check = match audio::check_process_loopback(window.pid) {
             Ok(()) => AudioCheck::GameAudio,
             Err(err) => {
                 warn!("game-only audio unavailable: {err:#}");
