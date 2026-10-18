@@ -91,6 +91,9 @@ pub struct LancastApp {
     event: Option<ActiveEvent>,
     event_error: Option<String>,
     event_checked: Instant,
+    /// Whether Windows shows the tray icon (D29), and when last checked.
+    tray_icon_visible: bool,
+    tray_checked: Option<Instant>,
 }
 
 impl LancastApp {
@@ -138,6 +141,8 @@ impl LancastApp {
             event: None,
             event_error: None,
             event_checked: Instant::now(),
+            tray_icon_visible: true,
+            tray_checked: None,
         };
         app.load_bundled_event();
         app.refresh_event();
@@ -475,6 +480,19 @@ impl LancastApp {
         let _ = self.commands.send(command);
     }
 
+    /// Cached, as it reads the registry; refreshed every few seconds so the
+    /// hint disappears once the user shows the icon.
+    fn tray_icon_visible(&mut self) -> bool {
+        if self
+            .tray_checked
+            .is_none_or(|checked| checked.elapsed() >= Duration::from_secs(3))
+        {
+            self.tray_icon_visible = crate::tray_visibility::icon_visible();
+            self.tray_checked = Some(Instant::now());
+        }
+        self.tray_icon_visible
+    }
+
     fn hide_to_tray(&mut self, state: &AppState) {
         if let Some(slot) = preview_slot(state) {
             slot.enabled.store(false, Ordering::Relaxed);
@@ -515,7 +533,14 @@ impl eframe::App for LancastApp {
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             if self.to_tray && self.hwnd.is_some() {
-                self.hide_to_tray(&state);
+                if crate::tray_visibility::icon_visible() {
+                    self.hide_to_tray(&state);
+                } else {
+                    // Windows hides the tray icon: a hidden window could
+                    // not be found again, so minimize instead (D29).
+                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+                    self.tray.kept_on_taskbar();
+                }
             } else {
                 self.send(Command::Quit);
             }
@@ -955,6 +980,28 @@ impl LancastApp {
                             ));
                         }
                         ui.end_row();
+
+                        if self.to_tray && !self.tray_icon_visible() {
+                            ui.label("");
+                            ui.label(RichText::new("Tray icon hidden by Windows").weak())
+                                .on_hover_text(
+                                    "× and minimize keep LANcast on the taskbar until the \
+                                     tray icon is shown.",
+                                );
+                            if ui
+                                .small_button("Show it…")
+                                .on_hover_text(
+                                    "Opens the taskbar settings: under \
+                                     \"Other system tray icons\", turn on LANcast.",
+                                )
+                                .clicked()
+                            {
+                                let _ = std::process::Command::new("explorer")
+                                    .arg("ms-settings:taskbar")
+                                    .spawn();
+                            }
+                            ui.end_row();
+                        }
 
                         ui.label(RichText::new("Capture").weak());
                         let enforced = self.enforced();

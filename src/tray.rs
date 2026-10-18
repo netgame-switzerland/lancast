@@ -6,7 +6,7 @@ use std::{cell::RefCell, thread::JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
 use crossbeam_channel::{Receiver, Sender};
-use tracing::warn;
+use tracing::{info, warn};
 use windows::{
     Win32::{
         Foundation::{
@@ -18,8 +18,8 @@ use windows::{
         UI::{
             Shell::{
                 NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIIF_WARNING,
-                NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NOTIFYICON_VERSION_4,
-                NOTIFYICONDATAW, Shell_NotifyIconW,
+                NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT,
+                NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
                 AllowSetForegroundWindow, AppendMenuW, CreateIcon, CreatePopupMenu,
@@ -107,6 +107,7 @@ enum TrayUpdate {
     ShowMainWindow,
     MinimizeToTray(bool),
     HiddenToTray,
+    KeptOnTaskbar,
 }
 
 /// Handle to the tray thread; cheap to clone and usable from any thread.
@@ -150,6 +151,13 @@ impl TrayHandle {
     /// a notification explains where LANcast went.
     pub fn hidden_to_tray(&self) {
         self.send(TrayUpdate::HiddenToTray);
+    }
+
+    /// Reports that the main window was minimized to the taskbar instead,
+    /// because Windows hides the tray icon (D29); the first time, a
+    /// notification explains how to show it.
+    pub fn kept_on_taskbar(&self) {
+        self.send(TrayUpdate::KeptOnTaskbar);
     }
 
     pub fn show_main_window(&self) {
@@ -205,7 +213,11 @@ struct Inner {
     sending: bool,
     main_window: Option<isize>,
     minimize_to_tray: bool,
+    /// The minimized main window was already handled (hidden or left on
+    /// the taskbar) and has not been restored since.
+    minimize_handled: bool,
     told_about_tray: bool,
+    told_about_taskbar: bool,
     taskbar_created: u32,
 }
 
@@ -276,7 +288,9 @@ fn run(
             sending: false,
             main_window: None,
             minimize_to_tray: true,
+            minimize_handled: false,
             told_about_tray: false,
+            told_about_taskbar: false,
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
         };
         add_icon(&inner);
@@ -315,6 +329,14 @@ unsafe extern "system" fn wnd_proc(
                 // NOTIFYICON_VERSION_4: the event is in the low word of lParam.
                 match (lparam.0 & 0xFFFF) as u32 {
                     NIN_SELECT | NIN_KEYSELECT => toggle_main_window(),
+                    // A click on one of our notifications: also works when
+                    // Windows hides the icon itself.
+                    NIN_BALLOONUSERCLICK => with_inner(|inner| {
+                        if let Some(main) = inner.main_window {
+                            show_window(main);
+                            (inner.on_command)(TrayCommand::WindowShown);
+                        }
+                    }),
                     WM_CONTEXTMENU => show_menu(hwnd),
                     _ => {}
                 }
@@ -441,6 +463,7 @@ fn apply_updates(inner: &mut Inner) {
             TrayUpdate::MainWindow(hwnd) => inner.main_window = Some(hwnd),
             TrayUpdate::MinimizeToTray(enabled) => inner.minimize_to_tray = enabled,
             TrayUpdate::HiddenToTray => tell_about_tray(inner),
+            TrayUpdate::KeptOnTaskbar => tell_about_taskbar(inner),
             TrayUpdate::ShowMainWindow => {
                 if let Some(main) = inner.main_window {
                     show_window(main);
@@ -451,7 +474,9 @@ fn apply_updates(inner: &mut Inner) {
     }
 }
 
-/// Hides the main window when it was minimized and tray mode is on.
+/// Hides the main window when it was minimized and tray mode is on. If
+/// Windows hides the tray icon, the window stays on the taskbar instead,
+/// so it cannot vanish (D29).
 fn hide_if_minimized(inner: &mut Inner) {
     let Some(main) = inner.main_window else {
         return;
@@ -459,18 +484,24 @@ fn hide_if_minimized(inner: &mut Inner) {
     if !inner.minimize_to_tray {
         return;
     }
-    // SAFETY: querying and hiding a (possibly stale) window.
-    let hidden = unsafe {
+    // SAFETY: only queries a (possibly stale) window.
+    let minimized = unsafe {
         let main = hwnd(main);
-        if IsIconic(main).as_bool() && IsWindowVisible(main).as_bool() {
-            let _ = ShowWindow(main, SW_HIDE);
-            true
-        } else {
-            false
-        }
+        IsIconic(main).as_bool() && IsWindowVisible(main).as_bool()
     };
-    if hidden {
+    if !minimized {
+        inner.minimize_handled = false;
+        return;
+    }
+    if std::mem::replace(&mut inner.minimize_handled, true) {
+        return;
+    }
+    if crate::tray_visibility::icon_visible() {
+        hide_window(main);
         tell_about_tray(inner);
+    } else {
+        info!("tray icon hidden by Windows; staying on the taskbar");
+        tell_about_taskbar(inner);
     }
 }
 
@@ -478,14 +509,32 @@ fn tell_about_tray(inner: &mut Inner) {
     if std::mem::replace(&mut inner.told_about_tray, true) {
         return;
     }
+    show_info(
+        inner,
+        "LANcast is still running",
+        "It keeps running in the tray. Click here, the tray icon or start LANcast again to \
+         reopen it. Right-click the tray icon to stop or quit.",
+    );
+}
+
+fn tell_about_taskbar(inner: &mut Inner) {
+    if std::mem::replace(&mut inner.told_about_taskbar, true) {
+        return;
+    }
+    show_info(
+        inner,
+        "LANcast is still running",
+        "Windows hides its tray icon, so LANcast stays on the taskbar. To use the tray: \
+         Settings > Personalization > Taskbar > Other system tray icons > LANcast.",
+    );
+}
+
+fn show_info(inner: &Inner, title: &str, text: &str) {
     let mut data = base_data(inner.hwnd);
     data.uFlags = NIF_INFO;
     data.dwInfoFlags = NIIF_INFO;
-    copy_wide(&mut data.szInfoTitle, "LANcast is still running");
-    copy_wide(
-        &mut data.szInfo,
-        "It keeps running in the tray. Right-click the tray icon to stop or quit.",
-    );
+    copy_wide(&mut data.szInfoTitle, title);
+    copy_wide(&mut data.szInfo, text);
     // SAFETY: `data` is a fully initialized NOTIFYICONDATAW.
     let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
 }

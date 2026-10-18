@@ -834,6 +834,34 @@ Versions checked with `cargo info` on 2026-10-17.
     links".
   - Tests in a portable copy, so the user's own `LANcast.toml` was not touched.
 
+### D29. Hidden tray icon: stay on the taskbar (2026-10-18)
+- **Problem:** Windows 11 puts every new notification-area icon into the overflow, and the user can
+  also turn off the overflow arrow ("Hidden icon menu"). Hiding the main window to the tray then makes
+  LANcast vanish: no window, no taskbar button, no visible icon. Every new exe path counts as a new
+  icon (each unzipped copy at a LAN party), so this is the normal case, not an exception.
+- Apps cannot promote their own icon: by design the user decides which icons are shown (Notification
+  area guidelines, https://learn.microsoft.com/windows/win32/uxguide/winenv-notification).
+- **Finding (undocumented, observed on Windows 11):** Explorer stores the choice per exe path under
+  `HKCU\Control Panel\NotifyIconSettings\<id>` with `ExecutablePath` and `IsPromoted` (DWORD, 1 =
+  shown on the taskbar; missing or 0 = overflow). The path may start with a known-folder GUID, e.g.
+  `{6D809377-6AF0-444B-8957-A3773F02200E}\LANcast\LANcast.exe` for Program Files, which is expanded
+  with `SHGetKnownFolderPath` (result freed with `CoTaskMemFree`,
+  https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath).
+  On the dev machine ten LANcast entries existed (one per build and test folder), only one promoted.
+- **Decision** (`src/tray_visibility.rs`):
+  - The key is only read, never written (writing `IsPromoted` would override the user's choice and is
+    not guaranteed to take effect without an Explorer restart).
+  - × and minimize hide to the tray only if the icon is promoted. Otherwise the window is minimized and
+    keeps its taskbar button; the first time, a notification explains how to show the icon (Settings >
+    Personalization > Taskbar > Other system tray icons).
+  - No `NotifyIconSettings` key (Windows 10, which shows the overflow arrow): hide as before. An entry
+    missing for our path counts as hidden (new icons start in the overflow).
+  - Settings shows "Tray icon hidden by Windows" with a button that opens `ms-settings:taskbar`; the
+    check is cached for 3 s, so the hint disappears once the user turns the icon on.
+  - Clicking a LANcast notification restores the window (`NIN_BALLOONUSERCLICK` with
+    `NOTIFYICON_VERSION_4`, https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw),
+    and the "still running" notification now says so, plus that starting LANcast again reopens it.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

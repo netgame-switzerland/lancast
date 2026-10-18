@@ -24,7 +24,7 @@ LANcast is the participant's side of a simpler setup:
 - **Live preview and audio meter** (OBS-style peak/RMS) before and while sending.
 - **Game audio only** via WASAPI process loopback.
   - If Windows can't do that, LANcast warns *before* sending and asks: "Send with system audio" or "Send without audio".
-- **Tray icon** with a red REC dot while casting. Close and minimize go to the tray.
+- **Tray icon** with a red REC dot while casting. Close and minimize go to the tray, or to the taskbar while Windows hides the tray icon.
 - **Stream name `Hostname (User - Game)`:** the user name defaults to the Windows login and is editable.
 - **Network help:**
   - automatic discovery (mDNS)
@@ -187,6 +187,7 @@ src/
   distro.rs          event edition: signed event configurations (Ed25519)
   bin/lancast-event.rs  organizer tool: key, sign, verify
   tray.rs            tray icon, notifications, single instance
+  tray_visibility.rs whether Windows shows the tray icon (D29)
   windows_list.rs    window enumeration (Alt-Tab-like)
   win_thumbnail.rs   DWM live thumbnails
 examples/            spikes and test tools (see above)

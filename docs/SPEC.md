@@ -98,7 +98,7 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
    - **Show capture border**: default **on** (requirement 2026-10-17; the player sees what is captured). It can be turned off where the OS allows it; the checkbox is disabled (always on) where the OS does not allow it (§5.1, D8).
    - **Capture cursor**: default off. It is disabled on systems that cannot turn the cursor off.
    - These options can change only while not sending. Changing them restarts the capture session.
-   - **Close and minimize to tray**: default **on**. When on, both × and minimize hide LANcast to the tray. When off, × quits and minimize behaves normally. There is no separate Quit button; quit from the tray menu, or with × when this option is off.
+   - **Close and minimize to tray**: default **on**. When on, both × and minimize hide LANcast to the tray; if Windows hides the tray icon, they minimize to the taskbar instead and Settings offers to open the taskbar settings (D29). When off, × quits and minimize behaves normally. There is no separate Quit button; quit from the tray menu, or with × when this option is off.
    - **Always on top**: default off. Keeps LANcast above the game to check the setup. Works with borderless windowed games only.
 9. **Advanced** (collapsed by default): discovery server (§5.4), FPS cap, max resolution. These are stored in the config.
 10. Footer or About: "NDI® is a registered trademark of Vizrt NDI AB" with a link to https://ndi.video/ (D5).
@@ -108,7 +108,8 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
 - Tooltip: `lancast – sending war3 (1920×1080 60 fps, 2 receivers)` or `lancast – idle`.
 - **Left click** shows or hides the main window.
 - **Menu**: `Show window`, `Start sending` / `Stop sending` (Start uses the last selected window), separator, `Quit`.
-- **× and minimize hide the main window to the tray** while "Close and minimize to tray" is on (the default). `Quit` in the tray menu exits. The first time the window is hidden, a tray notification explains this.
+- **× and minimize hide the main window to the tray** while "Close and minimize to tray" is on (the default). `Quit` in the tray menu exits. The first time the window is hidden, a tray notification explains this; clicking it, or starting LANcast again, reopens the window.
+- If Windows hides the icon (Windows 11 puts new icons into the overflow, which can be turned off), × and minimize keep the window on the taskbar instead, so LANcast never vanishes (D29).
 - **Icon:** the LANcast icon (`assets/icon-source.png`) with state overlays (preview in `docs/ICON.md`):
   - idle: plain icon
   - **casting: a glowing red REC dot, top right**

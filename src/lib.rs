@@ -14,6 +14,7 @@ pub mod ndi_out;
 pub mod os_caps;
 pub mod session;
 pub mod tray;
+pub mod tray_visibility;
 pub mod url_scheme;
 pub mod win_thumbnail;
 pub mod windows_list;
