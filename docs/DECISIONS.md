@@ -1006,6 +1006,23 @@ Versions checked with `cargo info` on 2026-10-17.
   list), then PipeWire per-app audio, then the Wayland ScreenCast portal, which needs its own
   window-selection UX.
 
+### D33. Linux CI job (2026-10-18)
+- **Why:** D32 only type-checked Linux from Windows, against a header-only stub SDK. With parallel
+  sessions, a Windows-only change can break the Linux build unnoticed. CI job `check-linux`
+  (`ubuntu-24.04`) runs `cargo clippy --all-targets -- -D warnings` and `cargo test --release`
+  natively on every push and PR, linked against the real NDI SDK. No Linux packages yet: the backends
+  are stubs.
+- **Setup** (`.github/actions/setup-build-linux`): apt `pkg-config libwayland-dev libxkbcommon-dev
+  libclang-dev` (eframe's winit backends, bindgen); the NDI 6 SDK for Linux from
+  `https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz` (~62 MB, v6.3.2 on
+  2026-10-18). It is a shell script that pages the EULA, reads `y` and unpacks
+  `NDI SDK for Linux/` (`include/`, `lib/x86_64-linux-gnu/libndi.so.6.3.2` plus symlinks); run as
+  `echo y | PAGER=cat bash …`, checked locally. grafton-ndi finds `include/` and
+  `lib/x86_64-linux-gnu` under `NDI_SDK_DIR`; `LD_LIBRARY_PATH` lets the test binaries load
+  `libndi.so`. Accepting the EULA in CI matches the silent Windows install (D30).
+- **Not yet:** `cargo deny` for Linux (unmaintained `zbus_names`/`zvariant*`, D32), Linux packages and
+  a multi-platform release workflow (build jobs per platform, one publish job that tags and pushes).
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

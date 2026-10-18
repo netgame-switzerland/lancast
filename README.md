@@ -162,7 +162,7 @@ LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, op
 
 **Event edition of a release:** *Actions → Event package*, with the release tag and the name of a GitHub environment that holds the event's files. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#building-in-github-actions).
 
-The *CI* workflow checks formatting, clippy, the tests and the dependencies on every push to `main` and on pull requests. Run it manually (*Actions → CI → Run workflow*) to also get snapshot packages as a workflow artifact, without tagging or publishing anything.
+The *CI* workflow checks formatting, clippy, the tests and the dependencies on every push to `main` and on pull requests. Clippy and the tests also run on Linux, so the platform split keeps building there; there are no Linux packages yet. Run it manually (*Actions → CI → Run workflow*) to also get snapshot packages as a workflow artifact, without tagging or publishing anything.
 
 ## Dependencies
 `Cargo.toml` lists the direct dependencies with compatible version ranges; the committed `Cargo.lock` pins the exact version of every crate in the tree, so all builds use the same code.

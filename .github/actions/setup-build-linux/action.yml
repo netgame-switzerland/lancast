@@ -1,0 +1,37 @@
+name: Set up the LANcast Linux build
+description: >
+  Rust (stable) with clippy, the system libraries for eframe (X11/Wayland)
+  and bindgen, and the NDI 6 SDK for Linux (latest, downloaded from ndi.video).
+  Sets NDI_SDK_DIR and LD_LIBRARY_PATH (D33).
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Install system libraries
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends pkg-config libwayland-dev libxkbcommon-dev libclang-dev
+
+    # The SDK comes as a shell script that shows the EULA, asks to agree and
+    # unpacks "NDI SDK for Linux" into the current folder.
+    - name: Install the NDI 6 SDK for Linux
+      shell: bash
+      run: |
+        cd "$RUNNER_TEMP"
+        curl -fsSL -o ndi-sdk.tar.gz "https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz"
+        tar -xzf ndi-sdk.tar.gz
+        echo y | PAGER=cat bash Install_NDI_SDK_v6_Linux.sh > /dev/null
+        sdk="$RUNNER_TEMP/NDI SDK for Linux"
+        lib="$sdk/lib/x86_64-linux-gnu"
+        test -f "$sdk/include/Processing.NDI.Lib.h"
+        test -e "$lib/libndi.so"
+        echo "NDI SDK in $sdk: $(basename "$(ls "$lib"/libndi.so.*.*.*)")"
+        echo "NDI_SDK_DIR=$sdk" >> "$GITHUB_ENV"
+        # Test binaries link libndi.so dynamically.
+        echo "LD_LIBRARY_PATH=$lib" >> "$GITHUB_ENV"

@@ -1,5 +1,6 @@
-# Checks every push to main and every pull request: format, lint, tests, and
-# the dependencies (advisories, licenses, sources; deny.toml).
+# Checks every push to main and every pull request: format, lint, tests (on
+# Windows and Linux), and the dependencies (advisories, licenses, sources;
+# deny.toml).
 # "Run workflow" (manual) also builds snapshot packages as an artifact,
 # without tagging or publishing anything (D31).
 name: CI
@@ -24,6 +25,16 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-build
       - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+
+  # Keeps the platform split (D32) building on Linux: the backends are stubs
+  # there, but the portable core and its tests must compile and pass (D33).
+  check-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-build-linux
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --release
 
