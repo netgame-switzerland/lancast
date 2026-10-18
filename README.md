@@ -24,7 +24,7 @@ LANcast is the participant's side of a simpler setup:
 - **Live preview and audio meter** (OBS-style peak/RMS) before and while sending.
 - **Game audio only** via WASAPI process loopback.
   - If Windows can't do that, LANcast warns *before* sending and asks: "Send with system audio" or "Send without audio".
-- **Tray icon** with a red REC dot while casting. Close and minimize go to the tray, or to the taskbar while Windows hides the tray icon.
+- **Tray icon** with a red REC dot while casting. Optionally, close and minimize go to the tray (only while Windows shows the icon on the taskbar).
 - **Stream name `Hostname (User - Game)`:** the user name defaults to the Windows login and is editable.
 - **Network help:**
   - automatic discovery (mDNS)

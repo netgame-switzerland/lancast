@@ -6,7 +6,7 @@ use std::{cell::RefCell, thread::JoinHandle};
 
 use anyhow::{Context, Result, anyhow};
 use crossbeam_channel::{Receiver, Sender};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 use windows::{
     Win32::{
         Foundation::{
@@ -107,7 +107,6 @@ enum TrayUpdate {
     ShowMainWindow,
     MinimizeToTray(bool),
     HiddenToTray,
-    KeptOnTaskbar,
 }
 
 /// Handle to the tray thread; cheap to clone and usable from any thread.
@@ -151,13 +150,6 @@ impl TrayHandle {
     /// a notification explains where LANcast went.
     pub fn hidden_to_tray(&self) {
         self.send(TrayUpdate::HiddenToTray);
-    }
-
-    /// Reports that the main window was minimized to the taskbar instead,
-    /// because Windows hides the tray icon (D29); the first time, a
-    /// notification explains how to show it.
-    pub fn kept_on_taskbar(&self) {
-        self.send(TrayUpdate::KeptOnTaskbar);
     }
 
     pub fn show_main_window(&self) {
@@ -217,7 +209,6 @@ struct Inner {
     /// the taskbar) and has not been restored since.
     minimize_handled: bool,
     told_about_tray: bool,
-    told_about_taskbar: bool,
     taskbar_created: u32,
 }
 
@@ -290,7 +281,6 @@ fn run(
             minimize_to_tray: true,
             minimize_handled: false,
             told_about_tray: false,
-            told_about_taskbar: false,
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
         };
         add_icon(&inner);
@@ -463,7 +453,6 @@ fn apply_updates(inner: &mut Inner) {
             TrayUpdate::MainWindow(hwnd) => inner.main_window = Some(hwnd),
             TrayUpdate::MinimizeToTray(enabled) => inner.minimize_to_tray = enabled,
             TrayUpdate::HiddenToTray => tell_about_tray(inner),
-            TrayUpdate::KeptOnTaskbar => tell_about_taskbar(inner),
             TrayUpdate::ShowMainWindow => {
                 if let Some(main) = inner.main_window {
                     show_window(main);
@@ -475,8 +464,8 @@ fn apply_updates(inner: &mut Inner) {
 }
 
 /// Hides the main window when it was minimized and tray mode is on. If
-/// Windows hides the tray icon, the window stays on the taskbar instead,
-/// so it cannot vanish (D29).
+/// Windows hides the tray icon, minimizing stays normal, so the window
+/// cannot vanish (D29).
 fn hide_if_minimized(inner: &mut Inner) {
     let Some(main) = inner.main_window else {
         return;
@@ -500,8 +489,7 @@ fn hide_if_minimized(inner: &mut Inner) {
         hide_window(main);
         tell_about_tray(inner);
     } else {
-        info!("tray icon hidden by Windows; staying on the taskbar");
-        tell_about_taskbar(inner);
+        debug!("tray icon hidden by Windows; minimized to the taskbar");
     }
 }
 
@@ -511,21 +499,9 @@ fn tell_about_tray(inner: &mut Inner) {
     }
     show_info(
         inner,
-        "LANcast is still running",
+        "LANcast is still running in the tray",
         "It keeps running in the tray. Click here, the tray icon or start LANcast again to \
          reopen it. Right-click the tray icon to stop or quit.",
-    );
-}
-
-fn tell_about_taskbar(inner: &mut Inner) {
-    if std::mem::replace(&mut inner.told_about_taskbar, true) {
-        return;
-    }
-    show_info(
-        inner,
-        "LANcast is still running",
-        "Windows hides its tray icon, so LANcast stays on the taskbar. To use the tray: \
-         Settings > Personalization > Taskbar > Other system tray icons > LANcast.",
     );
 }
 

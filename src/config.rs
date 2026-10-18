@@ -22,7 +22,8 @@ const FILE_NAME: &str = "LANcast.toml";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// × and minimize hide LANcast to the tray.
+    /// × and minimize hide LANcast to the tray (opt-in; only while Windows
+    /// shows the tray icon, D29).
     pub to_tray: bool,
     pub always_on_top: bool,
     pub fps_cap: u32,
@@ -90,7 +91,7 @@ pub const MIN_WINDOW_SIZE: (f32, f32) = (600.0, 680.0);
 impl Default for Config {
     fn default() -> Self {
         Self {
-            to_tray: true,
+            to_tray: false,
             always_on_top: false,
             fps_cap: 60,
             max_width: 1920,
@@ -240,7 +241,7 @@ mod tests {
         let config = config.sanitized();
         assert_eq!(config.fps_cap, 120);
         assert!(config.always_on_top);
-        assert!(config.to_tray);
+        assert!(!config.to_tray);
         assert_eq!((config.max_width, config.max_height), (1920, 1080));
     }
 

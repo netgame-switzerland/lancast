@@ -94,6 +94,8 @@ pub struct LancastApp {
     /// Whether Windows shows the tray icon (D29), and when last checked.
     tray_icon_visible: bool,
     tray_checked: Option<Instant>,
+    /// × was pressed while sending: ask before quitting.
+    confirm_quit: bool,
 }
 
 impl LancastApp {
@@ -143,6 +145,7 @@ impl LancastApp {
             event_checked: Instant::now(),
             tray_icon_visible: true,
             tray_checked: None,
+            confirm_quit: false,
         };
         app.load_bundled_event();
         app.refresh_event();
@@ -375,6 +378,36 @@ impl LancastApp {
         }
     }
 
+    fn confirm_quit(&mut self, ctx: &egui::Context) {
+        let mut decision = None;
+        let modal = egui::Modal::new(egui::Id::unique("confirm_quit")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading("Stop sending and quit LANcast?");
+            ui.add_space(4.0);
+            ui.label("Your game is on air. Quitting stops sending.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Quit").clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("Keep running").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if modal.should_close() && decision.is_none() {
+            decision = Some(false);
+        }
+        match decision {
+            Some(true) => {
+                self.confirm_quit = false;
+                self.send(Command::Quit);
+            }
+            Some(false) => self.confirm_quit = false,
+            None => {}
+        }
+    }
+
     /// Makes the link's event the one in force (replacing a previous event)
     /// and applies its defaults once; the user may change those later.
     fn apply_link(&mut self, link: &EventLink) {
@@ -528,23 +561,25 @@ impl eframe::App for LancastApp {
         let ctx = ui.ctx().clone();
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
-        // × goes to the tray if enabled (minimize is handled by the tray
-        // thread); otherwise × quits.
+        // × goes to the tray if enabled and Windows shows the tray icon
+        // (minimize is handled by the tray thread); otherwise × quits, after
+        // asking while sending (D29).
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            if self.to_tray && self.hwnd.is_some() {
-                if crate::tray_visibility::icon_visible() {
-                    self.hide_to_tray(&state);
-                } else {
-                    // Windows hides the tray icon: a hidden window could
-                    // not be found again, so minimize instead (D29).
-                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
-                    self.tray.kept_on_taskbar();
-                }
+            if self.to_tray && self.hwnd.is_some() && crate::tray_visibility::icon_visible() {
+                self.hide_to_tray(&state);
+            } else if state.sending.is_some() {
+                self.confirm_quit = true;
+                // "Close window" on the taskbar also works while minimized.
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(ViewportCommand::Focus);
             } else {
                 self.send(Command::Quit);
             }
             return;
+        }
+        if self.confirm_quit {
+            self.confirm_quit(&ctx);
         }
 
         if let Some(pending) = state.pending_link.clone() {
@@ -955,7 +990,8 @@ impl LancastApp {
                             .checkbox(&mut self.to_tray, "Close and minimize to tray")
                             .on_hover_text(
                                 "× and minimize hide LANcast to the tray; sending continues.\n\
-                                 Quit from the tray icon's menu.",
+                                 Quit from the tray icon's menu.\n\
+                                 Needs the tray icon on the taskbar (Windows 11 hides new icons).",
                             )
                             .changed()
                         {
@@ -983,13 +1019,15 @@ impl LancastApp {
 
                         if self.to_tray && !self.tray_icon_visible() {
                             ui.label("");
-                            ui.label(RichText::new("Tray icon hidden by Windows").weak())
-                                .on_hover_text(
-                                    "× and minimize keep LANcast on the taskbar until the \
-                                     tray icon is shown.",
-                                );
+                            ui.label(
+                                RichText::new("Tray icon hidden by Windows: × quits").color(AMBER),
+                            )
+                            .on_hover_text(
+                                "Until the tray icon is shown on the taskbar, × quits and \
+                                 minimize works normally.",
+                            );
                             if ui
-                                .small_button("Show it…")
+                                .small_button("Show tray icon…")
                                 .on_hover_text(
                                     "Opens the taskbar settings: under \
                                      \"Other system tray icons\", turn on LANcast.",

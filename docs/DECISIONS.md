@@ -851,13 +851,21 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Decision** (`src/tray_visibility.rs`):
   - The key is only read, never written (writing `IsPromoted` would override the user's choice and is
     not guaranteed to take effect without an Explorer restart).
-  - × and minimize hide to the tray only if the icon is promoted. Otherwise the window is minimized and
-    keeps its taskbar button; the first time, a notification explains how to show the icon (Settings >
-    Personalization > Taskbar > Other system tray icons).
+  - "Close and minimize to tray" is **opt-in** (default off; existing `LANcast.toml` files keep their
+    value). It takes effect only while the icon is promoted; otherwise LANcast behaves as if it were off:
+    × quits and minimize is normal.
+  - × quits after a confirmation while sending ("Stop sending and quit LANcast?"), so an accidental ×
+    does not end a cast. "Close window" on the taskbar restores the window to show the question.
+  - The icon is still always registered: tray notifications need it, and Windows lists an app under
+    "Other system tray icons" only after it has added an icon. Adding it only on demand would not make
+    it visible either, as new icons start in the overflow whenever they are added.
+  - Rejected (first attempt): keeping the option on and minimizing to the taskbar instead. With Quit
+    only in the invisible tray menu, × and "Close window" both minimized and LANcast could not be quit.
   - No `NotifyIconSettings` key (Windows 10, which shows the overflow arrow): hide as before. An entry
     missing for our path counts as hidden (new icons start in the overflow).
-  - Settings shows "Tray icon hidden by Windows" with a button that opens `ms-settings:taskbar`; the
-    check is cached for 3 s, so the hint disappears once the user turns the icon on.
+  - With the option on and the icon hidden, Settings shows "Tray icon hidden by Windows: × quits" with
+    a button that opens `ms-settings:taskbar`; the check is cached for 3 s, so the note disappears once
+    the user turns the icon on.
   - Clicking a LANcast notification restores the window (`NIN_BALLOONUSERCLICK` with
     `NOTIFYICON_VERSION_4`, https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw),
     and the "still running" notification now says so, plus that starting LANcast again reopens it.
