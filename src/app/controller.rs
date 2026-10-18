@@ -127,6 +127,8 @@ pub struct PreviewView {
 
 pub enum Command {
     Select(WindowInfo),
+    /// The selected window was clicked again: no selection, no preview.
+    Deselect,
     Settings(Settings),
     Start(AudioChoice),
     /// "Start sending" from the tray: game audio only, never system audio.
@@ -195,6 +197,7 @@ impl Controller {
     fn handle(&mut self, command: Command) {
         match command {
             Command::Select(window) => self.select(window),
+            Command::Deselect => self.deselect(),
             Command::Settings(settings) => {
                 let video_changed =
                     self.settings.as_ref().map(|s| &s.video) != Some(&settings.video);
@@ -261,6 +264,20 @@ impl Controller {
         state.notice = None;
         drop(state);
         self.start_preview();
+        self.publish_tray();
+    }
+
+    fn deselect(&mut self) {
+        if self.session.is_some() {
+            return;
+        }
+        info!("window deselected");
+        self.stop_preview();
+        let mut state = self.state();
+        state.selected = None;
+        state.audio_check = AudioCheck::Idle;
+        state.notice = None;
+        drop(state);
         self.publish_tray();
     }
 

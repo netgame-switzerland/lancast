@@ -43,6 +43,10 @@ const RED: Color32 = Color32::from_rgb(215, 60, 50);
 /// Width reserved for the meter next to the preview.
 const METER_WIDTH: f32 = 58.0;
 const MIN_PREVIEW_HEIGHT: f32 = 90.0;
+/// The preview box follows the picture's aspect ratio only when it changes
+/// by more than this. The picture is produced at the box size, so rounding
+/// would otherwise feed back and make the box jitter by a pixel.
+const ASPECT_TOLERANCE: f32 = 0.02;
 /// Settings are written at most this often while being edited.
 const SAVE_DELAY: Duration = Duration::from_millis(700);
 /// An event edition re-checks the validity dates this often.
@@ -85,6 +89,8 @@ pub struct LancastApp {
     game_name: String,
     meter: Meter,
     preview: Option<TextureHandle>,
+    /// Aspect ratio of the preview box (see `ASPECT_TOLERANCE`).
+    preview_aspect: f32,
     /// Where lancast:// links lead (refreshed on demand).
     scheme_status: crate::url_scheme::SchemeStatus,
     /// The event in force, and in an event edition why sending is blocked.
@@ -139,6 +145,7 @@ impl LancastApp {
             selected_process: None,
             meter: Meter::default(),
             preview: None,
+            preview_aspect: 16.0 / 9.0,
             scheme_status: crate::url_scheme::status(),
             event: None,
             event_error: None,
@@ -489,7 +496,13 @@ impl LancastApp {
         }
     }
 
-    fn select(&mut self, window: WindowInfo) {
+    fn select(&mut self, window: WindowInfo, state: &AppState) {
+        // Clicking the selected window again deselects it.
+        if state.sending.is_none() && state.selected.as_ref().map(|w| w.hwnd) == Some(window.hwnd) {
+            self.selected_process = None;
+            self.send(Command::Deselect);
+            return;
+        }
         let key = process_key(&window);
         self.game_name = key
             .as_ref()
@@ -696,7 +709,7 @@ impl eframe::App for LancastApp {
             let selected = state.selected.as_ref().map(|w| w.hwnd);
             let locked = state.sending.is_some();
             if let Some(window) = self.carousel.show(ui, selected, locked) {
-                self.select(window);
+                self.select(window, &state);
             }
             ui.add_space(8.0);
             self.preview_and_meter(ui, &state);
@@ -719,10 +732,14 @@ impl LancastApp {
             });
             return;
         }
-        let aspect = self.preview.as_ref().map_or(16.0 / 9.0, |t| {
-            let [w, h] = t.size();
-            w as f32 / h.max(1) as f32
-        });
+        if let Some(texture) = &self.preview {
+            let [w, h] = texture.size();
+            let aspect = w as f32 / h.max(1) as f32;
+            if (aspect / self.preview_aspect - 1.0).abs() > ASPECT_TOLERANCE {
+                self.preview_aspect = aspect;
+            }
+        }
+        let aspect = self.preview_aspect;
         let max_width = (available.x - METER_WIDTH - 12.0).max(80.0);
         let height = (available.y - 4.0)
             .min(max_width / aspect)
