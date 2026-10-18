@@ -78,12 +78,19 @@ Without a valid configuration (missing, not yet valid, expired, or not signed wi
 **What it does not do:** it cannot stop someone from running a normal LANcast or another NDI sender on the event network. Use the event's network setup (discovery server, switch limits) for that. The event edition makes the right configuration the default and stops tampering within it.
 
 ### Building an event edition
-1. **Key pair**, once per event. Keep `secret.key` private: not in the repository, not in the download.
+Keep the event's files in a folder **outside the repository**, e.g. `..\netgame-2026\`.
+
+1. **Key pair**, once per event. Keep `secret.key` private: never commit it, never put it into a download.
    ```powershell
    cargo build --release --bin lancast-event
-   target\release\lancast-event keygen secret.key     # prints the public key
+   mkdir ..\netgame-2026
+   target\release\lancast-event keygen ..\netgame-2026\secret.key     # prints the public key
    ```
-2. **Describe the event** in `event.toml` (template: `packaging/event.example.toml`):
+2. **Describe the event:** copy the template and adjust it.
+   ```powershell
+   copy packaging\event.example.toml ..\netgame-2026\event.toml
+   ```
+   For example:
    ```toml
    event = "NetGame 2026"
    event_id = "netgame-2026"        # names the download files
@@ -102,7 +109,7 @@ Without a valid configuration (missing, not yet valid, expired, or not signed wi
    All keys from the table above may go into either section. `discovery = ""` enforces automatic discovery (mDNS).
 3. **Build the packages:**
    ```powershell
-   powershell -File tools\package.ps1 -EventConfig event.toml -SigningKey secret.key
+   powershell -File tools\package.ps1 -EventConfig ..\netgame-2026\event.toml -SigningKey ..\netgame-2026\secret.key
    ```
    Besides the normal packages, this creates:
    - `dist\LANcast-<ver>-<event_id>-win64.zip`: the event edition plus `LANcast.event`
@@ -111,8 +118,8 @@ Without a valid configuration (missing, not yet valid, expired, or not signed wi
 
 To change settings later (e.g. a new discovery server), edit `event.toml` and sign again. The edition doesn't need to be rebuilt as long as the key stays the same:
 ```powershell
-target\release\lancast-event sign event.toml secret.key LANcast.event   # prints the new link
-target\release\lancast-event verify LANcast.event <public key>          # check a file
+target\release\lancast-event sign ..\netgame-2026\event.toml ..\netgame-2026\secret.key ..\netgame-2026\LANcast.event   # prints the new link
+target\release\lancast-event verify ..\netgame-2026\LANcast.event <public key>   # check a file
 ```
 Participants get the new configuration from the new link, or from a new download (a changed `LANcast.event` is picked up at the next start).
 
