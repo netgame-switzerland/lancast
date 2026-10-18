@@ -1,0 +1,39 @@
+# cargo-deny configuration (D31): `cargo deny check`, also run by CI.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# LANcast only ships for Windows x64; crates for other platforms don't count.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# Known vulnerabilities and unmaintained crates from the RustSec database.
+# An exception goes into `ignore` with the advisory id and a reason.
+ignore = []
+
+[licenses]
+# Permissive licenses only: the exe and THIRD-PARTY-LICENSES.txt ship to
+# participants under Apache-2.0 (D24).
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+    # Fonts embedded by egui (epaint "default_fonts").
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Several versions of one crate are common (e.g. windows-sys); only report them.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

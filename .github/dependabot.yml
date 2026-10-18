@@ -1,0 +1,27 @@
+# Monthly dependency update pull requests (D31). CI checks each one.
+version: 2
+updates:
+  # Crates: compatible updates in one PR; updates beyond the Cargo.toml
+  # ranges (e.g. eframe 0.37 -> 0.38) as separate PRs, they need code changes.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      crates:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "Deps"
+
+  # The workflows and the composite setup action.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "CI"

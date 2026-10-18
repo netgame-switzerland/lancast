@@ -137,6 +137,7 @@ cargo build --release                         # target\release\LANcast.exe (+ ND
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 cargo test --release                          # unit tests (pacer, scaler, levels, config, links, signatures)
+cargo deny check                              # advisories, licenses, sources (see Dependencies)
 ```
 Quit a running LANcast before rebuilding: Windows does not let cargo replace a running exe.
 
@@ -161,7 +162,13 @@ LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, op
 
 **Event edition of a release:** *Actions → Event package*, with the release tag and the name of a GitHub environment that holds the event's files. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#building-in-github-actions).
 
-The *CI* workflow checks formatting, clippy and the tests on every push to `main` and on pull requests.
+The *CI* workflow checks formatting, clippy, the tests and the dependencies on every push to `main` and on pull requests. Run it manually (*Actions → CI → Run workflow*) to also get snapshot packages as a workflow artifact, without tagging or publishing anything.
+
+## Dependencies
+`Cargo.toml` lists the direct dependencies with compatible version ranges; the committed `Cargo.lock` pins the exact version of every crate in the tree, so all builds use the same code.
+- **Updates:** Dependabot (`.github/dependabot.yml`) opens pull requests monthly: compatible crate updates grouped in one PR, updates that need code changes (e.g. eframe 0.37 → 0.38) separately, and GitHub Actions updates. CI checks each PR. Locally: `cargo update`.
+- **Checks:** [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) (`deny.toml`) fails CI on crates with a known security advisory ([RustSec](https://rustsec.org/)), with a license that isn't allowed (the exe and its license list ship to participants), or from a source other than crates.io. Locally: `cargo install cargo-deny --locked`, then `cargo deny check`.
+- **Security alerts:** GitHub's Dependabot alerts (*Settings → Code security*) warn about new advisories for the pinned versions between updates.
 
 ## Testing
 Unit tests cover the pure logic. Capture, audio and NDI are checked with small tools in `examples/`:

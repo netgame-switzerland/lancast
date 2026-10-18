@@ -1,10 +1,14 @@
-# Checks every push to main and every pull request: format, lint, tests.
+# Checks every push to main and every pull request: format, lint, tests, and
+# the dependencies (advisories, licenses, sources; deny.toml).
+# "Run workflow" (manual) also builds snapshot packages as an artifact,
+# without tagging or publishing anything (D31).
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,3 +26,33 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --release
+
+  # Only reads Cargo.lock and the crate metadata, so Linux is enough.
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  snapshot-package:
+    if: github.event_name == 'workflow_dispatch'
+    needs: [check, dependencies]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-build
+      - name: Build the snapshot ZIP and installer
+        shell: pwsh
+        run: |
+          powershell -File tools\package.ps1
+          if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed" }
+          $name = (Get-ChildItem dist -Filter *-win64.zip | Select-Object -First 1).BaseName -replace '-win64$', ''
+          "PACKAGE_NAME=$name" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: |
+            dist/*.zip
+            dist/*-setup.exe

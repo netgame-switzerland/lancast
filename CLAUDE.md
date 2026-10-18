@@ -32,5 +32,6 @@ The full specification is in `docs/SPEC.md`. Read it before making any larger ch
 - Build: `cargo build --release`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt`
+- Dependencies: `cargo deny check` (advisories, licenses, sources; `deny.toml`). A new dependency must pass it; extend the license allow-list only for permissive licenses, with a note in `docs/DECISIONS.md`.
 - Snapshot package: `powershell -File tools\package.ps1` (release packages come from GitHub Actions)
 - Test receiver: NDI Studio Monitor (NDI Tools) on the same or a second machine.

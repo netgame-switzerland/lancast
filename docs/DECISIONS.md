@@ -903,6 +903,23 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Assumption:** the release workflow pushes to `main` with `GITHUB_TOKEN`. A branch protection rule
   or ruleset on `main` must allow that (or the workflow needs a token that may bypass it).
 
+### D31. Dependency updates and checks, snapshot packages from CI (2026-10-18)
+- **Dependabot** (`.github/dependabot.yml`, monthly): crates with `minor`/`patch` update types grouped
+  into one PR; others (a new major, or for 0.x crates a breaking 0.y bump that Dependabot may still
+  label "minor" — CI catches those) as separate PRs. GitHub Actions updates in one grouped PR, scanning
+  the workflows and the composite action (`directories: ["/", "/.github/actions/*"]`). Dependabot
+  *alerts* (repository setting) cover new advisories between updates.
+- **cargo-deny 0.20** (`deny.toml`, CI job `dependencies` via `EmbarkStudios/cargo-deny-action@v2` on
+  Linux, since it only reads metadata): graph limited to `x86_64-pc-windows-msvc`; RustSec
+  advisories; permissive licenses only (0BSD, Apache-2.0, BSD-2/3-Clause, ISC, MIT, Unicode-3.0, Zlib,
+  plus OFL-1.1 and Ubuntu-font-1.0 for egui's embedded fonts), because the exe and
+  THIRD-PARTY-LICENSES.txt ship under Apache-2.0 (D24); crates.io only; duplicate versions only warn
+  (on 2026-10-18: `windows-sys`, `syn`, `miniz_oxide`, `itertools`). Local result that day:
+  advisories, bans, licenses and sources ok.
+- **Snapshot packages:** a manual run of *CI* adds the job `snapshot-package` (after the checks),
+  which runs `package.ps1` without `-Release` and uploads the ZIP and setup as a workflow artifact.
+  Nothing is tagged or published.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
