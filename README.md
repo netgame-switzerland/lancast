@@ -93,11 +93,16 @@ For events that want more control, there is an event edition: a LANcast package 
 - **Delivery.** The configuration comes as `LANcast.event` in the event's download, or as a signed `lancast://event?…` link. It is valid from/until given dates.
 - **Signing.** Ed25519: the edition contains only the organizer's public key, so a configuration can't be forged or changed, not even with the exe in hand.
 
+Keep the event's files **outside the repository**, e.g. in `..\netgame-2026\`. `secret.key` is the organizer's private signing key: never commit it, and never put it into a download.
+
 ```powershell
 cargo build --release --bin lancast-event
-target\release\lancast-event keygen secret.key        # once per event; keep secret.key private
-# describe the event in event.toml (see packaging\event.example.toml), then:
-powershell -File tools\package.ps1 -EventConfig event.toml -SigningKey secret.key
+mkdir ..\netgame-2026
+# once per event: create the key pair (prints the public key)
+target\release\lancast-event keygen ..\netgame-2026\secret.key
+# copy the template and adjust name, id, dates and settings
+copy packaging\event.example.toml ..\netgame-2026\event.toml
+powershell -File tools\package.ps1 -EventConfig ..\netgame-2026\event.toml -SigningKey ..\netgame-2026\secret.key
 ```
 This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
 
