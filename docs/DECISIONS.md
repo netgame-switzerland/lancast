@@ -834,7 +834,7 @@ Versions checked with `cargo info` on 2026-10-17.
     links".
   - Tests in a portable copy, so the user's own `LANcast.toml` was not touched.
 
-### D29. Hidden tray icon: stay on the taskbar (2026-10-18)
+### D29. Tray icon visibility: tray mode only when the icon can be reached (2026-10-18)
 - **Problem:** Windows 11 puts every new notification-area icon into the overflow, and the user can
   also turn off the overflow arrow ("Hidden icon menu"). Hiding the main window to the tray then makes
   LANcast vanish: no window, no taskbar button, no visible icon. Every new exe path counts as a new
@@ -848,12 +848,26 @@ Versions checked with `cargo info` on 2026-10-17.
   with `SHGetKnownFolderPath` (result freed with `CoTaskMemFree`,
   https://learn.microsoft.com/windows/win32/api/shlobj_core/nf-shlobj_core-shgetknownfolderpath).
   On the dev machine ten LANcast entries existed (one per build and test folder), only one promoted.
+- **Finding 2 (undocumented, verified by toggling):** the "Hidden icon menu" switch (the ^ arrow) is
+  `SystemTrayChevronVisibility` (DWORD, 1 = on, 0 = off) under
+  `HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\TrayNotify`. Windows
+  writes it at once. An icon in the overflow can be reached with the arrow, so it counts as visible;
+  only "not promoted and arrow off" makes it unreachable.
+- **Finding 3:** `Shell_NotifyIconGetRect`
+  (https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shell_notifyicongetrect), the
+  documented alternative, cannot tell these cases apart. A probe icon reported success in every state:
+  in the overflow it returned the arrow's rectangle (32×48), with the arrow off an icon-sized rectangle
+  on the taskbar (40×48), and while pinned to the taskbar still the arrow's rectangle.
+- **Caution:** Explorer caches `NotifyIconSettings`. Deleting entries while it runs left it believing
+  the paths were known, so it wrote no new entries and the apps vanished from the taskbar settings until
+  Explorer was restarted. Clean up only with Explorer stopped.
 - **Decision** (`src/tray_visibility.rs`):
   - The key is only read, never written (writing `IsPromoted` would override the user's choice and is
     not guaranteed to take effect without an Explorer restart).
   - "Close and minimize to tray" is **opt-in** (default off; existing `LANcast.toml` files keep their
-    value). It takes effect only while the icon is promoted; otherwise LANcast behaves as if it were off:
-    × quits and minimize is normal.
+    value). It takes effect only while the icon can be reached (`tray_visibility::icon_placement`):
+    promoted, or in the overflow with the arrow on. Otherwise LANcast behaves as if it were off: × quits
+    and minimize is normal.
   - × quits after a confirmation while sending ("Stop sending and quit LANcast?"), so an accidental ×
     does not end a cast. "Close window" on the taskbar restores the window to show the question.
   - The icon is still always registered: tray notifications need it, and Windows lists an app under
@@ -862,10 +876,12 @@ Versions checked with `cargo info` on 2026-10-17.
   - Rejected (first attempt): keeping the option on and minimizing to the taskbar instead. With Quit
     only in the invisible tray menu, × and "Close window" both minimized and LANcast could not be quit.
   - No `NotifyIconSettings` key (Windows 10, which shows the overflow arrow): hide as before. An entry
-    missing for our path counts as hidden (new icons start in the overflow).
-  - With the option on and the icon hidden, Settings shows "Tray icon hidden by Windows: × quits" with
-    a button that opens `ms-settings:taskbar`; the check is cached for 3 s, so the note disappears once
-    the user turns the icon on.
+    missing for our path counts as in the overflow (new icons start there); a missing
+    `SystemTrayChevronVisibility` counts as arrow on.
+  - With the option on, Settings shows a quiet note "Tray icon is under the ^ arrow" while the icon is in
+    the overflow, and "Tray icon hidden by Windows: × quits" (amber) with a button that opens
+    `ms-settings:taskbar` while it cannot be reached. The check is cached for 3 s, so the note follows
+    the user's taskbar settings.
   - Clicking a LANcast notification restores the window (`NIN_BALLOONUSERCLICK` with
     `NOTIFYICON_VERSION_4`, https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw),
     and the "still running" notification now says so, plus that starting LANcast again reopens it.

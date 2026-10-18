@@ -34,6 +34,7 @@ use crate::{
     ndi_config::Discovery,
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
+    tray_visibility::IconPlacement,
     windows_list::WindowInfo,
 };
 
@@ -97,8 +98,8 @@ pub struct LancastApp {
     event: Option<ActiveEvent>,
     event_error: Option<String>,
     event_checked: Instant,
-    /// Whether Windows shows the tray icon (D29), and when last checked.
-    tray_icon_visible: bool,
+    /// Where Windows shows the tray icon (D29), and when last checked.
+    tray_placement: IconPlacement,
     tray_checked: Option<Instant>,
     /// × was pressed while sending: ask before quitting.
     confirm_quit: bool,
@@ -150,7 +151,7 @@ impl LancastApp {
             event: None,
             event_error: None,
             event_checked: Instant::now(),
-            tray_icon_visible: true,
+            tray_placement: IconPlacement::Shown,
             tray_checked: None,
             confirm_quit: false,
         };
@@ -527,16 +528,16 @@ impl LancastApp {
     }
 
     /// Cached, as it reads the registry; refreshed every few seconds so the
-    /// hint disappears once the user shows the icon.
-    fn tray_icon_visible(&mut self) -> bool {
+    /// note follows the user's taskbar settings.
+    fn tray_placement(&mut self) -> IconPlacement {
         if self
             .tray_checked
             .is_none_or(|checked| checked.elapsed() >= Duration::from_secs(3))
         {
-            self.tray_icon_visible = crate::tray_visibility::icon_visible();
+            self.tray_placement = crate::tray_visibility::icon_placement();
             self.tray_checked = Some(Instant::now());
         }
-        self.tray_icon_visible
+        self.tray_placement
     }
 
     fn hide_to_tray(&mut self, state: &AppState) {
@@ -1038,20 +1039,37 @@ impl LancastApp {
                         }
                         ui.end_row();
 
-                        if self.to_tray && !self.tray_icon_visible() {
+                        let placement = if self.to_tray {
+                            self.tray_placement()
+                        } else {
+                            IconPlacement::Shown
+                        };
+                        if placement == IconPlacement::Overflow {
+                            ui.label("");
+                            ui.label(RichText::new("Tray icon is under the ^ arrow").weak())
+                                .on_hover_text(
+                                    "Windows puts new tray icons into the overflow. To pin it \
+                                     to the taskbar: Settings > Personalization > Taskbar > \
+                                     Other system tray icons > LANcast.",
+                                );
+                            ui.end_row();
+                        }
+                        if placement == IconPlacement::Hidden {
                             ui.label("");
                             ui.label(
                                 RichText::new("Tray icon hidden by Windows: × quits").color(AMBER),
                             )
                             .on_hover_text(
-                                "Until the tray icon is shown on the taskbar, × quits and \
-                                 minimize works normally.",
+                                "The tray icon is in the overflow and the hidden icon menu \
+                                 (^) is turned off. Until the icon can be reached, × quits \
+                                 and minimize works normally.",
                             );
                             if ui
                                 .small_button("Show tray icon…")
                                 .on_hover_text(
                                     "Opens the taskbar settings: under \
-                                     \"Other system tray icons\", turn on LANcast.",
+                                     \"Other system tray icons\", turn on LANcast, \
+                                     or turn on \"Hidden icon menu\".",
                                 )
                                 .clicked()
                             {

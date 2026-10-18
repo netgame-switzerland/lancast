@@ -1,10 +1,13 @@
-//! Whether Windows shows LANcast's tray icon on the taskbar (D29).
+//! Whether Windows shows LANcast's tray icon (D29).
 //!
 //! Windows 11 puts new notification-area icons into the overflow and keeps
 //! the user's choice per executable path under
 //! `HKCU\Control Panel\NotifyIconSettings\<id>` (`ExecutablePath`,
-//! `IsPromoted`). The key is undocumented, so it is only read, never written:
-//! the user decides which icons are shown.
+//! `IsPromoted`). The overflow menu (^) can be turned off as well
+//! (`SystemTrayChevronVisibility` under `TrayNotify`); then an icon in the
+//! overflow cannot be reached at all. Both values are undocumented, so they
+//! are only read, never written: the user decides which icons are shown.
+//! `Shell_NotifyIconGetRect` cannot tell these cases apart (D29).
 
 use std::path::{Path, PathBuf};
 
@@ -23,9 +26,43 @@ use windows::{
     core::{GUID, HSTRING, PCWSTR, PWSTR, w},
 };
 
-/// Whether this exe's tray icon is visible on the taskbar. `true` where
-/// Windows does not record it (Windows 10, which shows the overflow arrow).
+/// Where the user can find this exe's tray icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconPlacement {
+    /// On the taskbar, or Windows does not record it (Windows 10, which
+    /// always shows the overflow arrow).
+    Shown,
+    /// In the overflow, reachable with the ^ arrow.
+    Overflow,
+    /// In the overflow while the overflow menu is turned off: not reachable.
+    Hidden,
+}
+
+/// Whether the user can reach the tray icon (on the taskbar or in the
+/// overflow).
 pub fn icon_visible() -> bool {
+    icon_placement() != IconPlacement::Hidden
+}
+
+pub fn icon_placement() -> IconPlacement {
+    if promoted() {
+        return IconPlacement::Shown;
+    }
+    let chevron = Key::open(w!(
+        r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\TrayNotify"
+    ))
+    .and_then(|key| key.dword("", w!("SystemTrayChevronVisibility")));
+    // A missing value counts as on: the overflow arrow is the default.
+    if chevron == Some(0) {
+        IconPlacement::Hidden
+    } else {
+        IconPlacement::Overflow
+    }
+}
+
+/// Whether this exe's icon is on the taskbar; `true` where Windows does not
+/// record it (Windows 10).
+fn promoted() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return true;
     };
@@ -38,7 +75,7 @@ pub fn icon_visible() -> bool {
             return settings.dword(&name, w!("IsPromoted")) == Some(1);
         }
     }
-    // No entry yet: a new icon, which Windows 11 hides.
+    // No entry yet: a new icon, which Windows 11 puts into the overflow.
     false
 }
 
