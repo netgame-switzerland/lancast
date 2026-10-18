@@ -1,8 +1,8 @@
 name: Set up the LANcast Linux build
 description: >
   Rust (stable) with clippy, the system libraries for eframe (X11/Wayland)
-  and bindgen, and the NDI 6 SDK for Linux (latest, downloaded from ndi.video).
-  Sets NDI_SDK_DIR and LD_LIBRARY_PATH (D33).
+  and bindgen, and the NDI 6 SDK for Linux (latest, downloaded from ndi.video,
+  cached per SDK release). Sets NDI_SDK_DIR and LD_LIBRARY_PATH (D33).
 runs:
   using: composite
   steps:
@@ -10,7 +10,11 @@ runs:
       with:
         components: clippy
 
+    # Only main writes the cache; pull requests read it (D34).
     - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: linux
+        save-if: ${{ github.ref == 'refs/heads/main' }}
 
     - name: Install system libraries
       shell: bash
@@ -18,15 +22,40 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends pkg-config libwayland-dev libxkbcommon-dev libclang-dev
 
+    # Cache key: the archive's Last-Modified date, so a new SDK is a miss.
+    - name: Check the NDI SDK release
+      id: ndi-stamp
+      shell: bash
+      run: |
+        url="https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz"
+        modified=$(curl -fsSI "$url" | tr -d '\r' | sed -n 's/^last-modified: //Ip' | head -n1)
+        stamp=$(date -u -d "$modified" +%Y%m%d%H%M%S 2>/dev/null || echo "run-$GITHUB_RUN_ID")
+        echo "NDI SDK archive: $modified"
+        echo "url=$url" >> "$GITHUB_OUTPUT"
+        echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v4
+      id: ndi-cache
+      with:
+        path: ${{ runner.temp }}/NDI SDK for Linux
+        key: ndi-sdk-linux-${{ steps.ndi-stamp.outputs.stamp }}
+
     # The SDK comes as a shell script that shows the EULA, asks to agree and
     # unpacks "NDI SDK for Linux" into the current folder.
     - name: Install the NDI 6 SDK for Linux
+      if: steps.ndi-cache.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        NDI_URL: ${{ steps.ndi-stamp.outputs.url }}
       run: |
         cd "$RUNNER_TEMP"
-        curl -fsSL -o ndi-sdk.tar.gz "https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz"
+        curl -fsSL -o ndi-sdk.tar.gz "$NDI_URL"
         tar -xzf ndi-sdk.tar.gz
         echo y | PAGER=cat bash Install_NDI_SDK_v6_Linux.sh > /dev/null
+
+    - name: Locate the NDI SDK
+      shell: bash
+      run: |
         sdk="$RUNNER_TEMP/NDI SDK for Linux"
         lib="$sdk/lib/x86_64-linux-gnu"
         test -f "$sdk/include/Processing.NDI.Lib.h"

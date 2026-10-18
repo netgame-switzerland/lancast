@@ -1,7 +1,8 @@
 name: Set up the LANcast build
 description: >
   Rust (stable, MSVC) with clippy/rustfmt, the NDI 6 SDK (latest, downloaded
-  from ndi.video) and LLVM for bindgen. Sets NDI_SDK_DIR and LIBCLANG_PATH.
+  from ndi.video, cached per SDK release) and LLVM for bindgen. Sets
+  NDI_SDK_DIR and LIBCLANG_PATH.
 outputs:
   ndi-version:
     description: File version of the NDI runtime DLL that gets shipped
@@ -13,24 +14,68 @@ runs:
       with:
         components: clippy, rustfmt
 
+    # One cache for all Windows jobs (CI, Release, Event package); only main
+    # writes it, pull requests and tags read it (D34).
     - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: windows
+        save-if: ${{ github.ref == 'refs/heads/main' }}
 
-    # The SDK installer is Inno Setup, so it installs silently. SPEC §6 asks
-    # for the latest SDK at release time, so it is not cached or pinned.
+    # SPEC §6 asks for the latest SDK at release time: the cache key is the
+    # installer's Last-Modified date, so a new SDK release is a cache miss.
+    - name: Check the NDI SDK release
+      id: ndi-stamp
+      shell: pwsh
+      run: |
+        $url = "https://downloads.ndi.tv/SDK/NDI_SDK/NDI%206%20SDK.exe"
+        $modified = (Invoke-WebRequest $url -Method Head).Headers["Last-Modified"] | Select-Object -First 1
+        $stamp = if ($modified) { ([datetime]$modified).ToUniversalTime().ToString("yyyyMMddHHmmss") } else { "run-$env:GITHUB_RUN_ID" }
+        Write-Host "NDI SDK installer: $modified"
+        "url=$url" >> $env:GITHUB_OUTPUT
+        "stamp=$stamp" >> $env:GITHUB_OUTPUT
+
+    - uses: actions/cache@v4
+      id: ndi-cache
+      with:
+        path: ${{ runner.temp }}/ndi-sdk
+        key: ndi-sdk-windows-${{ steps.ndi-stamp.outputs.stamp }}
+
+    # The installer is Inno Setup, so it installs silently. Only the installer
+    # process is awaited (Start-Process -Wait would also wait for anything it
+    # leaves running), with a timeout; its log goes into an annotation.
     - name: Install the NDI 6 SDK
+      if: steps.ndi-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        NDI_URL: ${{ steps.ndi-stamp.outputs.url }}
+      run: |
+        $ProgressPreference = "SilentlyContinue"
+        $installer = Join-Path $env:RUNNER_TEMP "ndi-sdk-setup.exe"
+        Invoke-WebRequest $env:NDI_URL -OutFile $installer
+        $dir = Join-Path $env:RUNNER_TEMP "ndi-sdk"
+        $log = Join-Path $env:RUNNER_TEMP "ndi-sdk-install.log"
+        $p = Start-Process $installer -PassThru -ArgumentList `
+          "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/LOG=`"$log`"", "/DIR=`"$dir`""
+        $done = $p.WaitForExit(300000)
+        $tail = if (Test-Path $log) { Get-Content $log -Tail 25 } else { @("(no installer log)") }
+        $tail | Write-Host
+        if (-not $done -or $p.ExitCode -ne 0) {
+          $why = if ($done) { "exit code $($p.ExitCode)" } else { "timed out after 5 minutes" }
+          if (-not $done) { $p | Stop-Process -Force -ErrorAction SilentlyContinue }
+          # Workflow commands: % and newlines must be escaped.
+          $lines = $tail | ForEach-Object { $_.Replace('%', '%25') }
+          Write-Host "::error title=NDI SDK install::$why%0A$($lines -join '%0A')"
+          throw "NDI SDK installer: $why"
+        }
+
+    - name: Locate the NDI SDK
       id: ndi
       shell: pwsh
       run: |
-        $installer = Join-Path $env:RUNNER_TEMP "ndi-sdk-setup.exe"
-        Invoke-WebRequest "https://downloads.ndi.tv/SDK/NDI_SDK/NDI%206%20SDK.exe" -OutFile $installer
-        $dir = Join-Path $env:RUNNER_TEMP "NDI 6 SDK"
-        $p = Start-Process $installer -Wait -PassThru -ArgumentList `
-          "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$dir`""
-        if ($p.ExitCode -ne 0) { throw "NDI SDK installer failed with exit code $($p.ExitCode)" }
-        $sdk = @($dir, "C:\Program Files\NDI\NDI 6 SDK") |
+        $sdk = @((Join-Path $env:RUNNER_TEMP "ndi-sdk"), "C:\Program Files\NDI\NDI 6 SDK") |
           Where-Object { Test-Path (Join-Path $_ "Include\Processing.NDI.Lib.h") } |
           Select-Object -First 1
-        if (-not $sdk) { throw "NDI SDK not found after installing" }
+        if (-not $sdk) { throw "NDI SDK not found" }
         $dll = Get-Item (Join-Path $sdk "Bin\x64\Processing.NDI.Lib.x64.dll")
         Write-Host "NDI SDK in $sdk, runtime $($dll.VersionInfo.FileVersion)"
         "NDI_SDK_DIR=$sdk" >> $env:GITHUB_ENV

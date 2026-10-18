@@ -16,11 +16,14 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded pull request runs are cancelled; every commit on main keeps
+  # its result (and writes the cache).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     runs-on: windows-2025
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-build
@@ -32,6 +35,7 @@ jobs:
   # there, but the portable core and its tests must compile and pass (D33).
   check-linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-build-linux
@@ -51,6 +55,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: [check, dependencies]
     runs-on: windows-2025
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-build

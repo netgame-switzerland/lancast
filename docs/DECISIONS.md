@@ -1023,6 +1023,26 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Not yet:** `cargo deny` for Linux (unmaintained `zbus_names`/`zvariant*`, D32), Linux packages and
   a multi-platform release workflow (build jobs per platform, one publish job that tags and pushes).
 
+### D34. CI: NDI installer hang, caches, timeouts (2026-10-18)
+- **Finding:** in the first GitHub runs the Windows job hung in `setup-build` for over 10 minutes
+  (the Linux setup took 26 s), until cancelled. Logs need a login, so the step itself couldn't be
+  seen. Likely cause: PowerShell 7's `Start-Process -Wait` waits for the whole process tree, so a
+  process the NDI installer leaves running blocks it
+  (https://learn.microsoft.com/powershell/module/microsoft.powershell.management/start-process).
+  Now only the installer process is awaited (`WaitForExit`, 5 min timeout), with an Inno Setup
+  `/LOG`; on failure its last lines become an `::error` annotation, which the public API shows
+  without a login. If it still fails, the annotation says why.
+- **NDI SDK cache:** `actions/cache` keyed on the installer's `Last-Modified` header (Windows and
+  Linux). A new SDK release is a cache miss, so releases still ship the latest SDK (SPEC §6).
+- **Rust cache:** `Swatinem/rust-cache` with `shared-key` per OS, so CI, Release and Event package
+  share one Windows cache (the default key contains the job id). Only `main` saves it
+  (`save-if`); pull requests and tag builds only restore, which keeps the 10 GB repository cache
+  limit for main. The cache is only saved after a successful job.
+- **Concurrency:** only pull request runs are cancelled when superseded; on `main` every commit
+  keeps its result and its cache save. Before, a push to `main` cancelled the previous run, which
+  hid the hang.
+- **Timeouts:** 30–60 min per job instead of GitHub's default 6 hours.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
