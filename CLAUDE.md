@@ -21,6 +21,7 @@ The full specification is in `docs/SPEC.md`. Read it before making any larger ch
 - Keep `unsafe` confined to clearly scoped modules (`capture/audio_wasapi.rs` etc.), each block with a `// SAFETY:` comment.
 - Threading: video capture, audio capture and NDI send run decoupled via bounded channels (`crossbeam-channel`). When a channel is full, drop the frame rather than block.
 - Logging with `tracing`, to stdout and to a log file next to the exe.
+- Line endings: LF everywhere (`.gitattributes`). Tools and scripts that write files must keep LF (Python: `newline=""`).
 
 ## Versions and releases (D30)
 - Versions follow SemVer (`MAJOR.MINOR.PATCH`, optionally `-pre`). `Cargo.toml` holds the last released version; every release has the git tag `v<version>`.
