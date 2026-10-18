@@ -24,7 +24,7 @@ LANcast is the participant's side of a simpler setup:
 - **Live preview and audio meter** (OBS-style peak/RMS) before and while sending.
 - **Game audio only** via WASAPI process loopback.
   - If Windows can't do that, LANcast warns *before* sending and asks: "Send with system audio" or "Send without audio".
-- **Tray icon** with a red REC dot while casting. Optionally, close and minimize go to the tray (only while Windows shows the icon on the taskbar).
+- **Tray icon** with a red REC dot while casting. Optionally, close and minimize go to the tray, as long as the icon can be reached: on the taskbar or under the **^** arrow. If Windows hides it completely, × quits and minimize stays on the taskbar.
 - **Stream name `Hostname (User - Game)`:** the user name defaults to the Windows login and is editable.
 - **Network help:**
   - automatic discovery (mDNS)
@@ -136,10 +136,12 @@ Participant-facing instructions (firewall, SmartScreen, troubleshooting) are in 
 cargo build --release                         # target\release\LANcast.exe (+ NDI DLL copied next to it)
 cargo clippy --all-targets -- -D warnings
 cargo fmt
-cargo test --release                          # unit tests (pacer, scaler, levels, config, links, signatures)
+cargo test --release                          # unit tests (pacer, scaler, levels, config, links, signatures, tray, icons)
 cargo deny check                              # advisories, licenses, sources (see Dependencies)
 ```
 Quit a running LANcast before rebuilding: Windows does not let cargo replace a running exe.
+
+**Other platforms:** LANcast ships for Windows only. The code is split into a portable core and Windows backends (D32), with stubs elsewhere. CI builds and tests it on Linux, but a Linux build can't capture anything yet.
 
 **Local package (snapshot):**
 ```powershell
@@ -201,23 +203,34 @@ Run them with `cargo run --release --example <name> -- <args>`.
 ```
 src/
   main.rs            entry point: GUI without arguments, CLI with arguments
+  lib.rs             module list, VERSION; Windows-only modules swap to src/unsupported/ elsewhere
+  cli.rs             command-line mode
   app/               egui UI, carousel, meter, controller thread
-  capture/           video (WGC), audio (WASAPI), pacer, scaler
+  capture/           pacer, scaler; video.rs (options, preview, FrameSink) with backend
+                     video_wgc.rs (WGC); audio.rs (types, levels) with backend audio_wasapi.rs
   session.rs         one send session (NDI + video + audio) and the preview capture
   ndi_out.rs         NDI sender thread
   ndi_config.rs      NDI network configuration (discovery server)
   config.rs          LANcast.toml, data folder (%LOCALAPPDATA%\LANcast, portable mode)
+  logging.rs         tracing to stdout and the log file
+  os_caps.rs         OS build and optional capture features (process loopback, …)
   event_link.rs      lancast:// links: enforced and default sections
+  url_scheme.rs      registration of the lancast: scheme
   distro.rs          event edition: signed event configurations (Ed25519)
   bin/lancast-event.rs  organizer tool: key, sign, verify
-  tray.rs            tray icon, notifications, single instance
-  tray_visibility.rs whether Windows shows the tray icon (D29)
-  windows_list.rs    window enumeration (Alt-Tab-like)
+  tray.rs            tray states, commands, icon drawing; backend tray/win32.rs
+                     (Shell_NotifyIconW, notifications, single instance)
+  tray_visibility.rs whether the tray icon can be reached (D29)
+  windows_list.rs    window list, filter, target resolution; backend windows_list/win32.rs
   win_thumbnail.rs   DWM live thumbnails
-examples/            spikes and test tools (see above)
+  app_icon.rs        LANcast's own icon for the window and the tray
+  exe_icon.rs        icons of game executables for the carousel
+  unsupported/       stubs of the Windows-only modules for other platforms (D32)
+examples/            spikes and test tools (see above); Windows API code in examples/windows/
 packaging/           README/EULA for the release, Inno Setup script, event.example.toml
 tools/               package.ps1, make_icons.py, third_party_licenses.py
-.github/             CI, release and event package workflows
+.github/             CI, release and event package workflows, Dependabot
+deny.toml            cargo-deny: allowed licenses, advisories, sources
 docs/                SPEC, DECISIONS, ICON, EVENT_LINKS
 ```
 
