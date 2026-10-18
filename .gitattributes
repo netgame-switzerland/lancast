@@ -1,0 +1,2 @@
+# LF everywhere, independent of core.autocrlf; binaries are detected.
+* text=auto eol=lf
