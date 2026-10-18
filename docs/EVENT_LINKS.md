@@ -123,6 +123,18 @@ target\release\lancast-event verify ..\netgame-2026\LANcast.event <public key>  
 ```
 Participants get the new configuration from the new link, or from a new download (a changed `LANcast.event` is picked up at the next start).
 
+### Building in GitHub Actions
+A local build is a snapshot (D30). For the event download, build the event edition of a **released** version with the *Event package* workflow:
+1. **Create a GitHub environment** for the event: repository *Settings → Environments → New environment*, e.g. `netgame-2026`. Add:
+   - the variable `EVENT_TOML`: the whole content of `event.toml`
+   - the secret `EVENT_SIGNING_KEY`: the content of `secret.key`
+
+   Optionally restrict the environment to required reviewers, so that nobody else can build with the key.
+2. **Run** *Actions → Event package → Run workflow* with the release tag (e.g. `v0.2.0`) and the environment name.
+3. **Download** the workflow artifact. It has `LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt`. With *attach* checked, the ZIP and the setup are also added to the GitHub release; the event edition contains only the public key and the signed configuration, so it is safe to publish.
+
+The key only exists as a GitHub secret and as a temporary file on the runner, deleted after signing.
+
 ## Testing a link without a website
 ```powershell
 Start-Process "lancast://config?event=Test&max=1280x720&fps=30"

@@ -1,5 +1,9 @@
 //! lancast library: modules shared by the binary and the examples.
 
+/// The LANcast version: `0.2.0` for a release, `0.2.0+snapshot.g1a2b3c4`
+/// for a local build (set by `build.rs`, D30).
+pub const VERSION: &str = env!("LANCAST_VERSION");
+
 pub mod app;
 pub mod app_icon;
 pub mod capture;

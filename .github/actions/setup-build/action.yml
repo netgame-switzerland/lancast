@@ -1,0 +1,45 @@
+name: Set up the LANcast build
+description: >
+  Rust (stable, MSVC) with clippy/rustfmt, the NDI 6 SDK (latest, downloaded
+  from ndi.video) and LLVM for bindgen. Sets NDI_SDK_DIR and LIBCLANG_PATH.
+outputs:
+  ndi-version:
+    description: File version of the NDI runtime DLL that gets shipped
+    value: ${{ steps.ndi.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    - uses: Swatinem/rust-cache@v2
+
+    # The SDK installer is Inno Setup, so it installs silently. SPEC §6 asks
+    # for the latest SDK at release time, so it is not cached or pinned.
+    - name: Install the NDI 6 SDK
+      id: ndi
+      shell: pwsh
+      run: |
+        $installer = Join-Path $env:RUNNER_TEMP "ndi-sdk-setup.exe"
+        Invoke-WebRequest "https://downloads.ndi.tv/SDK/NDI_SDK/NDI%206%20SDK.exe" -OutFile $installer
+        $dir = Join-Path $env:RUNNER_TEMP "NDI 6 SDK"
+        $p = Start-Process $installer -Wait -PassThru -ArgumentList `
+          "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$dir`""
+        if ($p.ExitCode -ne 0) { throw "NDI SDK installer failed with exit code $($p.ExitCode)" }
+        $sdk = @($dir, "C:\Program Files\NDI\NDI 6 SDK") |
+          Where-Object { Test-Path (Join-Path $_ "Include\Processing.NDI.Lib.h") } |
+          Select-Object -First 1
+        if (-not $sdk) { throw "NDI SDK not found after installing" }
+        $dll = Get-Item (Join-Path $sdk "Bin\x64\Processing.NDI.Lib.x64.dll")
+        Write-Host "NDI SDK in $sdk, runtime $($dll.VersionInfo.FileVersion)"
+        "NDI_SDK_DIR=$sdk" >> $env:GITHUB_ENV
+        "version=$($dll.VersionInfo.FileVersion)" >> $env:GITHUB_OUTPUT
+
+    # LLVM is preinstalled on the Windows runner images.
+    - name: Locate LLVM
+      shell: pwsh
+      run: |
+        $llvm = "C:\Program Files\LLVM\bin"
+        if (-not (Test-Path (Join-Path $llvm "libclang.dll"))) { throw "libclang.dll not found in $llvm" }
+        "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV

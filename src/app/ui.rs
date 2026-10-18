@@ -602,7 +602,7 @@ impl eframe::App for LancastApp {
                 ui.hyperlink_to(RichText::new("ndi.video").small(), "https://ndi.video/");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new(concat!("LANcast ", env!("CARGO_PKG_VERSION")))
+                        RichText::new(format!("LANcast {}", crate::VERSION))
                             .small()
                             .weak(),
                     );

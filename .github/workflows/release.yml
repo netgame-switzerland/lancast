@@ -1,0 +1,129 @@
+# Creates a LANcast release (D30): bumps the SemVer version in Cargo.toml,
+# builds the ZIP and the installer, then pushes the commit "Release vX.Y.Z"
+# with the tag vX.Y.Z and publishes the GitHub release with the packages.
+# The commit and tag are only pushed if the build succeeded.
+#
+# Run it from the Actions tab: "Release" -> "Run workflow" (branch main).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump from the Cargo.toml version (none = release it as is, e.g. the first release)"
+        type: choice
+        options: [patch, minor, major, none]
+        default: patch
+      version:
+        description: "Or an exact version, e.g. 1.0.0 or 1.0.0-rc.1 (overrides bump)"
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine the version
+        id: version
+        shell: pwsh
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXACT: ${{ inputs.version }}
+        run: |
+          $semver = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          $current = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($current -notmatch $semver) { throw "Cargo.toml version '$current' is not SemVer" }
+          $major, $minor, $patch, $pre = [int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $Matches[4]
+          $next = if ($env:EXACT) { $env:EXACT.Trim().TrimStart("v") } else {
+            switch ($env:BUMP) {
+              "major" { "$($major + 1).0.0" }
+              "minor" { "$major.$($minor + 1).0" }
+              # A patch bump of a pre-release (1.0.0-rc.1) releases 1.0.0.
+              "patch" { if ($pre) { "$major.$minor.$patch" } else { "$major.$minor.$($patch + 1)" } }
+              "none"  { $current }
+            }
+          }
+          if ($next -notmatch $semver) { throw "'$next' is not a SemVer version (X.Y.Z or X.Y.Z-pre)" }
+          if (git ls-remote --tags origin "refs/tags/v$next") { throw "Tag v$next already exists" }
+          Write-Host "Releasing $next (Cargo.toml had $current)"
+          "version=$next" >> $env:GITHUB_OUTPUT
+          "prerelease=$(if ($next.Contains('-')) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+
+      - uses: ./.github/actions/setup-build
+        id: setup
+
+      - name: Commit and tag the version (local)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $text = [IO.File]::ReadAllText("Cargo.toml")
+          $text = ([regex]'(?m)^version\s*=\s*"[^"]*"').Replace($text, "version = `"$env:VERSION`"", 1)
+          [IO.File]::WriteAllText("Cargo.toml", $text)
+          cargo update --workspace    # the lancast entry in Cargo.lock
+          if ($LASTEXITCODE -ne 0) { throw "cargo update failed" }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          # Nothing to commit if the version is unchanged (bump "none").
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) { git commit -m "Release v$env:VERSION" }
+          git tag -a "v$env:VERSION" -m "LANcast $env:VERSION"
+
+      - name: Lint and test
+        shell: pwsh
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "clippy failed" }
+          cargo test --release
+          if ($LASTEXITCODE -ne 0) { throw "tests failed" }
+
+      - name: Build the ZIP and the installer
+        shell: pwsh
+        run: |
+          powershell -File tools\package.ps1 -Release
+          if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed" }
+          Push-Location dist
+          Get-ChildItem -File -Path *.zip, *.exe -Name |
+            ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $_" } |
+            Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+          Pop-Location
+
+      # Fails without changes if main moved on meanwhile: run the release again.
+      - name: Push the commit and the tag
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/v$env:VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          NDI_VERSION: ${{ steps.setup.outputs.ndi-version }}
+        run: |
+          $notes = @"
+          **Downloads:** ``LANcast-$env:VERSION-setup.exe`` (installer) or ``LANcast-$env:VERSION-win64.zip`` (portable, unzip and run).
+          Windows 10 1903 or newer, 64-bit. Built with the NDI runtime $env:NDI_VERSION.
+          "@
+          $files = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(zip|exe)$|^SHA256SUMS\.txt$' } |
+            ForEach-Object { $_.FullName }
+          $flags = @("--verify-tag", "--title", "LANcast $env:VERSION", "--notes", $notes, "--generate-notes")
+          if ($env:PRERELEASE -eq "true") { $flags += "--prerelease" }
+          gh release create "v$env:VERSION" @files @flags
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

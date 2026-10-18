@@ -1,0 +1,83 @@
+# Builds an event edition ("LAN distro", D28) of a released version (D30).
+#
+# The event's files live in a GitHub environment named after the event (repo
+# Settings -> Environments), never in the repository:
+#   variable EVENT_TOML          the event.toml (see packaging/event.example.toml)
+#   secret   EVENT_SIGNING_KEY   the content of secret.key (lancast-event keygen)
+#
+# Result: a workflow artifact with LANcast-<ver>-<event_id>-win64.zip,
+# ...-setup.exe and ...-link.txt; optionally the ZIP and the setup are also
+# attached to the GitHub release.
+name: Event package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, e.g. v0.2.0"
+        type: string
+        required: true
+      environment:
+        description: "GitHub environment with EVENT_TOML and EVENT_SIGNING_KEY, e.g. netgame-2026"
+        type: string
+        required: true
+      attach:
+        description: "Also attach the ZIP and the setup to the GitHub release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  event-package:
+    runs-on: windows-2025
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Write the event files
+        shell: pwsh
+        env:
+          EVENT_TOML: ${{ vars.EVENT_TOML }}
+          EVENT_SIGNING_KEY: ${{ secrets.EVENT_SIGNING_KEY }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if (-not $env:EVENT_TOML) { throw "Variable EVENT_TOML is not set in environment '$env:ENVIRONMENT'" }
+          if (-not $env:EVENT_SIGNING_KEY) { throw "Secret EVENT_SIGNING_KEY is not set in environment '$env:ENVIRONMENT'" }
+          $dir = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP "event")
+          [IO.File]::WriteAllText((Join-Path $dir "event.toml"), $env:EVENT_TOML)
+          [IO.File]::WriteAllText((Join-Path $dir "secret.key"), $env:EVENT_SIGNING_KEY.Trim() + "`n")
+
+      - uses: ./.github/actions/setup-build
+
+      - name: Build the event edition
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "event"
+          powershell -File tools\package.ps1 -Release -EventOnly `
+            -EventConfig (Join-Path $dir "event.toml") -SigningKey (Join-Path $dir "secret.key")
+          $code = $LASTEXITCODE
+          Remove-Item (Join-Path $dir "secret.key")
+          if ($code -ne 0) { throw "package.ps1 failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lancast-event-${{ inputs.environment }}-${{ inputs.tag }}
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+            dist/*-link.txt
+
+      - name: Attach to the GitHub release
+        if: inputs.attach
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $files = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(zip|exe)$' } | ForEach-Object { $_.FullName }
+          gh release upload $env:TAG @files --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }

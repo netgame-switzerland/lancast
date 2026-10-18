@@ -22,8 +22,15 @@ The full specification is in `docs/SPEC.md`. Read it before making any larger ch
 - Threading: video capture, audio capture and NDI send run decoupled via bounded channels (`crossbeam-channel`). When a channel is full, drop the frame rather than block.
 - Logging with `tracing`, to stdout and to a log file next to the exe.
 
+## Versions and releases (D30)
+- Versions follow SemVer (`MAJOR.MINOR.PATCH`, optionally `-pre`). `Cargo.toml` holds the last released version; every release has the git tag `v<version>`.
+- Never bump the version by hand. Releases are created only by the GitHub workflow *Release* (`.github/workflows/release.yml`, run from the Actions tab): it bumps `Cargo.toml`/`Cargo.lock`, builds the ZIP and the setup with `tools\package.ps1 -Release`, pushes the commit `Release vX.Y.Z` plus the tag, and publishes the GitHub release.
+- Local builds are snapshots: `build.rs` sets `LANCAST_VERSION` to `<version>+snapshot.g<hash>[.dirty]`; only `LANCAST_RELEASE=1` yields the plain version. Use `lancast::VERSION` for any version display, not `CARGO_PKG_VERSION`.
+- Event editions of a release: workflow *Event package* (`.github/workflows/event-package.yml`), with the event's `event.toml` and signing key in a GitHub environment, never in the repository.
+
 ## Commands
 - Build: `cargo build --release`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt`
+- Snapshot package: `powershell -File tools\package.ps1` (release packages come from GitHub Actions)
 - Test receiver: NDI Studio Monitor (NDI Tools) on the same or a second machine.

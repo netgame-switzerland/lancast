@@ -26,7 +26,7 @@ fn main() {
     let log_path = logging::init();
     // SAFETY: still single-threaded here; no thread has been spawned yet.
     unsafe { ndi_config::init_before_threads() };
-    info!(version = env!("CARGO_PKG_VERSION"), log = ?log_path, gui, "LANcast starting");
+    info!(version = lancast::VERSION, log = ?log_path, gui, "LANcast starting");
 
     let result = if gui { app::run(link) } else { cli::run(args) };
     if let Err(err) = result {

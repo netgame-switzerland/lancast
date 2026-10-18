@@ -104,7 +104,7 @@ target\release\lancast-event keygen ..\netgame-2026\secret.key
 copy packaging\event.example.toml ..\netgame-2026\event.toml
 powershell -File tools\package.ps1 -EventConfig ..\netgame-2026\event.toml -SigningKey ..\netgame-2026\secret.key
 ```
-This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
+This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. For a released version, build it with the *Event package* workflow instead. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
 
 ## Requirements
 - **Windows 10 1903 or newer, 64-bit.** Windows 11 is recommended: process loopback (game-only audio) is documented from build 20348.
@@ -112,7 +112,7 @@ This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, 
 - **A receiver on the LAN:** OBS with [DistroAV](https://github.com/DistroAV/DistroAV), [NDI Tools](https://ndi.video/tools/) (Studio Monitor), or other NDI software.
 
 ## Using it
-1. Install with `LANcast-<version>-setup.exe`, or unzip `LANcast-<version>-win64.zip`.
+1. Download `LANcast-<version>-setup.exe` (installer) or `LANcast-<version>-win64.zip` (portable) from the [GitHub releases](https://github.com/netgame-switzerland/lancast/releases), then install or unzip it.
    - With admin rights, the installer also adds the Windows Firewall rule; receivers connect to the sender.
 2. Start LANcast, pick your game, check the preview and the meter, and click **Send**.
 3. On the central PC, add the source `PC-NAME (Player - Game)`.
@@ -140,11 +140,28 @@ cargo test --release                          # unit tests (pacer, scaler, level
 ```
 Quit a running LANcast before rebuilding: Windows does not let cargo replace a running exe.
 
-**Release package:**
+**Local package (snapshot):**
 ```powershell
-powershell -File tools\package.ps1   # dist\LANcast-<ver>-win64.zip and dist\LANcast-<ver>-setup.exe
+powershell -File tools\package.ps1   # dist\LANcast-<ver>-snapshot.g<hash>-win64.zip and …-setup.exe
 ```
 With `-EventConfig event.toml -SigningKey secret.key` it also builds the event edition (see [Event edition](#event-edition-lan-distro)).
+
+## Versions and releases
+LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, optionally with a pre-release suffix such as `1.0.0-rc.1`.
+- **`Cargo.toml` holds the last released version**, and each release has the git tag `v<version>`. Don't change the version by hand; the release workflow does that.
+- **Local builds are snapshots.** `build.rs` stamps them as `<version>+snapshot.g<commit>` (plus `.dirty` with uncommitted changes), e.g. `0.2.0+snapshot.g1a2b3c4`. The version is shown in the settings footer, in the log and in the exe's properties. Local packages are named `LANcast-0.2.0-snapshot.g1a2b3c4-…`.
+- **Releases are built by GitHub Actions** with the plain version, e.g. `0.2.0`.
+
+**Creating a release:** on GitHub, open *Actions → Release → Run workflow* on `main` and pick the bump (`patch`, `minor`, `major`), or enter an exact version. Use `none` to release the current `Cargo.toml` version as it is, e.g. for the first release. The workflow:
+1. computes the new version and checks that its tag doesn't exist yet,
+2. updates `Cargo.toml`/`Cargo.lock`, installs the latest NDI 6 SDK, runs clippy and the tests,
+3. builds `LANcast-<ver>-win64.zip` and `LANcast-<ver>-setup.exe` (`tools\package.ps1 -Release`) plus `SHA256SUMS.txt`,
+4. pushes the commit `Release v<ver>` and the tag `v<ver>` to `main`, but only if everything above succeeded,
+5. publishes the GitHub release with the packages and generated release notes. A version with a suffix (`-rc.1`) becomes a pre-release.
+
+**Event edition of a release:** *Actions → Event package*, with the release tag and the name of a GitHub environment that holds the event's files. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#building-in-github-actions).
+
+The *CI* workflow checks formatting, clippy and the tests on every push to `main` and on pull requests.
 
 ## Testing
 Unit tests cover the pure logic. Capture, audio and NDI are checked with small tools in `examples/`:
@@ -193,6 +210,7 @@ src/
 examples/            spikes and test tools (see above)
 packaging/           README/EULA for the release, Inno Setup script, event.example.toml
 tools/               package.ps1, make_icons.py, third_party_licenses.py
+.github/             CI, release and event package workflows
 docs/                SPEC, DECISIONS, ICON, EVENT_LINKS
 ```
 

@@ -284,6 +284,7 @@ An event can build its own LANcast package with the organizer's public key compi
 ## 6. Distribution
 - **License:** LANcast is Apache-2.0, Copyright 2026 Kay Huber (`LICENSE`, `NOTICE`, D24).
 - Ship `LANcast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt`, `EULA.txt`, `LICENSE.txt`, `NOTICE.txt` and `THIRD-PARTY-LICENSES.txt` in the same folder, as a ZIP and as an Inno Setup installer `LANcast-<version>-setup.exe` (both from `tools\package.ps1`, D25). With admin rights, the installer adds the inbound firewall rule, so the first-start firewall dialog disappears. `build.rs` copies the DLL next to the exe on build (done in M0).
+- **Versions and releases (D30):** SemVer; `Cargo.toml` holds the last released version, tagged `v<version>`. Releases (ZIP, setup, SHA256SUMS) are built and published by the GitHub workflow *Release*; event editions of a release by *Event package*. Local builds are snapshots (`<version>+snapshot.g<hash>`).
 - NDI SDK license requirements (verified, D5):
   - The DLL may be redistributed in the app folder.
   - The license file must accompany it.

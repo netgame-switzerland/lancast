@@ -1,6 +1,7 @@
 ; Inno Setup script for the LANcast installer (D25).
 ; Built by tools\package.ps1, which passes:
-;   /DAppVersion=<version>  /DStageDir=<folder with the release files>
+;   /DAppVersion=<version, e.g. 0.2.0 or 0.2.0-snapshot.g1a2b3c4>
+;   /DFileVersion=<numeric Cargo.toml version>  /DStageDir=<folder with the release files>
 ;   /DOutputDir=<folder for the setup.exe>  /DOutputBase=<setup file name>
 ; and for an event edition (D28) also /DEdition=<event name> /DEventFile=1
 ; (installs the signed LANcast.event next to the exe).
@@ -14,6 +15,9 @@
 #endif
 #ifndef StageDir
   #error StageDir must be defined (/DStageDir=...)
+#endif
+#ifndef FileVersion
+  #define FileVersion AppVersion
 #endif
 #ifndef OutputDir
   #define OutputDir "..\dist"
@@ -58,7 +62,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ; Close a running LANcast (it holds the exe and the NDI DLL).
 CloseApplications=yes
 RestartApplications=no
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#FileVersion}
 VersionInfoDescription=LANcast setup
 
 [Languages]

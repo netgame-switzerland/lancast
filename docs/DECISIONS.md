@@ -862,6 +862,47 @@ Versions checked with `cargo info` on 2026-10-17.
     `NOTIFYICON_VERSION_4`, https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw),
     and the "still running" notification now says so, plus that starting LANcast again reopens it.
 
+### D30. SemVer, snapshot builds and GitHub releases (2026-10-18)
+- **Versioning:** SemVer 2.0 (https://semver.org/). `Cargo.toml` holds the **last released** version
+  and is the single source of truth; each release is tagged `v<version>`. The version is only changed
+  by the release workflow, never by hand. Rejected: a Maven-style `X.Y.Z-snapshot` in `Cargo.toml`
+  between releases, because it needs a second "next snapshot" commit per release and guesses the next
+  version before it is known.
+- **Snapshots:** `build.rs` sets `LANCAST_VERSION` (exposed as `lancast::VERSION`). With
+  `LANCAST_RELEASE=1` it is the plain version; otherwise `<version>+snapshot.g<hash>[.dirty]`. SemVer
+  *build metadata* (`+…`) is used rather than a pre-release suffix: `0.2.0-snapshot` would sort
+  **before** 0.2.0, although a snapshot is built after it. The hash comes from `git rev-parse`; the
+  dirty check uses `git --no-optional-locks status`, so that it doesn't rewrite `.git/index` and
+  retrigger the build script. Only existing git files are watched with `rerun-if-changed`: a missing
+  path (e.g. `packed-refs`) makes cargo rerun the script on every build.
+- **Exe version resource:** FileVersion stays numeric (Cargo.toml); ProductVersion is the full string.
+  `tools\package.ps1` reads ProductVersion for the file names (`+` → `-`, awkward in URLs) and passes
+  the numeric version to Inno Setup as `FileVersion`, because `VersionInfoVersion` must be numeric
+  (https://jrsoftware.org/ishelp/topic_setup_versioninfoversion.htm).
+- **`package.ps1 -Release`** refuses a dirty tree, needs HEAD tagged `v<Cargo.toml version>`, requires
+  Inno Setup and checks that the exe reports exactly that version. `-EventOnly` skips the normal
+  edition (event workflow).
+- **GitHub Actions** (`.github/`, runner `windows-2025`, which ships Rust, LLVM 20, Python 3.12 and
+  Inno Setup 6.7 according to the runner image readme,
+  https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md):
+  - `actions/setup-build`: downloads the latest NDI 6 SDK from
+    `https://downloads.ndi.tv/SDK/NDI_SDK/NDI%206%20SDK.exe` (an Inno Setup installer, ~42 MB, so
+    `/VERYSILENT /DIR=…` works) on every run, not cached: SPEC §6 / D5 require the latest SDK at
+    release time. The runtime DLL version is put into the release notes.
+  - *Release* (manual, `main` only): bump (`patch`/`minor`/`major`/`none`) or exact version →
+    commit and annotated tag locally → clippy, tests, `package.ps1 -Release`, SHA256SUMS → `git push
+    --atomic` of commit and tag → `gh release create --generate-notes`. Pushing only after a successful
+    build avoids orphaned tags; if `main` moved meanwhile, the atomic push fails and nothing is
+    published. Versions with a pre-release suffix become GitHub pre-releases. A patch bump of a
+    pre-release (`1.0.0-rc.1`) releases `1.0.0`.
+  - *Event package* (manual): builds the event edition of a release tag. `event.toml` and the
+    signing key come from a GitHub environment (variable `EVENT_TOML`, secret `EVENT_SIGNING_KEY`),
+    so they stay out of the repository (D28); the key file on the runner is deleted after signing.
+    Output is a workflow artifact, attached to the release only on request.
+  - *CI*: `cargo fmt --check`, clippy, tests on pushes to `main` and pull requests.
+- **Assumption:** the release workflow pushes to `main` with `GITHUB_TOKEN`. A branch protection rule
+  or ruleset on `main` must allow that (or the workflow needs a token that may bypass it).
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
