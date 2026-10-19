@@ -34,7 +34,7 @@ runs:
         "url=$url" >> $env:GITHUB_OUTPUT
         "stamp=$stamp" >> $env:GITHUB_OUTPUT
 
-    - uses: actions/cache@v4
+    - uses: actions/cache@v6
       id: ndi-cache
       with:
         path: ${{ runner.temp }}/ndi-sdk
