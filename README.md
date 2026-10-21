@@ -87,26 +87,28 @@ The installer registers the `lancast:` scheme and the uninstaller removes it; th
 
 Full reference with all keys, encoding rules, a website template and testing tips: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md).
 
-### Event edition ("LAN distro")
-For events that want more control, there is an event edition: a LANcast package for one event that **does not send until it has the event's configuration**, signed by the organizer.
-- **Two sections.** The configuration has an *enforced* section (signed: discovery server, limits, anything else the event wants fixed) and a *defaults* section (unsigned starting values participants may change).
-- **Delivery.** The configuration comes as `LANcast.event` in the event's download, or as a signed `lancast://event?…` link. It is valid from/until given dates.
-- **Signing.** Ed25519: the edition contains only the organizer's public key, so a configuration can't be forged or changed, not even with the exe in hand.
+### Organizer and event editions ("LAN distro")
+For events that want more control, there are editions of LANcast that **do not send until they have an event configuration signed by the organizer**:
+- **Organizer edition** (the default, D35): one build for all of an organizer's events, e.g. *LANcast – netgame edition*. It comes without a configuration; participants get each event's configuration from a signed event link. Built once per release.
+- **Event edition** (D28): one build for one event, with the configuration (`LANcast.event`) in the download.
 
-Keep the event's files in `events\`, e.g. in `events\netgame-2026\`; git ignores everything there except its README. `secret.key` is the organizer's private signing key: never commit it, and never put it into a download.
+How the configuration works:
+- **Two sections.** The configuration has an *enforced* section (signed: discovery server, limits, anything else the event wants fixed) and a *defaults* section (unsigned starting values participants may change).
+- **Delivery.** As a signed `lancast://event?…` link, or as `LANcast.event` next to the exe. It is valid from/until given dates.
+- **Signing.** Ed25519: an edition contains only the organizer's public key, so a configuration can't be forged or changed, not even with the exe in hand.
+
+`secret.key` is the organizer's private signing key. Keep it and the event files **outside the repository**, e.g. in `%USERPROFILE%\lancast-netgame\`, and back the key up in a password manager: an organizer key covers all events, and without it the organizer edition has to be replaced. Never commit it, and never put it into a download.
 
 ```powershell
 cargo build --release --bin lancast-event
-mkdir events\netgame-2026
-# once per event: create the key pair (prints the public key)
-target\release\lancast-event keygen events\netgame-2026\secret.key
-# copy the template and adjust name, id, dates and settings
-copy packaging\event.example.toml events\netgame-2026\event.toml
-powershell -File tools\package.ps1 -EventConfig events\netgame-2026\event.toml -SigningKey events\netgame-2026\secret.key
+$dir = "$env:USERPROFILE\lancast-netgame"; mkdir $dir
+# once per organizer: create the key pair (prints the public key)
+target\release\lancast-event keygen $dir\secret.key
+# per event: copy the template, adjust name, id, dates and settings, and sign it (prints the event link)
+copy packaging\event.example.toml $dir\netgame-2026.toml
+target\release\lancast-event sign $dir\netgame-2026.toml $dir\secret.key $dir\netgame-2026.event
 ```
-This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. For a released version, build it with the *Event package* workflow instead. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
-
-An organizer with several events can use one key for all of them: the **organizer edition** (`package.ps1 -Edition netgame -PublicKey <key>`) has no bundled configuration and sends after a signed event link of that organizer, so it is built once per release, not per event. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#organizer-edition-one-build-for-all-events).
+The organizer edition comes with every release once the public key is set up (repository variables, see [Versions and releases](#versions-and-releases)); locally: `package.ps1 -Edition netgame -PublicKey <key>`. An event edition is built with `package.ps1 -EventConfig <event.toml> -SigningKey <secret.key>`, or for a released version with the *Event package* workflow. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
 
 ## Requirements
 - **Windows 10 1903 or newer, 64-bit.** Windows 11 is recommended: process loopback (game-only audio) is documented from build 20348.
@@ -114,7 +116,7 @@ An organizer with several events can use one key for all of them: the **organize
 - **A receiver on the LAN:** OBS with [DistroAV](https://github.com/DistroAV/DistroAV), [NDI Tools](https://ndi.video/tools/) (Studio Monitor), or other NDI software.
 
 ## Using it
-1. Download `LANcast-<version>-setup.exe` (installer) or `LANcast-<version>-win64.zip` (portable) from the [GitHub releases](https://github.com/netgame-switzerland/lancast/releases), then install or unzip it.
+1. Download `LANcast-<version>-setup.exe` (installer) or `LANcast-<version>-win64.zip` (portable) from the [GitHub releases](https://github.com/netgame-switzerland/lancast/releases), then install or unzip it. At an event, the organizers may point you to their edition instead, e.g. `LANcast-<version>-netgame-setup.exe` (see [Organizer and event editions](#organizer-and-event-editions-lan-distro)).
    - With admin rights, the installer also adds the Windows Firewall rule; receivers connect to the sender.
 2. Start LANcast, pick your game, check the preview and the meter, and click **Send**.
 3. On the central PC, add the source `PC-NAME (Player - Game)`.
@@ -149,7 +151,7 @@ Quit a running LANcast before rebuilding: Windows does not let cargo replace a r
 ```powershell
 powershell -File tools\package.ps1   # dist\LANcast-<ver>-snapshot.g<hash>-win64.zip and …-setup.exe
 ```
-With `-EventConfig event.toml -SigningKey secret.key` it also builds the event edition (see [Event edition](#event-edition-lan-distro)).
+With `-Edition <organizer> -PublicKey <key>` it also builds the organizer edition, with `-EventConfig event.toml -SigningKey secret.key` an event edition (see [Organizer and event editions](#organizer-and-event-editions-lan-distro)).
 
 ## Versions and releases
 LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, optionally with a pre-release suffix such as `1.0.0-rc.1`.
@@ -157,10 +159,10 @@ LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, op
 - **Local builds are snapshots.** `build.rs` stamps them as `<version>+snapshot.g<commit>` (plus `.dirty` with uncommitted changes), e.g. `0.2.0+snapshot.g1a2b3c4`. The version is shown in the settings footer, in the log and in the exe's properties. Local packages are named `LANcast-0.2.0-snapshot.g1a2b3c4-…`.
 - **Releases are built by GitHub Actions** with the plain version, e.g. `0.2.0`.
 
-**Creating a release:** on GitHub, open *Actions → Release → Run workflow* on `main` and pick the bump (`patch`, `minor`, `major`), or enter an exact version. Use `none` to release the current `Cargo.toml` version as it is, e.g. for the first release. The workflow:
+**Creating a release:** on GitHub, open *Actions → Release → Run workflow* on `main` and pick the bump (`patch`, `minor`, `major`), or enter an exact version. Use `none` to release the current `Cargo.toml` version as it is, if it has no tag yet. The workflow:
 1. computes the new version and checks that its tag doesn't exist yet,
 2. updates `Cargo.toml`/`Cargo.lock`, installs the latest NDI 6 SDK, runs clippy and the tests,
-3. builds `LANcast-<ver>-win64.zip` and `LANcast-<ver>-setup.exe` (`tools\package.ps1 -Release`) plus `SHA256SUMS.txt`,
+3. builds `LANcast-<ver>-win64.zip` and `LANcast-<ver>-setup.exe` (`tools\package.ps1 -Release`), the organizer edition if it is set up (below), plus `SHA256SUMS.txt`,
 4. pushes the commit `Release v<ver>` and the tag `v<ver>` to `main`, but only if everything above succeeded,
 5. publishes the GitHub release with the packages and generated release notes. A version with a suffix (`-rc.1`) becomes a pre-release.
 
@@ -220,7 +222,7 @@ src/
   os_caps.rs         OS build and optional capture features (process loopback, …)
   event_link.rs      lancast:// links: enforced and default sections
   url_scheme.rs      registration of the lancast: scheme
-  distro.rs          event edition: signed event configurations (Ed25519)
+  distro.rs          organizer and event editions: signed event configurations (Ed25519)
   bin/lancast-event.rs  organizer tool: key, sign, verify
   tray.rs            tray states, commands, icon drawing; backend tray/win32.rs
                      (Shell_NotifyIconW, notifications, single instance)
@@ -236,7 +238,6 @@ tools/               package.ps1, make_icons.py, third_party_licenses.py
 .github/             CI, release and event package workflows, Dependabot
 deny.toml            cargo-deny: allowed licenses, advisories, sources
 docs/                SPEC, DECISIONS, ICON, EVENT_LINKS
-events/              local event folders (event.toml, secret.key); git-ignored except its README
 ```
 
 ## License

@@ -265,12 +265,13 @@ An event website can configure every LANcast with one click:
 
 LANcast always asks before applying and never starts sending by itself. The settings show the event with a "Leave event" button. The `lancast:` scheme is registered by the installer, or per user by LANcast itself.
 
-### 5.4.2 Event edition / LAN distro (D28)
-An event can build its own LANcast package with the organizer's public key compiled in. It sends only with a valid event configuration signed by the organizer (Ed25519): `LANcast.event` in the download, or a signed `lancast://event?p=…&s=…` link.
+### 5.4.2 Organizer and event editions / LAN distro (D28, D35)
+An organizer can build a LANcast package with its public key compiled in. It sends only with a valid event configuration signed by the organizer (Ed25519): a signed `lancast://event?p=…&s=…` link, or `LANcast.event` next to the exe.
+- **Organizer edition (default, D35):** named after the organizer, without `LANcast.event`. One key for all of the organizer's events; participants get each event's configuration from its signed link, so the edition is built once per release (`-Edition <name> -PublicKey <key>`; *Release* builds it when the repository variables `ORGANIZER_EDITION` and `ORGANIZER_PUBLIC_KEY` are set). Needs only the public key.
+- **Event edition (D28):** named after one event, with its signed `LANcast.event` in the download (`-EventConfig event.toml -SigningKey secret.key`, or the *Event package* workflow).
 - **Enforced** section: signed, with a validity window (local dates), fixed while the event is active.
 - **Defaults** section: unsigned starting values the user may change.
-- Built with `tools/package.ps1 -EventConfig event.toml -SigningKey secret.key`; signed with the `lancast-event` tool.
-- **Organizer edition (D35):** the same build named after an organizer and without `LANcast.event` (`-Edition <name> -PublicKey <key>`). One key for all of the organizer's events; it sends after a signed event link, so it is built once per release.
+- Configurations are signed with the `lancast-event` tool or by the event website. The private key never goes into a build or the repository; an organizer keeps it in a password manager.
 
 ### 5.5 Performance roadmap (GPU)
 - **v1:** WGC (GPU) → CPU readback of BGRA → optional CPU downscale → NDI as BGRX. Measured readback cost: 1–5.6 ms per frame at 2560×1392 (D8).
@@ -286,7 +287,7 @@ An event can build its own LANcast package with the organizer's public key compi
 ## 6. Distribution
 - **License:** LANcast is Apache-2.0, Copyright 2026 Kay Huber (`LICENSE`, `NOTICE`, D24).
 - Ship `LANcast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt`, `EULA.txt`, `LICENSE.txt`, `NOTICE.txt` and `THIRD-PARTY-LICENSES.txt` in the same folder, as a ZIP and as an Inno Setup installer `LANcast-<version>-setup.exe` (both from `tools\package.ps1`, D25). With admin rights, the installer adds the inbound firewall rule, so the first-start firewall dialog disappears. `build.rs` copies the DLL next to the exe on build (done in M0).
-- **Versions and releases (D30):** SemVer; `Cargo.toml` holds the last released version, tagged `v<version>`. Releases (ZIP, setup, SHA256SUMS) are built and published by the GitHub workflow *Release*; event editions of a release by *Event package*. Local builds are snapshots (`<version>+snapshot.g<hash>`).
+- **Versions and releases (D30):** SemVer; `Cargo.toml` holds the last released version, tagged `v<version>`. Releases (ZIP, setup, SHA256SUMS, and the organizer edition when configured) are built and published by the GitHub workflow *Release*; event editions of a release by *Event package*. Local builds are snapshots (`<version>+snapshot.g<hash>`).
 - NDI SDK license requirements (verified, D5):
   - The DLL may be redistributed in the app folder.
   - The license file must accompany it.

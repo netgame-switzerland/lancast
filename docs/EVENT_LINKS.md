@@ -95,17 +95,17 @@ Without a valid configuration (missing, not yet valid, expired, or not signed wi
 **What it does not do:** it cannot stop someone from running a normal LANcast or another NDI sender on the event network. Use the event's network setup (discovery server, switch limits) for that. The event edition makes the right configuration the default and stops tampering within it.
 
 ### Building an event edition
-Keep the event's files in a subfolder of `events\`, e.g. `events\netgame-2026\`. Git ignores everything in `events\` except its README, so `event.toml` and `secret.key` stay local.
+Keep `secret.key` and the event files **outside the repository**, e.g. in `%USERPROFILE%\lancast-netgame\` (`$dir` below), and back the key up in a password manager. A working copy is the wrong place: `git clean -fdx`, a fresh clone or deleting the checkout removes ignored files.
 
 1. **Key pair**, once per event (or once per organizer, for an [organizer edition](#organizer-edition-one-build-for-all-events)). Keep `secret.key` private: never commit it, never put it into a download.
    ```powershell
    cargo build --release --bin lancast-event
-   mkdir events\netgame-2026
-   target\release\lancast-event keygen events\netgame-2026\secret.key     # prints the public key
+   $dir = "$env:USERPROFILE\lancast-netgame"; mkdir $dir
+   target\release\lancast-event keygen $dir\secret.key     # prints the public key
    ```
 2. **Describe the event:** copy the template and adjust it.
    ```powershell
-   copy packaging\event.example.toml events\netgame-2026\event.toml
+   copy packaging\event.example.toml $dir\event.toml
    ```
    For example:
    ```toml
@@ -126,7 +126,7 @@ Keep the event's files in a subfolder of `events\`, e.g. `events\netgame-2026\`.
    All keys from the table above may go into either section. `discovery = ""` enforces automatic discovery (mDNS).
 3. **Build the packages:**
    ```powershell
-   powershell -File tools\package.ps1 -EventConfig events\netgame-2026\event.toml -SigningKey events\netgame-2026\secret.key
+   powershell -File tools\package.ps1 -EventConfig $dir\event.toml -SigningKey $dir\secret.key
    ```
    Besides the normal packages, this creates:
    - `dist\LANcast-<ver>-<event_id>-win64.zip`: the event edition plus `LANcast.event`
@@ -135,8 +135,8 @@ Keep the event's files in a subfolder of `events\`, e.g. `events\netgame-2026\`.
 
 To change settings later (e.g. a new discovery server), edit `event.toml` and sign again. The edition doesn't need to be rebuilt as long as the key stays the same:
 ```powershell
-target\release\lancast-event sign events\netgame-2026\event.toml events\netgame-2026\secret.key events\netgame-2026\LANcast.event   # prints the new link
-target\release\lancast-event verify events\netgame-2026\LANcast.event <public key>   # check a file
+target\release\lancast-event sign $dir\event.toml $dir\secret.key $dir\LANcast.event   # prints the new link
+target\release\lancast-event verify $dir\LANcast.event <public key>   # check a file
 ```
 Participants get the new configuration from the new link, or from a new download (a changed `LANcast.event` is picked up at the next start).
 
@@ -154,6 +154,8 @@ The key only exists as a GitHub secret and as a temporary file on the runner, de
 
 ### Organizer edition (one build for all events)
 An organizer who runs several events can use **one key pair for all of them** and build the edition once per release, instead of once per event (D35). The organizer edition is the same exe, named after the organizer (*LANcast – netgame edition*), but without a bundled `LANcast.event`. Until a participant clicks a signed event link of that organizer (or puts a `LANcast.event` next to the exe), Send stays disabled with a banner. For each event, only `event.toml` is signed with the organizer's key; nothing is rebuilt.
+
+**The organizer key** is created once with `lancast-event keygen` (see [Building an event edition](#building-an-event-edition), step 1) and used for years. Back it up in a password manager (it is one line of text) and keep it outside the repository. If it is lost or leaked, every event of the organizer is affected: create a new key, set the new public key and release a new organizer edition, which participants have to install.
 
 Building it needs only the **public key**, no secret:
 ```powershell

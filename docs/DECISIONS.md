@@ -1060,6 +1060,11 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Trade-off:** one key covers all of the organizer's events; losing it affects all of them,
   and replacing it needs a new edition. Per-event editions (D28) remain for events that want
   their own key or a download with the configuration bundled.
+- **No key folder in the repository:** the git-ignored `events\` folder (f9dce9d) was dropped
+  again. An organizer key lives for years and covers all events, and ignored files in a working
+  copy vanish with `git clean -fdx`, a fresh clone or a deleted checkout, without a backup. The
+  key belongs in a password manager (and the website's secret store if the site signs); event
+  files in any folder outside the repository. `*.key` stays in `.gitignore` as a safety net.
 - **Verified locally:** organizer edition built with a test key (exe contains the key and the
   name, no `LANcast.event`, setup without it); invalid keys and argument combinations are
   rejected before the build; `-Edition` with `-EventConfig` bundles the signed file and names
