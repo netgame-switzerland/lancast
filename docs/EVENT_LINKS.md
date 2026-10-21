@@ -21,6 +21,17 @@ Every setting in an event configuration is in one of two sections:
 
 In a `lancast://config` link (normal edition), `discovery`, `max` and `fps` are enforced, and `level`, `border` and `cursor` are defaults. In the [event edition](#event-edition-lan-distro) the organizer chooses for every key.
 
+## Changing enforced settings during an event
+Publish a new link; participants click it and confirm again. The new link replaces the event's enforced settings and sets its defaults once more. Which link LANcast accepts depends on the edition:
+
+| | Normal LANcast | Event edition |
+|---|---|---|
+| Unsigned `lancast://config?…` | Accepted | Rejected |
+| Signed `lancast://event?p=…&s=…` | Accepted, but the signature is **not checked** (no key); the dialog says "only an event edition checks the signature" | Accepted only if signed with the event's key; outside its dates Send stays disabled |
+| To change enforced settings | New `config` link | Edit `event.toml`, [sign again](#building-an-event-edition), publish the new signed link (no rebuild while the key stays the same) |
+
+So in a normal LANcast the only safeguard is the confirmation dialog; a signature counts only in an event edition. A website or [landing page](LANDING_PAGE.md) can keep its URL and just swap the link.
+
 ## Keys
 All keys are optional, but a link must set at least one. Unknown keys are ignored. An invalid value rejects the whole link, so a link is never half-applied.
 
@@ -56,6 +67,11 @@ All keys are optional, but a link must set at least one. Unknown keys are ignore
 </p>
 ```
 - Write `&` as `&amp;` inside HTML attributes; browsers accept both.
+- **Event edition:** use the signed link instead: the last line of `…-link.txt`, or the link printed by `lancast-event sign`. Offer the event edition's setup as the download:
+  ```html
+  <a href="lancast://event?p=eyJ2IjoxLC4uLn0&amp;s=3q2-7w...&amp;level=unity">Configure LANcast for NetGame 2026</a>
+  ```
+  Copy it verbatim (`p` and `s` are base64url and need no further encoding). Don't edit `p` or `s`: any change makes the signature invalid. The keys after them are unsigned defaults.
 - **Chat apps:** Discord, WhatsApp etc. usually do not make custom schemes like `lancast://` clickable. Post a link to the web page instead.
 - **Fallback:** for people who cannot click the link, list the values on the page; they can enter them in LANcast's settings by hand.
 - **Landing page:** one shareable `https://` page that opens LANcast automatically if installed and always offers *Open* and *Download*: see [LANDING_PAGE.md](LANDING_PAGE.md).
@@ -136,7 +152,240 @@ A local build is a snapshot (D30). For the event download, build the event editi
 
 The key only exists as a GitHub secret and as a temporary file on the runner, deleted after signing.
 
+### Signed links: format, signing and verifying yourself
+`lancast-event sign` is the reference, but any program can create and check signed links, e.g. an event website that lets the organizers change the configuration. This section is the complete format.
+
+**Cryptography: a signature, no encryption.** The configuration is plain, readable JSON; anyone can decode it. The signature only proves that it comes from the holder of the private key and that nothing was changed. Never put secrets into it.
+- Algorithm: **Ed25519** (RFC 8032, plain Ed25519: no pre-hashing, no context string). Signatures are deterministic: the same key and payload always give the same signature.
+- **Secret key** (`secret.key`): the 32-byte Ed25519 seed, base64url without padding (43 characters), plus a newline.
+- **Public key**: the 32-byte Ed25519 public key, base64url without padding. Printed by `lancast-event keygen` and `lancast-event pubkey secret.key`; compiled into the event edition. It is safe to publish.
+
+**Payload:** a UTF-8 JSON object.
+
+| Field | Type | Rule |
+|---|---|---|
+| `v` | number | Always `1`. |
+| `event` | string | Display name, 1–64 characters, no control characters. |
+| `event_id` | string | Letters, digits, `-`, `_` (names the download files). |
+| `valid_from`, `valid_until` | string | Local dates `YYYY-MM-DD`, inclusive; `valid_from` ≤ `valid_until`. |
+| `enforced` | object | Settings from the [key table](#keys), **all values as strings** (`"fps": "60"`, `"border": "1"`). |
+
+**Link:** `lancast://event?p=<payload>&s=<signature>[&<defaults>]`
+- `p` = base64url (no padding) of the exact payload bytes.
+- `s` = base64url (no padding) of the 64-byte Ed25519 signature over **those bytes**. The signature covers bytes, not JSON semantics: key order and whitespace are free when signing, but a verifier must check the decoded `p` bytes as they are and never re-serialize the JSON.
+- Defaults follow as unsigned `&key=value` pairs, percent-encoded, with the keys from the key table.
+- At most 4096 characters.
+
+The `LANcast.event` file carries the same data as TOML: `payload = "<p>"`, `signature = "<s>"`, and a `[defaults]` table.
+
+**What LANcast checks:**
+- An event edition accepts a signed link only if `s` is a valid signature of `p` with its built-in public key.
+- `v` must be 1, and every value must be valid; an invalid value rejects the whole link. Unknown keys are ignored by LANcast but refused by `lancast-event`; don't use them.
+- The dates are checked against the participant's local date when sending, not when the link is clicked. Outside the window, Send is disabled.
+
+**Limits of the scheme:**
+- There is no revocation and no "newest link wins". Every link signed with the key stays valid until its `valid_until`, so a participant could apply an older link with looser limits again. Keep validity windows short and limits consistent.
+- The public key is compiled into the event edition: a new key needs a new edition.
+
+**Protecting the key on a website:**
+- The private key exists only on the server (a secret store or environment variable), never in client code, the repository or a download.
+- Only organizers can trigger signing (authenticated admin form). An endpoint that signs arbitrary input would let anyone forge configurations.
+- Validate before signing (see `checkSetting` below), sign once per change and store the resulting link; don't sign per page view.
+
+#### TypeScript (Node.js 18+)
+No dependencies; uses `node:crypto` (backed by OpenSSL). Node takes keys as DER, so the raw 32-byte keys are wrapped in the fixed RFC 8410 headers.
+
+```ts
+// lancast-link.ts: create and verify signed LANcast event links.
+import { createPrivateKey, createPublicKey, sign, verify, type KeyObject } from "node:crypto";
+
+// DER headers that wrap raw 32-byte Ed25519 keys (RFC 8410).
+const PKCS8_ED25519 = Buffer.from("302e020100300506032b657004220420", "hex");
+const SPKI_ED25519 = Buffer.from("302a300506032b6570032100", "hex");
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const BOOLEANS = ["1", "0", "true", "false", "yes", "no", "on", "off"];
+const MAX_LINK = 4096;
+
+export interface EventPayload {
+  v: 1;
+  event: string;
+  event_id: string;
+  valid_from: string; // YYYY-MM-DD, local date, inclusive
+  valid_until: string;
+  enforced: Record<string, string>;
+}
+
+export interface VerifiedLink {
+  payload: EventPayload;
+  defaults: Record<string, string>;
+  validOn: (date: string) => boolean;
+}
+
+function rawKey(base64url: string, what: string): Buffer {
+  const text = base64url.trim();
+  const bytes = Buffer.from(text, "base64url");
+  if (!BASE64URL.test(text) || bytes.length !== 32) throw new Error(`invalid ${what}`);
+  return bytes;
+}
+
+/** The private key from the content of `secret.key`. */
+export function privateKey(secretKeyFile: string): KeyObject {
+  const der = Buffer.concat([PKCS8_ED25519, rawKey(secretKeyFile, "secret key")]);
+  return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+}
+
+/** The public key as printed by `lancast-event pubkey`. */
+export function publicKey(base64url: string): KeyObject {
+  const der = Buffer.concat([SPKI_ED25519, rawKey(base64url, "public key")]);
+  return createPublicKey({ key: der, format: "der", type: "spki" });
+}
+
+/** Throws unless `key=value` is a valid LANcast setting (same rules as LANcast). */
+export function checkSetting(key: string, value: unknown): void {
+  if (typeof value !== "string") throw new Error(`${key}: values are strings, e.g. "60"`);
+  const v = value.trim();
+  switch (key.toLowerCase()) {
+    case "discovery": // comma-separated host[:port]; empty = automatic (mDNS)
+      for (const entry of v.split(",").map((e) => e.trim()).filter(Boolean)) {
+        if (!/^[A-Za-z0-9.:_-]{1,253}$/.test(entry)) throw new Error(`invalid discovery server ${entry}`);
+      }
+      return;
+    case "max": {
+      const m = /^(\d+)\s*[xX]\s*(\d+)$/.exec(v);
+      const [w, h] = m ? [Number(m[1]), Number(m[2])] : [0, 0];
+      if (w < 320 || w > 3840 || h < 180 || h > 2160) throw new Error("max must be 320x180 … 3840x2160");
+      return;
+    }
+    case "fps":
+      if (!/^\d+$/.test(v) || Number(v) < 10 || Number(v) > 120) throw new Error("fps must be 10 … 120");
+      return;
+    case "level":
+      if (!["unity", "obs", "ndi", "studio-monitor"].includes(v.toLowerCase())) throw new Error("level must be unity or ndi");
+      return;
+    case "border":
+    case "cursor":
+      if (!BOOLEANS.includes(v.toLowerCase())) throw new Error(`${key} must be 1 or 0`);
+      return;
+    default:
+      throw new Error(`unknown setting ${key}`);
+  }
+}
+
+function checkPayload(p: EventPayload): void {
+  if (p?.v !== 1) throw new Error("unsupported payload version");
+  if (typeof p.event !== "string" || !p.event.trim() || [...p.event].length > 64 || /\p{Cc}/u.test(p.event)) {
+    throw new Error("event: 1-64 characters, no control characters");
+  }
+  if (typeof p.event_id !== "string" || !/^[A-Za-z0-9_-]+$/.test(p.event_id)) throw new Error("invalid event_id");
+  if (!DATE.test(p.valid_from) || !DATE.test(p.valid_until) || p.valid_from > p.valid_until) {
+    throw new Error("valid_from/valid_until must be YYYY-MM-DD, from <= until");
+  }
+  if (typeof p.enforced !== "object" || p.enforced === null) throw new Error("enforced must be an object");
+  for (const [key, value] of Object.entries(p.enforced)) checkSetting(key, value);
+}
+
+/** Signs `payload` and returns the complete link, with `defaults` appended unsigned. */
+export function signEventLink(payload: EventPayload, defaults: Record<string, string>, secret: KeyObject): string {
+  checkPayload(payload);
+  for (const [key, value] of Object.entries(defaults)) checkSetting(key, value);
+  const bytes = Buffer.from(JSON.stringify(payload), "utf8");
+  const signature = sign(null, bytes, secret); // Ed25519: the algorithm argument must be null
+  let link = `lancast://event?p=${bytes.toString("base64url")}&s=${signature.toString("base64url")}`;
+  for (const [key, value] of Object.entries(defaults)) link += `&${key}=${encodeURIComponent(value)}`;
+  if (link.length > MAX_LINK) throw new Error("the link is too long");
+  return link;
+}
+
+/** Verifies a signed link with the event's public key; throws if it is invalid. */
+export function verifyEventLink(link: string, key: KeyObject): VerifiedLink {
+  const text = link.trim();
+  if (text.length > MAX_LINK) throw new Error("the link is too long");
+  const m = /^lancast:(?:\/\/)?event\/?\?(.*)$/i.exec(text);
+  if (!m) throw new Error("not a signed lancast://event link");
+  const params = new URLSearchParams(m[1]);
+  const p = params.get("p") ?? "";
+  const s = params.get("s") ?? "";
+  if (!BASE64URL.test(p) || !BASE64URL.test(s)) throw new Error("p= and s= must be base64url");
+  const bytes = Buffer.from(p, "base64url");
+  const signature = Buffer.from(s, "base64url");
+  // Verify the transmitted bytes; never re-serialize the JSON before this.
+  if (signature.length !== 64 || !verify(null, bytes, key, signature)) {
+    throw new Error("the signature is not valid for this key");
+  }
+  const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as EventPayload;
+  checkPayload(payload);
+  const defaults: Record<string, string> = {};
+  for (const [k, v] of params) {
+    if (k === "p" || k === "s") continue;
+    checkSetting(k, v);
+    defaults[k.toLowerCase()] = v;
+  }
+  return {
+    payload,
+    defaults,
+    validOn: (date) => payload.valid_from <= date && date <= payload.valid_until,
+  };
+}
+
+/** Today's local date as YYYY-MM-DD (the server's time zone must be the event's). */
+export function localDate(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+```
+
+Usage:
+```ts
+const secret = privateKey(process.env.LANCAST_SIGNING_KEY!); // content of secret.key
+const link = signEventLink(
+  {
+    v: 1,
+    event: "NetGame 2026",
+    event_id: "netgame-2026",
+    valid_from: "2026-11-01",
+    valid_until: "2026-11-05",
+    enforced: { discovery: "10.0.0.5", max: "1280x720", fps: "60" },
+  },
+  { level: "unity" },
+  secret,
+);
+
+const checked = verifyEventLink(link, publicKey(process.env.LANCAST_PUBLIC_KEY!));
+console.log(checked.payload.enforced, checked.defaults, checked.validOn(localDate()));
+```
+- `verifyEventLink` is stricter than LANcast: it also refuses unknown keys among the defaults, like `lancast-event`.
+- Other runtimes: without `node:crypto` (e.g. some edge runtimes), use Web Crypto's `Ed25519` (raw key import for the public key, PKCS#8 for the private key with the header above) or a library such as `@noble/ed25519`. The format stays the same.
+
+#### Test vector
+Ed25519 is deterministic, so an implementation must reproduce this exactly. **Test key only, never use it for an event.**
+- Secret key: `AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA` (bytes `01 02 … 20`)
+- Public key: `ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ`
+- Payload bytes, the JSON exactly as written, without whitespace (this is what `JSON.stringify` of the usage example above produces):
+  `{"v":1,"event":"NetGame 2026","event_id":"netgame-2026","valid_from":"2026-11-01","valid_until":"2026-11-05","enforced":{"discovery":"10.0.0.5","max":"1280x720","fps":"60"}}`
+- With the default `level=unity`, the link is:
+  ```
+  lancast://event?p=eyJ2IjoxLCJldmVudCI6Ik5ldEdhbWUgMjAyNiIsImV2ZW50X2lkIjoibmV0Z2FtZS0yMDI2IiwidmFsaWRfZnJvbSI6IjIwMjYtMTEtMDEiLCJ2YWxpZF91bnRpbCI6IjIwMjYtMTEtMDUiLCJlbmZvcmNlZCI6eyJkaXNjb3ZlcnkiOiIxMC4wLjAuNSIsIm1heCI6IjEyODB4NzIwIiwiZnBzIjoiNjAifX0&s=etDE8XfuKaeE9rJ5o-oZ0rrMWqqHs-RiFLtvxukEJKx15EhFniYFq6_v2-i06EfDpzVVnAdwM7vm6IAGDZrCBg&level=unity
+  ```
+
+**Cross-check with the reference tool:** `lancast-event verify` reads a `LANcast.event` file. Write `p` and `s` from a link into one and check it with the public key:
+```powershell
+@"
+payload = "<p>"
+signature = "<s>"
+
+[defaults]
+level = "unity"
+"@ | Set-Content test.event
+target\release\lancast-event verify test.event <public key>
+```
+
 ## Testing a link without a website
 ```powershell
 Start-Process "lancast://config?event=Test&max=1280x720&fps=30"
 ```
+A signed link for an event edition, from the file the packaging wrote:
+```powershell
+Start-Process (Get-Content dist\LANcast-<ver>-<event_id>-link.txt | Select-Object -Last 1)
+```
+A normal LANcast also opens a signed link, but cannot check its signature; test signed links with the event edition.

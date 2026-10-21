@@ -4,6 +4,26 @@ A brief for building a landing page on an event website: one shareable `https://
 
 Background: [EVENT_LINKS.md](EVENT_LINKS.md) describes the `lancast://` links themselves.
 
+## Which link and which download
+A LAN event normally uses an **event edition** of LANcast ([EVENT_LINKS.md](EVENT_LINKS.md#event-edition-lan-distro)). This brief assumes one:
+- **Link:** the signed `lancast://event?p=…&s=…` link, the last line of `LANcast-<ver>-<event_id>-link.txt` from the packaging (or printed by `lancast-event sign`). Copy it verbatim: `p` and `s` must not change, or the signature becomes invalid.
+- **Download:** the event edition's setup `LANcast-<ver>-<event_id>-setup.exe`, not the normal release. It replaces a normal LANcast install.
+- **What the link is for:** the event-edition download already contains the configuration (`LANcast.event`) and applies it at the first start. The link matters for participants who downloaded earlier and need a configuration that changed after their download (re-signed). It also helps a participant whose LANcast doesn't have the configuration yet.
+- **Changes during the event:** sign again and replace the link in the site configuration; the page URL stays the same. Also refresh the download (re-run the packaging or the *Event package* workflow), so new downloads contain the new `LANcast.event`.
+
+Without an event edition, the same page works with an unsigned `lancast://config?…` link and the normal setup. Then LANcast's confirmation dialog is the only safeguard.
+
+## Signing on the website server (optional)
+Instead of pasting a link from `lancast-event sign`, the website can create the signed link itself, e.g. from an organizer admin form. The format, the cryptography (Ed25519, no encryption) and a dependency-free TypeScript module for signing **and** verifying are in [EVENT_LINKS.md › Signed links](EVENT_LINKS.md#signed-links-format-signing-and-verifying-yourself). Requirements for the website:
+- **Key handling:** the content of the event's `secret.key` lives only in the server's secret store (e.g. environment variable `LANCAST_SIGNING_KEY`). It never goes into client code, the repository, logs or a download. The public key (`LANCAST_PUBLIC_KEY`, from `lancast-event pubkey`) may be public.
+- **Who signs:** only authenticated organizers. There must be no endpoint that signs input from the public; that would let anyone forge configurations.
+- **What is signed:** event name, `event_id`, validity dates and the enforced settings, validated with `checkSetting` before signing. Defaults are appended unsigned.
+- **When:** sign once per configuration change and store the link as site configuration; the landing page only reads the stored link. Don't sign per page view.
+- **Self-check:** after signing, and when the site starts, run `verifyEventLink` on the stored link with the public key. Show the organizers the decoded configuration and whether it is valid today (`validOn(localDate())`); refuse to publish a link that doesn't verify.
+- **Tests:** the implementation must reproduce the test vector in EVENT_LINKS.md exactly, and reject the vector's link after changing one character of `p` or `s`.
+- **Downloads:** a new configuration also needs a refreshed event download (see *Changes during the event* above). The website can't do that; the packaging or the *Event package* workflow does.
+- **Older links stay valid:** a link signed earlier remains usable until its `valid_until`. Keep validity windows short.
+
 ## Why a landing page
 - Custom schemes like `lancast://` do nothing useful when LANcast is not installed: depending on the browser the click is silently ignored or shows an error. Browsers deliberately don't tell a web page whether a scheme handler exists.
 - Chat apps (Discord, WhatsApp, …) don't make `lancast://` clickable, but they do make `https://` links clickable.
@@ -12,15 +32,15 @@ Background: [EVENT_LINKS.md](EVENT_LINKS.md) describes the `lancast://` links th
 ## Inputs (site configuration)
 | Name | Example | Notes |
 |---|---|---|
-| `LANCAST_LINK` | `lancast://config?event=NetGame%202026&discovery=10.0.0.5&max=1280x720&fps=60` | The event link, verbatim. For an event edition: the signed link from `…-link.txt`. |
-| `DOWNLOAD_URL` | `https://example.org/downloads/LANcast-0.2.0-setup.exe` | The setup (or the event edition's setup). Alternative: `https://github.com/netgame-switzerland/lancast/releases/latest`. |
+| `LANCAST_LINK` | `lancast://event?p=eyJ2IjoxLC4uLn0&s=3q2-7w...&level=unity` | The signed event link, verbatim (see above). Without an event edition: `lancast://config?event=NetGame%202026&discovery=10.0.0.5&max=1280x720&fps=60`. |
+| `DOWNLOAD_URL` | `https://example.org/downloads/LANcast-0.2.0-netgame-2026-setup.exe` | The event edition's setup. Without an event edition: the normal setup, or `https://github.com/netgame-switzerland/lancast/releases/latest`. |
 | `EVENT_NAME` | `NetGame 2026` | Display only. |
 
 ## Required behavior
 1. **Both buttons are always visible**, from the first paint, without JavaScript:
    - **Open LANcast**: a plain `<a href="LANCAST_LINK">`. A real click is a user gesture, which every browser accepts for external schemes.
    - **Download LANcast**: a plain `<a href="DOWNLOAD_URL">`.
-   - Short steps: "1. Install LANcast (Windows). 2. Click *Open LANcast* and confirm the browser prompt. 3. In LANcast, click *Apply*."
+   - Short steps: "1. Install the NetGame 2026 edition of LANcast (Windows). 2. Click *Open LANcast* and confirm the browser prompt. 3. In LANcast, click *Apply*." Mention that participants who installed it earlier should click *Open LANcast* once to get the current configuration.
 2. **Automatic attempt on load**, once:
    - On Windows desktop browsers only (see *Platform* below), shortly after load, navigate to `LANCAST_LINK` once (`window.location.href = LANCAST_LINK`).
    - At most once per browser tab session, so reloads and the back button don't re-trigger it (`sessionStorage`, wrapped in try/catch; without storage simply attempt once per load).
@@ -32,21 +52,22 @@ Background: [EVENT_LINKS.md](EVENT_LINKS.md) describes the `lancast://` links th
 4. **Platform:**
    - LANcast is Windows-only for now. On other systems (macOS, Linux, Android, iOS) skip the automatic attempt and show a note: "LANcast runs on Windows 10/11." Keep both buttons.
    - Detect via `navigator.userAgentData?.platform` with a fallback to `navigator.userAgent` containing `Windows`. When unsure, behave as on Windows.
-5. **Manual fallback (optional, recommended):** a collapsible "Can't open the link?" section listing the values for manual entry in LANcast's settings (event name, discovery server, limits). Write it statically next to the link in the site configuration; don't derive it from untrusted input.
+5. **Fallback (optional, recommended):** a collapsible "Can't open the link?" section. For an event edition: download and reinstall the event edition, which brings the current configuration (manual entry doesn't help, because the event edition only sends with a signed configuration). Without an event edition: list the values for manual entry in LANcast's settings (event name, discovery server, limits), written statically in the site configuration, never derived from untrusted input.
 
 ## Security requirements
 - **The link is fixed site configuration.** Never build `LANCAST_LINK` from the page's query string, form input or any other request data. Otherwise `https://<event-site>/lancast?link=lancast://config?discovery=attacker` would turn the official site into a launcher for attacker-chosen settings. LANcast asks before applying, but the prompt would carry the event site's credibility.
 - Don't reflect query parameters into the page.
 - Emit the link HTML-escaped in attributes (`&` → `&amp;`) and as a JSON string in scripts (`JSON.stringify` / the framework's escaping). Don't concatenate it into inline script source.
 - Serve the page over HTTPS. If the site has a Content Security Policy, the reference script needs no `eval` and can be moved to an external file.
-- For event editions, prefer the signed `lancast://event?…` link: LANcast verifies it against the edition's built-in key.
+- Use the signed `lancast://event?…` link: the event edition verifies it against its built-in key and rejects unsigned links. A normal LANcast opens a signed link too, but cannot check the signature; its dialog says so.
 
 ## Acceptance tests
 Test with the current Chrome, Edge and Firefox on Windows, each in both states:
 
 | State | Expected |
 |---|---|
-| LANcast installed | Browser prompt "Open LANcast?" appears on load; after confirming, LANcast shows its Apply/Cancel dialog with the event's settings; the page shows "LANcast should open now…". |
+| Event edition installed | Browser prompt "Open LANcast?" appears on load; after confirming, LANcast shows its Apply/Cancel dialog with "Signed by the event organizers, valid … to …"; the page shows "LANcast should open now…". |
+| Normal LANcast installed | Same flow, but the dialog says the signature is only checked by an event edition; the page's steps point to the event edition download. |
 | LANcast installed, prompt declined | Page stays usable; *Open LANcast* button triggers the prompt again. |
 | LANcast installed and already running | The running LANcast comes to the front with the dialog (no second instance). |
 | LANcast not installed | Page stays as is, no error page; after ~2.5 s the install hint appears and the download is emphasized. |
@@ -58,27 +79,27 @@ Test with the current Chrome, Edge and Firefox on Windows, each in both states:
 **Known risk to verify:** for an unknown scheme, a top-level `location.href` navigation may make some browser (historically Firefox) replace the page with an error page ("The address wasn't understood") instead of ignoring it. If a test shows that, use a hidden same-origin `<iframe>` with `src = LANCAST_LINK` for the automatic attempt in that browser. Keep the visible button as a plain link. Re-run the table afterwards. Browsers also change their external-protocol handling over time (e.g. requiring a user gesture). The page must stay correct when the automatic attempt is blocked, and the buttons guarantee that.
 
 ## Reference implementation
-Plain HTML/JS, no dependencies. Replace the three constants (or render them from the site configuration with proper escaping).
+Plain HTML/JS, no dependencies, for an event edition. Replace the link, the download URL and the event name (or render them from the site configuration with proper escaping). The signed link below is a shortened placeholder; use the real one from `…-link.txt`.
 
 ```html
 <section class="lancast" id="lancast">
   <h2>Stream your game with LANcast: NetGame 2026</h2>
   <ol>
-    <li>Install LANcast (Windows 10/11).</li>
+    <li>Install the NetGame 2026 edition of LANcast (Windows 10/11).</li>
     <li>Click <em>Open LANcast</em> and confirm the browser prompt.</li>
     <li>In LANcast, click <em>Apply</em>.</li>
   </ol>
+  <p>Installed it earlier? Click <em>Open LANcast</em> once to get the current configuration.</p>
   <p class="lancast-buttons">
     <a class="button primary" id="lancast-open"
-       href="lancast://config?event=NetGame%202026&amp;discovery=10.0.0.5&amp;max=1280x720&amp;fps=60">Open LANcast</a>
+       href="lancast://event?p=eyJ2IjoxLC4uLn0&amp;s=3q2-7w...&amp;level=unity">Open LANcast</a>
     <a class="button" id="lancast-download"
-       href="https://example.org/downloads/LANcast-0.2.0-setup.exe">Download LANcast</a>
+       href="https://example.org/downloads/LANcast-0.2.0-netgame-2026-setup.exe">Download LANcast</a>
   </p>
   <p class="lancast-status" id="lancast-status" role="status" aria-live="polite"></p>
   <details>
     <summary>Can't open the link?</summary>
-    <p>Enter these values in LANcast under <em>Settings</em>:
-       discovery server <code>10.0.0.5</code>, max. resolution 1280×720, max. 60 fps.</p>
+    <p>Download and install the NetGame 2026 edition again; it brings the current configuration.</p>
   </details>
 </section>
 
