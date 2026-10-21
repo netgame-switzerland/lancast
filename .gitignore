@@ -5,3 +5,7 @@
 
 # Event signing keys (D28) must never be committed
 *.key
+
+# Local event folders (event.toml, secret.key, LANcast.event); only the README is tracked
+/events/*
+!/events/README.md

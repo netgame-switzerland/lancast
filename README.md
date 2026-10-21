@@ -93,16 +93,16 @@ For events that want more control, there is an event edition: a LANcast package 
 - **Delivery.** The configuration comes as `LANcast.event` in the event's download, or as a signed `lancast://event?…` link. It is valid from/until given dates.
 - **Signing.** Ed25519: the edition contains only the organizer's public key, so a configuration can't be forged or changed, not even with the exe in hand.
 
-Keep the event's files **outside the repository**, e.g. in `..\netgame-2026\`. `secret.key` is the organizer's private signing key: never commit it, and never put it into a download.
+Keep the event's files in `events\`, e.g. in `events\netgame-2026\`; git ignores everything there except its README. `secret.key` is the organizer's private signing key: never commit it, and never put it into a download.
 
 ```powershell
 cargo build --release --bin lancast-event
-mkdir ..\netgame-2026
+mkdir events\netgame-2026
 # once per event: create the key pair (prints the public key)
-target\release\lancast-event keygen ..\netgame-2026\secret.key
+target\release\lancast-event keygen events\netgame-2026\secret.key
 # copy the template and adjust name, id, dates and settings
-copy packaging\event.example.toml ..\netgame-2026\event.toml
-powershell -File tools\package.ps1 -EventConfig ..\netgame-2026\event.toml -SigningKey ..\netgame-2026\secret.key
+copy packaging\event.example.toml events\netgame-2026\event.toml
+powershell -File tools\package.ps1 -EventConfig events\netgame-2026\event.toml -SigningKey events\netgame-2026\secret.key
 ```
 This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. For a released version, build it with the *Event package* workflow instead. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
 
@@ -232,6 +232,7 @@ tools/               package.ps1, make_icons.py, third_party_licenses.py
 .github/             CI, release and event package workflows, Dependabot
 deny.toml            cargo-deny: allowed licenses, advisories, sources
 docs/                SPEC, DECISIONS, ICON, EVENT_LINKS
+events/              local event folders (event.toml, secret.key); git-ignored except its README
 ```
 
 ## License
