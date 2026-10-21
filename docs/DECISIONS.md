@@ -1062,6 +1062,12 @@ Versions checked with `cargo info` on 2026-10-17.
 - **Trade-off:** one key covers all of the organizer's events; losing it affects all of them,
   and replacing it needs a new edition. Per-event editions (D28) remain for events that want
   their own key or a download with the configuration bundled.
+- **Setup of the organizer edition:** no "Start LANcast" at the end (it couldn't send without an
+  event link). The finish page text (`[Messages] FinishedLabel`, English and German) says to open
+  the event website and click the LANcast link; the setup registers `lancast:`, so the link works
+  right away. The README checkbox stays. Normal and event editions are unchanged. Checked by
+  compiling all three variants and inspecting the preprocessed script; a test installer confirmed
+  that ISCC reads the UTF-8 script without BOM correctly (umlauts in the German text).
 - **No key folder in the repository:** the git-ignored `events\` folder (f9dce9d) was dropped
   again. An organizer key lives for years and covers all events, and ignored files in a working
   copy vanish with `git clean -fdx`, a fresh clone or a deleted checkout, without a backup. The

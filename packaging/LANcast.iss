@@ -4,7 +4,10 @@
 ;   /DFileVersion=<numeric Cargo.toml version>  /DStageDir=<folder with the release files>
 ;   /DOutputDir=<folder for the setup.exe>  /DOutputBase=<setup file name>
 ; and for an event edition (D28) also /DEdition=<event name> /DEventFile=1
-; (installs the signed LANcast.event next to the exe).
+; (installs the signed LANcast.event next to the exe). An organizer edition
+; (D35) gets only /DEdition=<organizer>: it has no configuration until an
+; event link is clicked, so the last page points to the event website instead
+; of offering to start LANcast.
 ;
 ; Install modes: "for all users" (default; admin) installs to Program Files
 ; and adds an inbound firewall rule; "for me only" installs to
@@ -30,6 +33,9 @@
   #define DisplayName "LANcast (" + Edition + " edition)"
 #else
   #define DisplayName "LANcast"
+#endif
+#if defined(Edition) && !defined(EventFile)
+  #define OrganizerEdition
 #endif
 
 [Setup]
@@ -75,6 +81,16 @@ german.FirewallTask=LANcast in der Windows-Firewall freigeben (private Netzwerke
 english.LaunchLANcast=Start LANcast
 german.LaunchLANcast=LANcast starten
 
+#ifdef OrganizerEdition
+; The lancast: scheme is registered by this setup, so the event link works
+; right away; it starts LANcast with the event's configuration.
+[Messages]
+english.FinishedLabel=Setup has finished installing [name] on your computer.%n%nThis LANcast sends only with the configuration of a {#Edition} event. Open the event website and click the LANcast link there: it starts LANcast and loads the event's configuration.
+english.FinishedLabelNoIcons=Setup has finished installing [name] on your computer.%n%nThis LANcast sends only with the configuration of a {#Edition} event. Open the event website and click the LANcast link there: it starts LANcast and loads the event's configuration.
+german.FinishedLabel=Das Setup hat die Installation von [name] auf Ihrem Computer abgeschlossen.%n%nDieses LANcast sendet nur mit der Konfiguration eines {#Edition}-Events. Öffnen Sie die Event-Website und klicken Sie dort auf den LANcast-Link: Er startet LANcast und lädt die Konfiguration des Events.
+german.FinishedLabelNoIcons=Das Setup hat die Installation von [name] auf Ihrem Computer abgeschlossen.%n%nDieses LANcast sendet nur mit der Konfiguration eines {#Edition}-Events. Öffnen Sie die Event-Website und klicken Sie dort auf den LANcast-Link: Er startet LANcast und lädt die Konfiguration des Events.
+#endif
+
 [Tasks]
 Name: "firewall"; Description: "{cm:FirewallTask}"; Check: IsAdminInstallMode
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -109,8 +125,11 @@ Root: HKA; Subkey: "Software\Classes\lancast\shell\open\command"; ValueType: str
 ; NDI receivers connect to the sender (SPEC §5.4).
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LANcast"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LANcast"" dir=in action=allow program=""{app}\LANcast.exe"" profile=private,domain enable=yes"; Flags: runhidden; Tasks: firewall
-; Start LANcast as the normal user, not elevated like the installer.
+; Start LANcast as the normal user, not elevated like the installer. Not for
+; an organizer edition: without an event link it can't send (see [Messages]).
+#ifndef OrganizerEdition
 Filename: "{app}\LANcast.exe"; Description: "{cm:LaunchLANcast}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+#endif
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LANcast"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"; Check: IsAdminInstallMode

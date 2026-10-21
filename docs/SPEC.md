@@ -267,7 +267,7 @@ LANcast always asks before applying and never starts sending by itself. The sett
 
 ### 5.4.2 Organizer and event editions / LAN distro (D28, D35)
 An organizer can build a LANcast package with its public key compiled in. It sends only with a valid event configuration signed by the organizer (Ed25519): a signed `lancast://event?p=…&s=…` link, or `LANcast.event` next to the exe.
-- **Organizer edition (default, D35):** named after the organizer, without `LANcast.event`. One key for all of the organizer's events; participants get each event's configuration from its signed link, so the edition is built once per release (`-Edition <name> -PublicKey <key>`; *Release* builds it when the repository variables `ORGANIZER_EDITION` and `ORGANIZER_PUBLIC_KEY` are set). Needs only the public key.
+- **Organizer edition (default, D35):** named after the organizer, without `LANcast.event`. One key for all of the organizer's events; participants get each event's configuration from its signed link, so the edition is built once per release (`-Edition <name> -PublicKey <key>`; *Release* builds it when the repository variables `ORGANIZER_EDITION` and `ORGANIZER_PUBLIC_KEY` are set). Needs only the public key. Its setup doesn't offer to start LANcast; the last page tells the user to click the LANcast link on the event website.
 - **Event edition (D28):** named after one event, with its signed `LANcast.event` in the download (`-EventConfig event.toml -SigningKey secret.key`, or the *Event package* workflow).
 - **Enforced** section: signed, with a validity window (local dates), fixed while the event is active.
 - **Defaults** section: unsigned starting values the user may change.

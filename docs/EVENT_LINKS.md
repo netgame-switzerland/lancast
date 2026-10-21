@@ -155,6 +155,8 @@ The key only exists as a GitHub secret and as a temporary file on the runner, de
 ### Organizer edition (one build for all events)
 An organizer who runs several events can use **one key pair for all of them** and build the edition once per release, instead of once per event (D35). The organizer edition is the same exe, named after the organizer (*LANcast – netgame edition*), but without a bundled `LANcast.event`. Until a participant clicks a signed event link of that organizer (or puts a `LANcast.event` next to the exe), Send stays disabled with a banner. For each event, only `event.toml` is signed with the organizer's key; nothing is rebuilt.
 
+Its setup registers `lancast:` links but doesn't offer to start LANcast at the end, since LANcast couldn't send yet. The last page says to open the event website and click the LANcast link there, which starts LANcast with the event's configuration.
+
 **The organizer key** is created once with `lancast-event keygen` (see [Building an event edition](#building-an-event-edition), step 1) and used for years. Back it up in a password manager (it is one line of text) and keep it outside the repository. If it is lost or leaked, every event of the organizer is affected: create a new key, set the new public key and release a new organizer edition, which participants have to install.
 
 Building it needs only the **public key**, no secret:
