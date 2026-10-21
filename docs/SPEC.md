@@ -314,7 +314,7 @@ An organizer can build a LANcast package with its public key compiled in. It sen
   - The window list refreshes whenever the dropdown is opened.
   - The preview is shown while sending. A preview before sending, to confirm the right window, is a possible later addition.
   - Test switch: env `LANCAST_SIMULATE_NO_PROCESS_LOOPBACK=1` makes process loopback fail, to exercise the Windows 10 warning path.
-- **M4 (done, D23):** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for LANcast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, release ZIP with README/EULA/license file (`tools\package.ps1` → `dist\LANcast-<version>-win64.zip`). The EULA is a draft and needs review before public distribution.
+- **M4 (done, D23):** config file, discovery server (§5.4), stale system discovery-server check with "Ignore for LANcast" override (§5.4, D14), receiver audio level setting (§5.3, D17), CPU scaling/FPS cap, single instance, release ZIP with README/EULA/license file (`tools\package.ps1` → `dist\LANcast-<version>-win64.zip`).
 - **M5 (v2):** GPU scaling + UYVY conversion (§5.5), reduced capture when there are 0 receivers.
 
 ## 8. Acceptance criteria

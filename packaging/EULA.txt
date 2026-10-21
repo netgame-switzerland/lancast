@@ -3,8 +3,6 @@ LANcast - License Terms
 
 Copyright 2026 Kay Huber
 
-DRAFT - to be reviewed before public distribution (see docs/DECISIONS.md, D23, D24).
-
 This package contains two kinds of software under different terms:
 
 1. LANcast (LANcast.exe, excluding the NDI(R) components named below)

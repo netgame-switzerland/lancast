@@ -656,6 +656,8 @@ Versions checked with `cargo info` on 2026-10-17.
 - **EULA restructured:** part 1 is LANcast under Apache-2.0, which permits modification. Part 2 holds
   the NDI §3d clauses, which apply only to the NDI components. Parts 3 and 4 are the disclaimers.
   Still a draft for review.
+  - **Final (2026-10-21):** the user reviewed the license terms and accepted them unchanged; the
+    draft note was removed from `packaging/EULA.txt`.
 - **Third-party licenses:** `tools/third_party_licenses.py` walks `cargo metadata` (normal dependencies
   only; build-time tools like bindgen are not shipped).
   - Result: **150 crates**, with their license files and repeated texts deduplicated.
