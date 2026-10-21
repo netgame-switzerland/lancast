@@ -118,7 +118,9 @@ function New-Package($Exe, [string]$Name, [string]$EventFile, [string]$Edition, 
         Write-Warning "Inno Setup not found; no setup.exe built (winget install JRSoftware.InnoSetup)."
         return
     }
-    $defines = @("/DAppVersion=$version", "/DFileVersion=$cargoVersion", "/DStageDir=$((Resolve-Path $stage).Path)",
+    # VersionInfoVersion is numeric only: 1.0.0-rc.1 -> 1.0.0.
+    $fileVersion = $cargoVersion -replace '-.*$', ''
+    $defines = @("/DAppVersion=$version", "/DFileVersion=$fileVersion", "/DStageDir=$((Resolve-Path $stage).Path)",
         "/DOutputDir=$((Resolve-Path dist).Path)", "/DOutputBase=$Name-setup")
     if ($Edition) { $defines += @("/DEdition=$Edition", "/DEventFile=1") }
     & $iscc /Q @defines packaging\LANcast.iss
