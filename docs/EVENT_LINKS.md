@@ -58,6 +58,7 @@ All keys are optional, but a link must set at least one. Unknown keys are ignore
 - Write `&` as `&amp;` inside HTML attributes; browsers accept both.
 - **Chat apps:** Discord, WhatsApp etc. usually do not make custom schemes like `lancast://` clickable. Post a link to the web page instead.
 - **Fallback:** for people who cannot click the link, list the values on the page; they can enter them in LANcast's settings by hand.
+- **Landing page:** one shareable `https://` page that opens LANcast automatically if installed and always offers *Open* and *Download*: see [LANDING_PAGE.md](LANDING_PAGE.md).
 
 ## Which LANcast opens the link
 *Settings → Links* shows which copy opens `lancast://` links:
