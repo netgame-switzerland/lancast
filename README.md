@@ -31,6 +31,7 @@ LANcast is the participant's side of a simpler setup:
   - an optional NDI Discovery Server
   - a warning if a stale discovery server is configured in NDI Access Manager
 - **Remembers** settings, window size and position, and the game name per game.
+- **Update check** at startup (can be turned off): LANcast looks for a newer release of its own edition. An installed LANcast updates with one click (it runs the new setup and restarts); a portable copy links to the download. Without a connection LANcast starts normally.
 - **Anti-cheat friendly:** no injection, no hooks, no overlays in the game process. Only Windows APIs:
   - Windows Graphics Capture
   - WASAPI
@@ -162,9 +163,11 @@ LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, op
 **Creating a release:** on GitHub, open *Actions → Release → Run workflow* on `main` and pick the bump (`patch`, `minor`, `major`), or enter an exact version. Use `none` to release the current `Cargo.toml` version as it is, if it has no tag yet. The workflow:
 1. computes the new version and checks that its tag doesn't exist yet,
 2. updates `Cargo.toml`/`Cargo.lock`, installs the latest NDI 6 SDK, runs clippy and the tests,
-3. builds `LANcast-<ver>-win64.zip` and `LANcast-<ver>-setup.exe` (`tools\package.ps1 -Release`), the organizer edition if it is set up (below), plus `SHA256SUMS.txt`,
+3. builds `LANcast-<ver>-win64.zip` and `LANcast-<ver>-setup.exe` (`tools\package.ps1 -Release`), the organizer edition if it is set up (below), plus `SHA256SUMS.txt` and the signed update manifest `LANcast-update.json`,
 4. pushes the commit `Release v<ver>` and the tag `v<ver>` to `main`, but only if everything above succeeded,
 5. publishes the GitHub release with the packages and generated release notes. A version with a suffix (`-rc.1`) becomes a pre-release.
+
+**Update manifest:** LANcast checks `https://github.com/netgame-switzerland/lancast/releases/latest/download/LANcast-update.json` (`update_url` in `LANcast.toml` overrides it, e.g. for a mirror on the event LAN: the manifest and the packages in one folder). The manifest is signed with the release key; its public key is `UPDATE_KEY` in `src/update.rs`, the private key is the repository secret `UPDATE_SIGNING_KEY` (created with `lancast-event keygen`; keep a copy in a password manager). *Release* refuses to run without it. `releases/latest` skips pre-releases, so updates are only offered for full releases. See D37 in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 **Event edition of a release:** *Actions → Event package*, with the release tag and the name of a GitHub environment that holds the event's files. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#building-in-github-actions).
 

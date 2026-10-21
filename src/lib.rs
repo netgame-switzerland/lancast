@@ -22,6 +22,7 @@ pub mod session;
 pub mod tray;
 #[cfg_attr(not(windows), path = "unsupported/tray_visibility.rs")]
 pub mod tray_visibility;
+pub mod update;
 pub mod url_scheme;
 #[cfg_attr(not(windows), path = "unsupported/win_thumbnail.rs")]
 pub mod win_thumbnail;

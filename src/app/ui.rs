@@ -22,6 +22,7 @@ use super::{
         AppState, AudioCheck, AudioChoice, Command, NoticeLevel, PendingLink, Settings, SharedState,
     },
     meter::Meter,
+    updater::{UpdateStatus, Updater},
 };
 use crate::{
     capture::{
@@ -35,6 +36,7 @@ use crate::{
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
     tray::{self, TrayHandle},
     tray_visibility::IconPlacement,
+    update,
     windows_list::WindowInfo,
 };
 
@@ -103,6 +105,11 @@ pub struct LancastApp {
     tray_checked: Option<Instant>,
     /// × was pressed while sending: ask before quitting.
     confirm_quit: bool,
+    /// Update check and install (D37).
+    updater: Updater,
+    check_updates: bool,
+    /// "Later" was clicked on the update banner.
+    update_dismissed: bool,
 }
 
 impl LancastApp {
@@ -113,6 +120,7 @@ impl LancastApp {
         hwnd: Option<isize>,
         store: ConfigStore,
         config: Config,
+        updater: Updater,
     ) -> Self {
         let mut app = Self {
             state,
@@ -140,6 +148,7 @@ impl LancastApp {
             ignore_system_discovery: config.ignore_system_discovery,
             user_name: config.user_name.clone(),
             game_name: String::new(),
+            check_updates: config.check_updates,
             config,
             store,
             changed_at: None,
@@ -154,12 +163,18 @@ impl LancastApp {
             tray_placement: IconPlacement::Shown,
             tray_checked: None,
             confirm_quit: false,
+            updater,
+            update_dismissed: false,
         };
         app.load_bundled_event();
         app.refresh_event();
         let servers = app.effective_servers();
         if !servers.is_empty() {
             app.send(Command::CheckDiscovery(servers));
+        }
+        if app.config.check_updates {
+            app.updater
+                .check(update::effective_url(&app.config.update_url));
         }
         app
     }
@@ -304,6 +319,7 @@ impl LancastApp {
         config.discovery_server = self.discovery_server.trim().to_owned();
         config.ignore_system_discovery = self.ignore_system_discovery;
         config.user_name = self.user_name.trim().to_owned();
+        config.check_updates = self.check_updates;
         if config != self.config {
             self.config = config;
             self.changed_at = Some(Instant::now());
@@ -612,6 +628,12 @@ impl eframe::App for LancastApp {
         if self.confirm_quit {
             self.confirm_quit(&ctx);
         }
+        // The update setup runs and replaces LANcast (D37).
+        if self.updater.status() == UpdateStatus::Installing {
+            self.store.save(&self.config);
+            self.send(Command::Quit);
+            return;
+        }
 
         if let Some(pending) = state.pending_link.clone() {
             if self.repeats_current_event(&pending.link) {
@@ -697,6 +719,7 @@ impl eframe::App for LancastApp {
 
         egui::Panel::bottom("controls").show(ui, |ui| {
             ui.add_space(6.0);
+            self.update_banner(ui, &state);
             self.discovery_warning(ui, &state);
             self.source_name(ui, &state);
             ui.add_space(4.0);
@@ -1209,8 +1232,158 @@ impl LancastApp {
                         ui.label(RichText::new("Links").weak());
                         self.link_settings(ui);
                         ui.end_row();
+
+                        ui.label(RichText::new("Updates").weak());
+                        self.update_settings(ui);
+                        ui.end_row();
                     });
             });
+    }
+
+    /// A newer LANcast: install it (installed copies) or download it
+    /// (portable), with the release notes (D37).
+    fn update_banner(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        let (update, error) = match self.updater.status() {
+            UpdateStatus::Available(update) => (update, None),
+            UpdateStatus::InstallFailed(update, error) => (update, Some(error)),
+            UpdateStatus::Downloading(update) => {
+                banner(
+                    ui,
+                    BLUE,
+                    &format!("Downloading LANcast {} …", update.version),
+                );
+                ui.add_space(6.0);
+                return;
+            }
+            _ => return,
+        };
+        if self.update_dismissed
+            || (error.is_none() && update.version == self.config.skipped_update)
+        {
+            return;
+        }
+        let color = if error.is_some() { AMBER } else { BLUE };
+        banner_frame(ui, color, |ui| {
+            let text = match &error {
+                Some(error) => format!("The update to LANcast {} failed: {error}", update.version),
+                None => format!(
+                    "LANcast {} is available (you have {}).",
+                    update.version,
+                    crate::VERSION
+                ),
+            };
+            ui.label(RichText::new(text).strong().color(color));
+            if let Some(manual) = &update.manual {
+                ui.label(manual);
+            }
+            ui.horizontal(|ui| {
+                if self.updater.can_install(&update) {
+                    let hint = if state.sending.is_some() {
+                        "Stop sending first."
+                    } else {
+                        "Downloads and checks the setup, then installs it. LANcast closes \
+                         and starts again; Windows may ask for permission."
+                    };
+                    let label = if error.is_some() {
+                        "Try again"
+                    } else {
+                        "Update now"
+                    };
+                    if ui
+                        .add_enabled(state.sending.is_none(), egui::Button::new(label))
+                        .on_hover_text(hint)
+                        .on_disabled_hover_text(hint)
+                        .clicked()
+                    {
+                        self.updater.install(update.clone());
+                    }
+                } else if ui
+                    .button("Download…")
+                    .on_hover_text("Opens the release page to download the new version.")
+                    .clicked()
+                {
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(update.notes_url.clone()));
+                }
+                ui.hyperlink_to("What's new", &update.notes_url);
+                if error.is_none()
+                    && ui
+                        .button("Skip this version")
+                        .on_hover_text("No reminder until a newer version comes out.")
+                        .clicked()
+                {
+                    self.config.skipped_update = update.version.clone();
+                    self.changed_at = Some(Instant::now());
+                }
+                if ui.button("Later").clicked() {
+                    self.update_dismissed = true;
+                }
+            });
+        });
+        ui.add_space(6.0);
+    }
+
+    /// The startup check setting, "Check now" and the last result (D37).
+    fn update_settings(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if update::edition().is_none() {
+                ui.label(
+                    RichText::new("This event edition comes with the event's download.")
+                        .small()
+                        .weak(),
+                );
+                return;
+            }
+            let url = update::effective_url(&self.config.update_url).to_owned();
+            ui.checkbox(&mut self.check_updates, "Check at startup")
+                .on_hover_text(format!(
+                    "Looks for a newer LANcast at startup ({url}).\n\
+                     LANcast starts normally if that can't be reached.\n\
+                     The address is update_url in LANcast.toml."
+                ));
+            let status = self.updater.status();
+            let busy = matches!(
+                status,
+                UpdateStatus::Checking | UpdateStatus::Downloading(_) | UpdateStatus::Installing
+            );
+            if ui
+                .add_enabled(!busy, egui::Button::new("Check now").small())
+                .clicked()
+            {
+                self.update_dismissed = false;
+                if !self.config.skipped_update.is_empty() {
+                    self.config.skipped_update.clear();
+                    self.changed_at = Some(Instant::now());
+                }
+                self.updater.check(&url);
+            }
+            let (text, color, hint) = match status {
+                UpdateStatus::Idle => (String::new(), None, None),
+                UpdateStatus::Checking => ("Checking…".to_owned(), None, None),
+                UpdateStatus::UpToDate => ("LANcast is up to date.".to_owned(), None, None),
+                UpdateStatus::CheckFailed(error) => {
+                    ("Could not check for updates.".to_owned(), None, Some(error))
+                }
+                UpdateStatus::Available(update) | UpdateStatus::Downloading(update) => (
+                    format!("LANcast {} is available.", update.version),
+                    Some(BLUE),
+                    None,
+                ),
+                UpdateStatus::Installing => ("Starting the setup…".to_owned(), None, None),
+                UpdateStatus::InstallFailed(_, error) => {
+                    ("The update failed.".to_owned(), Some(AMBER), Some(error))
+                }
+            };
+            let text = RichText::new(text).small();
+            let text = match color {
+                Some(color) => text.color(color),
+                None => text.weak(),
+            };
+            let label = ui.label(text);
+            if let Some(hint) = hint {
+                label.on_hover_text(hint);
+            }
+        });
     }
 
     /// Which LANcast opens lancast:// event links, with a fix button (D27).
@@ -1466,6 +1639,13 @@ fn process_key(window: &WindowInfo) -> Option<String> {
 }
 
 fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {
+    banner_frame(ui, color, |ui| {
+        ui.label(RichText::new(text).strong().color(color));
+    });
+}
+
+/// A banner with arbitrary contents, e.g. buttons.
+fn banner_frame(ui: &mut egui::Ui, color: Color32, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(color.gamma_multiply(0.18))
         .stroke(egui::Stroke::new(1.5, color))
@@ -1473,7 +1653,7 @@ fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {
         .inner_margin(8.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(text).strong().color(color));
+            add_contents(ui);
         });
 }
 

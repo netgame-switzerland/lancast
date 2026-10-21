@@ -3,6 +3,10 @@
 # with the tag vX.Y.Z and publishes the GitHub release with the packages.
 # The commit and tag are only pushed if the build succeeded.
 #
+# Needs the secret UPDATE_SIGNING_KEY (lancast-event keygen; its public key is
+# update::UPDATE_KEY in src/update.rs): it signs LANcast-update.json, which
+# LANcast checks for updates (D37).
+#
 # Run it from the Actions tab: "Release" -> "Run workflow" (branch main).
 name: Release
 
@@ -40,7 +44,9 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
           EXACT: ${{ inputs.version }}
+          HAS_UPDATE_KEY: ${{ secrets.UPDATE_SIGNING_KEY != '' }}
         run: |
+          if ($env:HAS_UPDATE_KEY -ne "true") { throw "The secret UPDATE_SIGNING_KEY is not set (signs the update manifest, D37)." }
           $semver = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           $current = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           if ($current -notmatch $semver) { throw "Cargo.toml version '$current' is not SemVer" }
@@ -114,6 +120,26 @@ jobs:
           Get-Content SHA256SUMS.txt
           Pop-Location
 
+      # LANcast checks this manifest for updates (D37). The key file is
+      # deleted right after signing.
+      - name: Write the signed update manifest
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          NOTES_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}
+        run: |
+          cargo build --release --bin lancast-event
+          if ($LASTEXITCODE -ne 0) { throw "cargo build (lancast-event) failed" }
+          $key = Join-Path $env:RUNNER_TEMP "update.key"
+          [IO.File]::WriteAllText($key, $env:UPDATE_SIGNING_KEY.Trim() + "`n")
+          try {
+            target\release\lancast-event.exe update-manifest dist $env:VERSION $env:NOTES_URL $key dist\LANcast-update.json
+            if ($LASTEXITCODE -ne 0) { throw "lancast-event update-manifest failed" }
+          } finally {
+            Remove-Item -Force $key
+          }
+
       # Fails without changes if main moved on meanwhile: run the release again.
       - name: Push the commit and the tag
         shell: pwsh
@@ -139,7 +165,7 @@ jobs:
           if ($env:ORGANIZER_EDITION) {
             $notes += "`n`n**$env:ORGANIZER_EDITION edition:** the files with ``-$(($env:ORGANIZER_EDITION.ToLower() -replace '[^a-z0-9]+', '-').Trim('-'))`` in the name send only after a signed event link of $env:ORGANIZER_EDITION (click it on the event website)."
           }
-          $files = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(zip|exe)$|^SHA256SUMS\.txt$' } |
+          $files = Get-ChildItem dist -File | Where-Object { $_.Name -match '\.(zip|exe)$|^SHA256SUMS\.txt$|^LANcast-update\.json$' } |
             ForEach-Object { $_.FullName }
           $flags = @("--verify-tag", "--title", "LANcast $env:VERSION", "--notes", $notes, "--generate-notes")
           if ($env:PRERELEASE -eq "true") { $flags += "--prerelease" }

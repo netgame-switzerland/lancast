@@ -1,12 +1,14 @@
 //! Organizer tool for LANcast event editions (D28): creates the signing key,
 //! signs an event description into `LANcast.event` and prints the matching
-//! `lancast://event?…` link. Not shipped to participants.
+//! `lancast://event?…` link. The release workflow also uses it to write the
+//! signed update manifest (D37). Not shipped to participants.
 //!
 //! ```text
 //! lancast-event keygen <secret.key>
 //! lancast-event pubkey <secret.key>
 //! lancast-event sign <event.toml> <secret.key> <LANcast.event>
 //! lancast-event verify <LANcast.event> <public key>
+//! lancast-event update-manifest <dist> <version> <notes url> <secret.key> <out.json>
 //! ```
 
 use std::{collections::BTreeMap, path::Path, process::ExitCode};
@@ -15,6 +17,7 @@ use anyhow::{Context, Result, bail};
 use lancast::{
     distro::{self, EventFile, EventPayload},
     event_link::EventValues,
+    update::{self, Asset, EditionFiles, Manifest},
 };
 use serde::Deserialize;
 
@@ -24,6 +27,8 @@ Usage:
   lancast-event pubkey <secret.key>                         prints the public key
   lancast-event sign <event.toml> <secret.key> <out.event>  writes LANcast.event, prints the link
   lancast-event verify <file.event> <public key>            checks a LANcast.event
+  lancast-event update-manifest <dist> <version> <notes url> <secret.key> <out.json>
+                                                            signed update manifest of a release
 
 Keep secret.key private and out of the repository and the download.
 See docs/EVENT_LINKS.md for the format of event.toml.";
@@ -52,6 +57,13 @@ fn main() -> ExitCode {
         }),
         ["sign", spec, secret, out] => sign(Path::new(spec), Path::new(secret), Path::new(out)),
         ["verify", file, key] => verify(Path::new(file), key),
+        ["update-manifest", dist, version, notes, secret, out] => update_manifest(
+            Path::new(dist),
+            version,
+            notes,
+            Path::new(secret),
+            Path::new(out),
+        ),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -160,6 +172,87 @@ fn verify(path: &Path, public_key: &str) -> Result<()> {
     match payload.check_dates(&distro::today_local()) {
         Ok(()) => println!("valid today"),
         Err(err) => println!("not valid today: {err:#}"),
+    }
+    Ok(())
+}
+
+/// Writes the signed update manifest (D37) for the packages of `version` in
+/// `dist`: `LANcast-<version>-setup.exe` / `-win64.zip` is the standard
+/// edition, `LANcast-<version>-<edition>-setup.exe` / `-win64.zip` an
+/// organizer edition.
+fn update_manifest(
+    dist: &Path,
+    version: &str,
+    notes_url: &str,
+    secret: &Path,
+    out: &Path,
+) -> Result<()> {
+    let prefix = format!("LANcast-{version}-");
+    let mut editions: BTreeMap<String, EditionFiles> = BTreeMap::new();
+    let entries =
+        std::fs::read_dir(dist).with_context(|| format!("cannot read {}", dist.display()))?;
+    for entry in entries {
+        let path = entry?.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let (edition, setup) = if let Some(edition) = rest.strip_suffix("setup.exe") {
+            (edition, true)
+        } else if let Some(edition) = rest.strip_suffix("win64.zip") {
+            (edition, false)
+        } else {
+            continue;
+        };
+        let edition = match edition.strip_suffix('-') {
+            Some(edition) => edition,
+            None if edition.is_empty() => update::STANDARD_EDITION,
+            None => continue,
+        };
+        let asset = Asset {
+            file: name.to_owned(),
+            sha256: update::file_sha256(&path)?,
+            size: std::fs::metadata(&path)?.len(),
+        };
+        let files = editions.entry(edition.to_owned()).or_default();
+        if setup {
+            files.setup = Some(asset);
+        } else {
+            files.zip = Some(asset);
+        }
+    }
+    if !editions.contains_key(update::STANDARD_EDITION) {
+        bail!(
+            "no {prefix}setup.exe or {prefix}win64.zip in {}",
+            dist.display()
+        );
+    }
+    let manifest = Manifest {
+        v: 1,
+        product: "LANcast".into(),
+        version: version.to_owned(),
+        notes_url: notes_url.to_owned(),
+        manual: String::new(),
+        editions,
+    };
+    let secret = read_secret(secret)?;
+    let signed = update::sign_manifest(&manifest, &secret)?;
+    let text = serde_json::to_string_pretty(&signed)?;
+    // Check what is written, with the public key as LANcast would.
+    update::verify_manifest(&text, &distro::public_key(&secret))?;
+    std::fs::write(
+        out,
+        text + "
+",
+    )
+    .with_context(|| format!("cannot write {}", out.display()))?;
+    eprintln!("Wrote {} for {version}:", out.display());
+    for (edition, files) in &manifest.editions {
+        for asset in [&files.setup, &files.zip].into_iter().flatten() {
+            eprintln!("  {edition}: {} ({} bytes)", asset.file, asset.size);
+        }
     }
     Ok(())
 }

@@ -65,6 +65,15 @@ pub struct Config {
     pub event_bundled: String,
     /// Last game name per process (lowercase exe name).
     pub source_names: BTreeMap<String, String>,
+    /// Look for a newer LANcast at startup (D37).
+    pub check_updates: bool,
+    /// Where to look: the URL of a signed `LANcast-update.json`; empty =
+    /// the latest GitHub release (`update::DEFAULT_URL`). A mirror on the
+    /// event LAN works too. Always written, so it can be found in the file.
+    pub update_url: String,
+    /// The update the user chose to skip ("Skip this version").
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub skipped_update: String,
 }
 
 /// The NDI source name for `user` and `game`: `User - Game` (D26). NDI
@@ -112,6 +121,9 @@ impl Default for Config {
             event_signed: None,
             event_bundled: String::new(),
             source_names: BTreeMap::new(),
+            check_updates: true,
+            update_url: String::new(),
+            skipped_update: String::new(),
         }
     }
 }
@@ -128,6 +140,7 @@ impl Config {
         self.audio_gain_db = self.audio_gain_db.clamp(-40.0, 40.0);
         self.discovery_server = self.discovery_server.trim().to_owned();
         self.user_name = self.user_name.trim().to_owned();
+        self.update_url = self.update_url.trim().to_owned();
         let finite_or = |v: f32, default: f32| if v.is_finite() { v } else { default };
         self.window_width =
             finite_or(self.window_width, DEFAULT_WINDOW_SIZE.0).clamp(MIN_WINDOW_SIZE.0, 8000.0);
@@ -242,6 +255,7 @@ mod tests {
         assert_eq!(config.fps_cap, 120);
         assert!(config.always_on_top);
         assert!(!config.to_tray);
+        assert!(config.check_updates);
         assert_eq!((config.max_width, config.max_height), (1920, 1080));
     }
 

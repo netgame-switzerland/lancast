@@ -5,6 +5,7 @@ mod carousel;
 mod controller;
 mod meter;
 mod ui;
+mod updater;
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -150,6 +151,7 @@ pub fn run(link: Option<String>) -> Result<()> {
                 hwnd,
                 store,
                 config,
+                updater::Updater::new(cc.egui_ctx.clone()),
             )))
         }),
     );

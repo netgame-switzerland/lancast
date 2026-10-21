@@ -9,6 +9,10 @@
 ; event link is clicked, so the last page points to the event website instead
 ; of offering to start LANcast.
 ;
+; LANcast updates itself by running the new setup silently (D37):
+;   /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /ALLUSERS|/CURRENTUSER /LANCASTSTART=1
+; The last one starts LANcast again when the setup is done.
+;
 ; Install modes: "for all users" (default; admin) installs to Program Files
 ; and adds an inbound firewall rule; "for me only" installs to
 ; %LOCALAPPDATA%\Programs without admin rights and without a firewall rule.
@@ -130,9 +134,18 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""L
 #ifndef OrganizerEdition
 Filename: "{app}\LANcast.exe"; Description: "{cm:LaunchLANcast}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 #endif
+; After an update started by LANcast (D37), every edition starts again.
+Filename: "{app}\LANcast.exe"; Flags: nowait runasoriginaluser; Check: StartAfterUpdate
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""LANcast"""; Flags: runhidden; RunOnceId: "RemoveFirewallRule"; Check: IsAdminInstallMode
+
+[Code]
+// /LANCASTSTART=1 on the command line: LANcast started this setup (D37).
+function StartAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:LANCASTSTART|0}') = '1';
+end;
 
 [UninstallDelete]
 ; Settings and logs in %LOCALAPPDATA%\LANcast are kept (per user, may be reused).

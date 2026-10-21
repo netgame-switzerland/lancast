@@ -1094,6 +1094,88 @@ Versions checked with `cargo info` on 2026-10-17.
   matches the accepted event exactly changes nothing, because its defaults are ignored.
 - `repeats_event` in `src/app/ui.rs`, with unit tests for plain and signed links.
 
+### D37. Update check and self-update (2026-10-21)
+- **Requirement (user):** LANcast checks at startup whether an update exists for its edition and
+  tells the user; the place to look is configurable (default: GitHub releases); the check can be
+  turned off (default **on**); LANcast starts normally when the update site is unreachable.
+- **Install by running the setup, not by replacing the exe:**
+  - The exe ships with the NDI DLL, which every release updates (D5), and an all-users install in
+    `Program Files` cannot replace itself without admin rights.
+  - The Inno setup already does everything an update needs: same AppId, previous install mode and
+    tasks (firewall rule), closes the running LANcast (`CloseApplications=yes`), `lancast:` scheme,
+    uninstall entry, UAC prompt.
+  - LANcast starts it with `/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS
+    /ALLUSERS|/CURRENTUSER /LANCASTSTART=1` (https://jrsoftware.org/ishelp/topic_setupcmdline.htm),
+    then quits. `/ALLUSERS`/`/CURRENTUSER` keep the install mode and skip the mode dialog
+    (`PrivilegesRequiredOverridesAllowed=dialog` allows the override).
+  - A new `[Run]` entry with `Check: StartAfterUpdate` (`{param:LANCASTSTART|0}`) starts LANcast
+    again, `runasoriginaluser` (valid on any `[Run]` entry, not only `postinstall`:
+    https://jrsoftware.org/ishelp/topic_runsection.htm). The organizer edition restarts too:
+    after an update it already has its event configuration.
+  - Started with `ShellExecuteW`, not `CreateProcess`, so a setup that needs admin rights gets the
+    UAC prompt instead of `ERROR_ELEVATION_REQUIRED`. Return values above 32 mean success.
+  - **Install mode:** the setup's uninstall entry `…\Uninstall\{F98C4151-…}_is1`, value
+    `InstallLocation` (`C:\Program Files\LANcast\` on the dev machine), in HKLM (all users) or
+    HKCU (per user), compared with the exe's folder. Anything else (ZIP, build) is portable: the
+    banner only offers "Download…" (release page). Replacing a portable copy in place is possible
+    later (a running exe and DLL can be renamed) but not done now (user decision).
+  - A release that cannot be installed this way can set `manual` in the manifest: the banner then
+    shows that text and only a download link.
+- **Signed manifest instead of the GitHub API:**
+  - Every release publishes `LANcast-update.json`: `{payload, signature}` (base64url, Ed25519 as
+    in D28) over `{v, product, version, notes_url, manual, editions: {<edition>: {setup, zip}}}`,
+    each package with file name, SHA-256 and size.
+  - Default URL `https://github.com/<repo>/releases/latest/download/LANcast-update.json`: a
+    redirect, not the REST API, which allows only 60 unauthenticated requests per hour per IP; a
+    LAN party shares one public IP. `releases/latest` skips pre-releases, so release candidates
+    get no update offers; an RC user is offered the final release.
+  - Package names are resolved relative to the manifest URL, so a mirror (event LAN, `update_url`)
+    is a folder with the manifest and the packages. Plain HTTP is fine for a mirror: the signature
+    and the hashes protect the content, wherever it comes from.
+  - **Release key:** a new Ed25519 key (`lancast-event keygen`), separate from organizer keys. The
+    public key is `UPDATE_KEY` in `src/update.rs` (overridable at build time with
+    `LANCAST_UPDATE_KEY`, for forks and tests). The private key is the repository secret
+    `UPDATE_SIGNING_KEY`; *Release* refuses to start without it and signs with
+    `lancast-event update-manifest <dist> <version> <notes url> <key> <out>`, which also verifies
+    what it wrote. Losing the key means a release with a new public key, and copies older than that
+    release no longer recognize updates.
+  - Downgrades: only versions newer than the running one are offered (SemVer precedence, build
+    metadata ignored, so a snapshot of 1.2.0 is not offered 1.2.0). An old manifest replayed by a
+    mirror can only hide updates.
+  - `update_url` is a local setting only; event links cannot set it (their keys are a fixed list).
+- **Editions:** the normal edition is `standard`; an organizer edition gets
+  `LANCAST_UPDATE_EDITION=<slug>` from `package.ps1` (the name used in its file names); an event
+  edition with a bundled `LANcast.event` gets none and does no check (its setup carries the
+  event's file and is not published on GitHub). An exe never sees another edition's packages.
+- **HTTP client:** `ureq` 3.5 (blocking, no async runtime; MIT/Apache-2.0) with
+  `native-tls-no-default`, configured with `TlsProvider::NativeTls` and
+  `RootCerts::PlatformVerifier` (https://docs.rs/ureq/3.5.0/ureq/tls/enum.RootCerts.html): on
+  Windows that is SChannel with the Windows certificate store, so no ring/rustls and no bundled
+  root list, and proxy/company roots work as in the browser. Windows-only dependency; other
+  platforms get an "unsupported" backend (D32). Timeouts: connect 5 s, manifest 8 s in total,
+  download 10 min; the manifest is read up to 64 KiB. SHA-256 via `sha2` 0.11 (already a
+  dependency of ed25519-dalek), versions via `semver` 1.0. `cargo deny check` passes unchanged.
+- **UI:** the check runs on its own thread after the window is up. A result shows as a blue banner
+  above the controls: "Update now" (disabled while sending) or "Download…", "What's new", "Skip
+  this version" (saved as `skipped_update`), "Later". Errors of the check appear only as a small
+  "Could not check for updates" in Settings → Updates (hover for the reason) and in the log; a
+  failed install shows an amber banner with "Try again". "Check now" clears a skipped version.
+  Downloads go to `<data folder>\updates\`, which is emptied at the next start.
+- **Verified (2026-10-21):**
+  - Unit tests: signature (wrong key, changed payload), file names with paths rejected, version
+    comparison incl. RC → final and snapshots, URLs relative to the manifest.
+  - Portable copy against a local mirror (`python -m http.server`): banner with "Download…".
+    Unreachable server (10.255.255.1): window after 0.5 s, "timeout: connect" logged after 5 s.
+    Default GitHub URL: HTTPS via SChannel works; 404, because only pre-releases exist yet.
+  - Real update of a per-user install (snapshot setup, `/CURRENTUSER /VERYSILENT`): "Update now"
+    (clicked via UI Automation) downloaded and verified the setup, started it, LANcast quit, the
+    setup installed and restarted LANcast about 2 s later. A tampered setup on the mirror (one
+    byte appended) was rejected: "does not match the manifest", amber banner with "Try again".
+    Afterwards the test install was uninstalled and the `lancast:` registration restored.
+  - Not tested: the all-users update with its UAC prompt (needs a click on the prompt), and the
+    Release workflow itself (it needs the secret and runs only on GitHub). If the UAC prompt is
+    declined, LANcast has already quit; the user starts it again.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

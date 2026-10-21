@@ -16,6 +16,10 @@
 # -Edition together with -EventConfig names an event edition after the
 # organizer instead of the event.
 #
+# Update check (D37): the normal and the organizer edition look for updates of
+# their own edition in the release's LANcast-update.json (LANCAST_UPDATE_EDITION
+# = the organizer's name as in the file names); an event edition does not.
+#
 # Versions (D30): without -Release, the packages are snapshots named after
 # the exe's version, e.g. LANcast-0.2.0-snapshot.g1a2b3c4-win64.zip. With
 # -Release (used by the GitHub release workflow), the build uses the plain
@@ -170,7 +174,7 @@ function New-Package($Exe, [string]$Name, [string]$EventFile, [string]$Edition, 
 }
 
 # The normal edition: never with an event key, even if one is set in the shell.
-Remove-Item Env:LANCAST_DISTRO_KEY, Env:LANCAST_DISTRO_NAME -ErrorAction SilentlyContinue
+Remove-Item Env:LANCAST_DISTRO_KEY, Env:LANCAST_DISTRO_NAME, Env:LANCAST_UPDATE_EDITION -ErrorAction SilentlyContinue
 if (-not $EventOnly) {
     Write-Host "Building LANcast $cargoVersion$(if (-not $Release) { ' (snapshot)' }) ..."
     $exe = Build-LANcast "target"
@@ -204,14 +208,19 @@ if ($EventConfig) {
     $info = [Text.Encoding]::UTF8.GetString((ConvertFrom-Base64Url $payload)) | ConvertFrom-Json
 }
 $editionName = if ($Edition) { $Edition } else { $info.event }
+$editionSlug = ($editionName.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
 
 Write-Host "Building the $editionName edition ..."
 $env:LANCAST_DISTRO_KEY = $PublicKey
 $env:LANCAST_DISTRO_NAME = $editionName
+# The organizer edition is released and updated like the normal one. An
+# event edition (bundled LANcast.event) is not: without this variable, an exe
+# with an event key does no update check.
+if (-not $info) { $env:LANCAST_UPDATE_EDITION = $editionSlug }
 try {
     $distroExe = Build-LANcast "target\distro"
 } finally {
-    Remove-Item Env:LANCAST_DISTRO_KEY, Env:LANCAST_DISTRO_NAME -ErrorAction SilentlyContinue
+    Remove-Item Env:LANCAST_DISTRO_KEY, Env:LANCAST_DISTRO_NAME, Env:LANCAST_UPDATE_EDITION -ErrorAction SilentlyContinue
 }
 $version = Get-Version $distroExe
 if ($info) {
@@ -223,7 +232,7 @@ if ($info) {
     $intro = "LANcast - $editionName edition`r`n" +
         "This LANcast sends only with a signed event configuration of $editionName.`r`n" +
         "Click the event link on the event website to load it.`r`n`r`n"
-    $name = "LANcast-$version-$(($editionName.ToLower() -replace '[^a-z0-9]+', '-').Trim('-'))"
+    $name = "LANcast-$version-$editionSlug"
 }
 New-Package $distroExe $name $eventFile $editionName $intro
 

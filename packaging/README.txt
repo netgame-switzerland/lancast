@@ -63,6 +63,21 @@ logs folder" at the bottom of the window). Portable mode: create an empty
 file "LANcast.toml" next to LANcast.exe and LANcast keeps everything there.
 
 
+UPDATES
+-------
+At startup LANcast checks GitHub for a newer version (Settings > Updates >
+"Check at startup"; "Check now" checks right away). Without an internet
+connection it simply starts as usual. If an update exists, a blue banner
+offers it:
+- Installed with the setup: "Update now" downloads the new setup, checks
+  its signature and starts it. LANcast closes and starts again afterwards;
+  Windows may ask for permission.
+- ZIP / portable: "Download..." opens the download page.
+Organizers can offer updates on the event LAN: put update_url =
+"http://<server>/<folder>/LANcast-update.json" into LANcast.toml, with the
+files of the GitHub release in that folder.
+
+
 EVENT LINKS
 -----------
 Organizers may publish a "Configure LANcast" link (lancast://config?...).

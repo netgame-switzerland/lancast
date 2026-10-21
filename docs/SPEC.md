@@ -163,6 +163,8 @@ Following Windows conventions, everything LANcast writes is per-user, machine-sp
 
 **Portable mode:** if a `LANcast.toml` exists next to the exe, that folder is used instead, e.g. on a USB stick. An empty file is enough.
 
+The update check (§6, D37) adds `check_updates` (default on), `update_url` (empty = the latest GitHub release) and `skipped_update`.
+
 All settings are optional. A missing file means defaults; an invalid one is kept as `LANcast.toml.bak`, and defaults are used. Settings are saved about 0.7 s after a change. The source name is remembered per game (exe name). The footer links to the folder ("Settings & logs folder").
 
 ## 5. Technical details
@@ -288,6 +290,7 @@ An organizer can build a LANcast package with its public key compiled in. It sen
 - **License:** LANcast is Apache-2.0, Copyright 2026 Kay Huber (`LICENSE`, `NOTICE`, D24).
 - Ship `LANcast.exe`, `Processing.NDI.Lib.x64.dll`, `Processing.NDI.Lib.Licenses.txt`, `README.txt`, `EULA.txt`, `LICENSE.txt`, `NOTICE.txt` and `THIRD-PARTY-LICENSES.txt` in the same folder, as a ZIP and as an Inno Setup installer `LANcast-<version>-setup.exe` (both from `tools\package.ps1`, D25). With admin rights, the installer adds the inbound firewall rule, so the first-start firewall dialog disappears. `build.rs` copies the DLL next to the exe on build (done in M0).
 - **Versions and releases (D30):** SemVer; `Cargo.toml` holds the last released version, tagged `v<version>`. Releases (ZIP, setup, SHA256SUMS, and the organizer edition when configured) are built and published by the GitHub workflow *Release*; event editions of a release by *Event package*. Local builds are snapshots (`<version>+snapshot.g<hash>`).
+- **Updates (D37):** at startup (setting, default on) LANcast fetches the signed manifest `LANcast-update.json` of the latest release (or `update_url`), verifies it with the release key compiled in, and offers a newer version of its own edition in a banner. An installed copy runs the new setup silently (`/SILENT … /LANCASTSTART=1`), which closes and restarts LANcast; a portable copy links to the release page. Never automatic, never while sending; offline LANcast starts normally. Event editions with a bundled `LANcast.event` are not updated online.
 - NDI SDK license requirements (verified, D5):
   - The DLL may be redistributed in the app folder.
   - The license file must accompany it.
