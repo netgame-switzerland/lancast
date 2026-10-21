@@ -28,6 +28,7 @@ The full specification is in `docs/SPEC.md`. Read it before making any larger ch
 - Never bump the version by hand. Releases are created only by the GitHub workflow *Release* (`.github/workflows/release.yml`, run from the Actions tab): it bumps `Cargo.toml`/`Cargo.lock`, builds the ZIP and the setup with `tools\package.ps1 -Release`, pushes the commit `Release vX.Y.Z` plus the tag, and publishes the GitHub release.
 - Local builds are snapshots: `build.rs` sets `LANCAST_VERSION` to `<version>+snapshot.g<hash>[.dirty]`; only `LANCAST_RELEASE=1` yields the plain version. Use `lancast::VERSION` for any version display, not `CARGO_PKG_VERSION`.
 - Event editions of a release: workflow *Event package* (`.github/workflows/event-package.yml`), with the event's `event.toml` and signing key in a GitHub environment, never in the repository.
+- Organizer edition (D35): `package.ps1 -Edition <name> -PublicKey <key>`, no private key needed; *Release* builds it when the repository variables `ORGANIZER_EDITION` and `ORGANIZER_PUBLIC_KEY` are set.
 
 ## Commands
 - Build: `cargo build --release`

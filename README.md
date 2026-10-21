@@ -106,6 +106,8 @@ powershell -File tools\package.ps1 -EventConfig events\netgame-2026\event.toml -
 ```
 This builds the normal packages plus `dist\LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt` with the event link. For a released version, build it with the *Event package* workflow instead. Details: [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#event-edition-lan-distro).
 
+An organizer with several events can use one key for all of them: the **organizer edition** (`package.ps1 -Edition netgame -PublicKey <key>`) has no bundled configuration and sends after a signed event link of that organizer, so it is built once per release, not per event. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#organizer-edition-one-build-for-all-events).
+
 ## Requirements
 - **Windows 10 1903 or newer, 64-bit.** Windows 11 is recommended: process loopback (game-only audio) is documented from build 20348.
 - Games should run in **borderless windowed** mode. Exclusive fullscreen may not be captured.
@@ -163,6 +165,8 @@ LANcast uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, op
 5. publishes the GitHub release with the packages and generated release notes. A version with a suffix (`-rc.1`) becomes a pre-release.
 
 **Event edition of a release:** *Actions → Event package*, with the release tag and the name of a GitHub environment that holds the event's files. See [`docs/EVENT_LINKS.md`](docs/EVENT_LINKS.md#building-in-github-actions).
+
+**Organizer edition in every release:** with the repository variables `ORGANIZER_EDITION` and `ORGANIZER_PUBLIC_KEY` set, *Release* also builds and attaches `LANcast-<ver>-<organizer>-win64.zip` and `…-setup.exe`. It needs no secret.
 
 The *CI* workflow checks formatting, clippy, the tests and the dependencies on every push to `main` and on pull requests. Clippy and the tests also run on Linux, so the platform split keeps building there; there are no Linux packages yet. Run it manually (*Actions → CI → Run workflow*) to also get snapshot packages as a workflow artifact, without tagging or publishing anything.
 

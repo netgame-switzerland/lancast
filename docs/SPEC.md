@@ -270,6 +270,7 @@ An event can build its own LANcast package with the organizer's public key compi
 - **Enforced** section: signed, with a validity window (local dates), fixed while the event is active.
 - **Defaults** section: unsigned starting values the user may change.
 - Built with `tools/package.ps1 -EventConfig event.toml -SigningKey secret.key`; signed with the `lancast-event` tool.
+- **Organizer edition (D35):** the same build named after an organizer and without `LANcast.event` (`-Edition <name> -PublicKey <key>`). One key for all of the organizer's events; it sends after a signed event link, so it is built once per release.
 
 ### 5.5 Performance roadmap (GPU)
 - **v1:** WGC (GPU) → CPU readback of BGRA → optional CPU downscale → NDI as BGRX. Measured readback cost: 1–5.6 ms per frame at 2560×1392 (D8).

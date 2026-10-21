@@ -1043,6 +1043,28 @@ Versions checked with `cargo info` on 2026-10-17.
   hid the hang.
 - **Timeouts:** 30–60 min per job instead of GitHub's default 6 hours.
 
+### D35. Organizer edition: one build for all of an organizer's events (2026-10-21)
+- **Question (user):** can a LAN edition be released on GitHub in a generic form, and are keys in
+  the build? Only the public key is compiled in (D28); the private key never is. A build without a
+  key can't enforce anything, so a truly generic edition makes no sense: the normal edition with
+  `lancast://config` links already covers that.
+- **Decision:** an edition per organizer instead of per event. `LANCAST_DISTRO_NAME` is the
+  organizer's name (window title, installer name, file names `LANcast-<ver>-<organizer>-…`), no
+  `LANcast.event` is bundled, and each event's configuration is signed with the organizer's one
+  key. The app needed no change beyond the banner text: it already verifies against the compiled
+  key and accepts any configuration signed with it (D28).
+- **Build:** `package.ps1 -Edition <name> -PublicKey <key>` (or `-SigningKey`, which derives the
+  public key). The key is checked (32 bytes base64url) before anything is built. The *Release*
+  workflow builds it when the repository variables `ORGANIZER_EDITION` and
+  `ORGANIZER_PUBLIC_KEY` are set; both are public, so no secret is involved.
+- **Trade-off:** one key covers all of the organizer's events; losing it affects all of them,
+  and replacing it needs a new edition. Per-event editions (D28) remain for events that want
+  their own key or a download with the configuration bundled.
+- **Verified locally:** organizer edition built with a test key (exe contains the key and the
+  name, no `LANcast.event`, setup without it); invalid keys and argument combinations are
+  rejected before the build; `-Edition` with `-EventConfig` bundles the signed file and names
+  the edition after the organizer.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

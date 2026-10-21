@@ -97,7 +97,7 @@ Without a valid configuration (missing, not yet valid, expired, or not signed wi
 ### Building an event edition
 Keep the event's files in a subfolder of `events\`, e.g. `events\netgame-2026\`. Git ignores everything in `events\` except its README, so `event.toml` and `secret.key` stay local.
 
-1. **Key pair**, once per event. Keep `secret.key` private: never commit it, never put it into a download.
+1. **Key pair**, once per event (or once per organizer, for an [organizer edition](#organizer-edition-one-build-for-all-events)). Keep `secret.key` private: never commit it, never put it into a download.
    ```powershell
    cargo build --release --bin lancast-event
    mkdir events\netgame-2026
@@ -151,6 +151,19 @@ A local build is a snapshot (D30). For the event download, build the event editi
 3. **Download** the workflow artifact. It has `LANcast-<ver>-<event_id>-win64.zip`, `…-setup.exe` and `…-link.txt`. With *attach* checked, the ZIP and the setup are also added to the GitHub release; the event edition contains only the public key and the signed configuration, so it is safe to publish.
 
 The key only exists as a GitHub secret and as a temporary file on the runner, deleted after signing.
+
+### Organizer edition (one build for all events)
+An organizer who runs several events can use **one key pair for all of them** and build the edition once per release, instead of once per event (D35). The organizer edition is the same exe, named after the organizer (*LANcast – netgame edition*), but without a bundled `LANcast.event`. Until a participant clicks a signed event link of that organizer (or puts a `LANcast.event` next to the exe), Send stays disabled with a banner. For each event, only `event.toml` is signed with the organizer's key; nothing is rebuilt.
+
+Building it needs only the **public key**, no secret:
+```powershell
+powershell -File tools\package.ps1 -Edition netgame -PublicKey <public key>
+```
+This creates `dist\LANcast-<ver>-netgame-win64.zip` and `…-setup.exe` (with `-EventOnly`, only those). With `-SigningKey` instead of `-PublicKey`, the public key is taken from `secret.key`. Together with `-EventConfig`, `-Edition` names an event edition after the organizer, still with the event's `LANcast.event` bundled.
+
+**In every GitHub release:** set the repository variables (*Settings → Secrets and variables → Actions → Variables*) `ORGANIZER_EDITION` (e.g. `netgame`) and `ORGANIZER_PUBLIC_KEY` (the output of `lancast-event pubkey`). The *Release* workflow then also builds the organizer edition and attaches it to the release. Both values are public; the private key stays with the organizer, who signs each event's configuration locally or on the event website ([below](#signed-links-format-signing-and-verifying-yourself)).
+
+Trade-off: anyone holding the organizer's key can sign configurations for every event of that organizer, and a lost key affects all of them. Changing the key needs a new organizer edition (set the new public key and release again).
 
 ### Signed links: format, signing and verifying yourself
 `lancast-event sign` is the reference, but any program can create and check signed links, e.g. an event website that lets the organizers change the configuration. This section is the complete format.

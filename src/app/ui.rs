@@ -204,9 +204,9 @@ impl LancastApp {
             let Some(signed) = &self.config.event_signed else {
                 self.event = None;
                 self.event_error = Some(format!(
-                    "this {} edition of LANcast sends only with the event configuration. \
-                     Click the event link on the event website, or use the complete download \
-                     (with {}).",
+                    "this {} edition of LANcast sends only with a signed event configuration. \
+                     Click the event link on the event website, or put the event's {} next to \
+                     LANcast.exe.",
                     distro::DISTRO_NAME.unwrap_or("event"),
                     distro::EVENT_FILE
                 ));
