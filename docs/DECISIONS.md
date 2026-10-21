@@ -1078,6 +1078,22 @@ Versions checked with `cargo info` on 2026-10-17.
   rejected before the build; `-Edition` with `-EventConfig` bundles the signed file and names
   the edition after the organizer.
 
+### D36. Repeated event links don't ask again (2026-10-21)
+- **Requirement (user):** the landing page opens the event link on every visit, and LANcast asked
+  *Apply* every time. Ask only the first time, and again when the enforced settings change;
+  otherwise just start with the settings already in force.
+- **Rule:** a link *repeats* the event in force when it names the same event with the same
+  enforced values (compared as parsed values, not text). Then nothing is applied, and the
+  defaults are not re-applied, so the participant's own changes stay. Every other link asks as
+  before: no event in force yet (also after *Leave event* or *Cancel*), another event, or any
+  enforced value added, removed or changed. A link with only defaults and no event always asks.
+- **Event editions:** both signed payloads are compared (`event`, `event_id`, enforced values);
+  the dates may differ. A repeated link re-signed with new dates replaces the stored signed
+  configuration silently, so a longer validity takes effect. It was verified when it arrived.
+- **Safety:** the dialog stays the safeguard for anything new. A forged or altered link that
+  matches the accepted event exactly changes nothing, because its defaults are ignored.
+- `repeats_event` in `src/app/ui.rs`, with unit tests for plain and signed links.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

@@ -12,6 +12,8 @@ lancast://config?event=NetGame%202026&discovery=10.0.0.5&max=1280x720&fps=60&lev
 3. **Confirmation dialog.** LANcast lists every setting the link wants to change and asks **Apply** / **Cancel**.
 4. **Apply.** The settings are saved (`LANcast.toml`), and the settings panel shows *Event: NetGame 2026* with a **Leave event** button.
 
+**The same link again** (D36): if the link names the event already in force with the same enforced settings, LANcast just comes up with the current settings, without the dialog. The defaults are not applied again, so changes the participant made are kept. The dialog appears again as soon as an enforced setting differs, the link is for another event, or the participant left the event. In an organizer or event edition, a link re-signed with only new dates is taken silently, so a longer validity takes effect.
+
 A link never starts sending and never changes the system-wide NDI configuration (NDI Access Manager).
 
 ## Two sections: enforced and defaults
@@ -86,7 +88,7 @@ LANcast also re-registers itself automatically at startup if the registered prog
 ## Event edition ("LAN distro")
 An event edition is a LANcast package built for one event. It **only sends with that event's configuration**, signed by the organizer:
 - `LANcast.event` next to `LANcast.exe` (part of the event download; applied automatically), or
-- a signed link `lancast://event?p=<payload>&s=<signature>&<defaults>` (asks first, like every link).
+- a signed link `lancast://event?p=<payload>&s=<signature>&<defaults>` (asks first, like every link that changes the event's enforced settings).
 
 Without a valid configuration (missing, not yet valid, expired, or not signed with the event's key), Send is disabled and a banner explains why. Unsigned `lancast://config` links are rejected. The window title reads *LANcast – <event> edition*.
 

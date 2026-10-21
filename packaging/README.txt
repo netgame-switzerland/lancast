@@ -68,7 +68,9 @@ EVENT LINKS
 Organizers may publish a "Configure LANcast" link (lancast://config?...).
 Click it after installing (or after starting LANcast once from the ZIP):
 LANcast shows the event settings (discovery server, resolution limit, ...)
-and asks before applying them. "Leave event" in the settings removes them.
+and asks before applying them. Clicking the same link again only opens
+LANcast; it asks again when the event's settings change. "Leave event" in
+the settings removes them.
 
 
 TROUBLESHOOTING

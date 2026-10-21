@@ -263,7 +263,7 @@ An event website can configure every LANcast with one click:
 - `max` and `fps` are **limits** the user cannot exceed.
 - The other keys are **defaults**.
 
-LANcast always asks before applying and never starts sending by itself. The settings show the event with a "Leave event" button. The `lancast:` scheme is registered by the installer, or per user by LANcast itself.
+LANcast asks before applying an event or changed enforced settings, and never starts sending by itself. A link that repeats the event in force with the same enforced settings applies nothing and asks nothing (D36). The settings show the event with a "Leave event" button. The `lancast:` scheme is registered by the installer, or per user by LANcast itself.
 
 ### 5.4.2 Organizer and event editions / LAN distro (D28, D35)
 An organizer can build a LANcast package with its public key compiled in. It sends only with a valid event configuration signed by the organizer (Ed25519): a signed `lancast://event?p=…&s=…` link, or `LANcast.event` next to the exe.

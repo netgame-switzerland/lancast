@@ -54,7 +54,7 @@ Instead of pasting a link from `lancast-event sign`, the website can create the 
 1. **Both buttons are always visible**, from the first paint, without JavaScript:
    - **Open LANcast**: a plain `<a href="LANCAST_LINK">`. A real click is a user gesture, which every browser accepts for external schemes.
    - **Download LANcast**: a plain `<a href="DOWNLOAD_URL">`.
-   - Short steps: "1. Install the netgame edition of LANcast (Windows). 2. Click *Open LANcast* and confirm the browser prompt. 3. In LANcast, click *Apply*."
+   - Short steps: "1. Install the netgame edition of LANcast (Windows). 2. Click *Open LANcast* and confirm the browser prompt. 3. In LANcast, click *Apply* (asked only the first time, or when the event's settings changed)."
    - Below the steps: "Already installed, e.g. for an earlier event? Just click *Open LANcast* to load the NetGame 2026 configuration." With an organizer edition, step 2 is what makes LANcast send; say that it is needed even right after installing.
 2. **Automatic attempt on load**, once:
    - On Windows desktop browsers only (see *Platform* below), shortly after load, navigate to `LANCAST_LINK` once (`window.location.href = LANCAST_LINK`).
@@ -90,6 +90,8 @@ Test with the current Chrome, Edge and Firefox on Windows, each in these states:
 | Normal LANcast installed | Same flow, but the dialog says the signature is only checked by an event edition; the page's steps point to the edition download. |
 | LANcast installed, prompt declined | Page stays usable; *Open LANcast* button triggers the prompt again. |
 | LANcast installed and already running | The running LANcast comes to the front with the dialog (no second instance). |
+| Same link again, after *Apply* | LANcast comes up without the dialog; the participant's own changes to the defaults are kept. |
+| Link with changed enforced settings (re-signed) | The dialog appears again and shows the new values. |
 | LANcast not installed | Page stays as is, no error page; after ~2.5 s the install hint appears and the download is emphasized. |
 | Fallback with `EVENT_FILE_URL` | `LANcast.event` downloads; next to `LANcast.exe` and after a restart of LANcast, Send is enabled with this event's configuration. |
 | Reload / back button | No second automatic attempt in the same tab. |

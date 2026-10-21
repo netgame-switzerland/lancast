@@ -416,6 +416,23 @@ impl LancastApp {
         }
     }
 
+    /// See [`repeats_event`].
+    fn repeats_current_event(&self, link: &EventLink) -> bool {
+        repeats_event(&self.config, link, distro::is_distro())
+    }
+
+    /// Takes a link that repeats the event in force without asking. An event
+    /// edition keeps the newer signed configuration, e.g. one re-signed with
+    /// a longer validity; it was verified when the link arrived.
+    fn take_repeated_link(&mut self, link: &EventLink) {
+        tracing::info!(event = ?link.event, "event link repeats the event in force; nothing to confirm");
+        if distro::is_distro() && link.signed.is_some() && link.signed != self.config.event_signed {
+            self.config.event_signed = link.signed.clone();
+            self.changed_at = Some(Instant::now());
+            self.refresh_event();
+        }
+    }
+
     /// Makes the link's event the one in force (replacing a previous event)
     /// and applies its defaults once; the user may change those later.
     fn apply_link(&mut self, link: &EventLink) {
@@ -597,7 +614,12 @@ impl eframe::App for LancastApp {
         }
 
         if let Some(pending) = state.pending_link.clone() {
-            self.confirm_link(&ctx, &pending);
+            if self.repeats_current_event(&pending.link) {
+                self.take_repeated_link(&pending.link);
+                self.send(Command::DismissLink);
+            } else {
+                self.confirm_link(&ctx, &pending);
+            }
         }
         if distro::is_distro() && self.event_checked.elapsed() >= EVENT_RECHECK {
             self.refresh_event();
@@ -1408,6 +1430,36 @@ fn values_grid(ui: &mut egui::Ui, id: &str, values: &EventValues) {
         });
 }
 
+/// Whether an event link only repeats the event in force: the same event
+/// with the same enforced values. Then there is nothing to confirm, and the
+/// defaults are not applied again (the user may have changed them). Only the
+/// first link of an event, or one with changed enforced values, asks (D36).
+/// An event edition compares the signed payloads; their dates may differ.
+fn repeats_event(config: &Config, link: &EventLink, distro: bool) -> bool {
+    if distro {
+        let (Some(stored), Some(new)) = (&config.event_signed, &link.signed) else {
+            return false;
+        };
+        let (Ok(stored), Ok(new)) = (distro::decode_payload(stored), distro::decode_payload(new))
+        else {
+            return false;
+        };
+        return match (stored.enforced_values(), new.enforced_values()) {
+            (Ok(a), Ok(b)) => {
+                stored.event == new.event && stored.event_id == new.event_id && a == b
+            }
+            _ => false,
+        };
+    }
+    if config.event_name.is_empty() && config.event_enforced.is_empty() {
+        return false;
+    }
+    let pairs = config.event_enforced.iter();
+    let stored = EventValues::from_pairs(pairs.map(|(k, v)| (k.as_str(), v.as_str())));
+    config.event_name == link.event.as_deref().unwrap_or_default()
+        && stored.is_ok_and(|s| s == link.enforced)
+}
+
 /// Lowercase exe name, the key for remembered source names.
 fn process_key(window: &WindowInfo) -> Option<String> {
     window.process_name.as_ref().map(|name| name.to_lowercase())
@@ -1459,4 +1511,111 @@ fn lock_icon(ui: &mut egui::Ui, color: Color32) {
         egui::Stroke::new(2.0, color),
         egui::StrokeKind::Inside,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::distro::{EventPayload, SignedEvent};
+
+    fn values(pairs: &[(&str, &str)]) -> EventValues {
+        EventValues::from_pairs(pairs.iter().copied()).unwrap()
+    }
+
+    fn link(event: &str, enforced: &[(&str, &str)]) -> EventLink {
+        EventLink {
+            event: Some(event.to_owned()),
+            enforced: values(enforced),
+            defaults: values(&[("border", "1")]),
+            signed: None,
+        }
+    }
+
+    #[test]
+    fn plain_links_repeat_only_with_the_same_event_and_values() {
+        let mut config = Config::default();
+        let first = link("NetGame 2026", &[("max", "1280x720"), ("fps", "60")]);
+        // Nothing in force yet: always ask.
+        assert!(!repeats_event(&config, &first, false));
+
+        config.event_name = "NetGame 2026".into();
+        config.event_enforced = first.enforced.to_pairs();
+        assert!(repeats_event(&config, &first, false));
+        // Different defaults don't matter; they were applied once.
+        let mut other_defaults = first.clone();
+        other_defaults.defaults = values(&[("border", "0")]);
+        assert!(repeats_event(&config, &other_defaults, false));
+
+        let changed = link("NetGame 2026", &[("max", "1920x1080"), ("fps", "60")]);
+        assert!(!repeats_event(&config, &changed, false));
+        let added = link(
+            "NetGame 2026",
+            &[
+                ("max", "1280x720"),
+                ("fps", "60"),
+                ("discovery", "10.0.0.5"),
+            ],
+        );
+        assert!(!repeats_event(&config, &added, false));
+        let other_event = link("NetGame 2027", &[("max", "1280x720"), ("fps", "60")]);
+        assert!(!repeats_event(&config, &other_event, false));
+    }
+
+    fn signed(
+        event_id: &str,
+        until: &str,
+        enforced: &[(&str, &str)],
+        secret: &[u8; 32],
+    ) -> SignedEvent {
+        let payload = EventPayload {
+            v: 1,
+            event: "NetGame 2026".into(),
+            event_id: event_id.into(),
+            valid_from: "2026-11-01".into(),
+            valid_until: until.into(),
+            enforced: enforced
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        };
+        distro::sign(&payload, secret).unwrap()
+    }
+
+    #[test]
+    fn signed_links_repeat_with_the_same_values_even_with_new_dates() {
+        let secret = distro::generate_secret().unwrap();
+        let enforced = [("discovery", "10.0.0.5"), ("max", "1280x720")];
+        let mut config = Config::default();
+        let with = |s: SignedEvent| EventLink {
+            signed: Some(s),
+            ..link("NetGame 2026", &enforced)
+        };
+
+        let first = with(signed("netgame-2026", "2026-11-05", &enforced, &secret));
+        assert!(!repeats_event(&config, &first, true));
+        config.event_signed = first.signed.clone();
+        assert!(repeats_event(&config, &first, true));
+
+        // Re-signed with a longer validity, same values: no question.
+        let longer = with(signed("netgame-2026", "2026-11-06", &enforced, &secret));
+        assert!(repeats_event(&config, &longer, true));
+
+        let changed = with(signed(
+            "netgame-2026",
+            "2026-11-05",
+            &[("discovery", "10.0.0.6"), ("max", "1280x720")],
+            &secret,
+        ));
+        assert!(!repeats_event(&config, &changed, true));
+        let other_event = with(signed("netgame-2027", "2026-11-05", &enforced, &secret));
+        assert!(!repeats_event(&config, &other_event, true));
+        // An unsigned link never repeats a signed event.
+        assert!(!repeats_event(
+            &config,
+            &link("NetGame 2026", &enforced),
+            true
+        ));
+    }
 }
