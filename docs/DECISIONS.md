@@ -1161,6 +1161,11 @@ Versions checked with `cargo info` on 2026-10-17.
   "Could not check for updates" in Settings → Updates (hover for the reason) and in the log; a
   failed install shows an amber banner with "Try again". "Check now" clears a skipped version.
   Downloads go to `<data folder>\updates\`, which is emptied at the next start.
+- **Opening links (fixed after 1.0.0):** "Download…" did nothing; the log said
+  `Cannot open url - feature "links" not enabled`. egui-winit opens URLs only with its `links`
+  feature (the `webbrowser` crate), which `default-features = false` on eframe had turned off, so
+  the footer's ndi.video link and "What's new" were dead as well. eframe now enables `links`; on
+  Windows it adds `webbrowser` and `url` (`cargo deny` passes).
 - **Verified (2026-10-21):**
   - Unit tests: signature (wrong key, changed payload), file names with paths rejected, version
     comparison incl. RC → final and snapshots, URLs relative to the manifest.
