@@ -10,15 +10,13 @@
 #![allow(non_snake_case)]
 
 use lancast::{app, cli, logging, ndi_config};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // An event link (lancast://…) from the browser opens the GUI (D27).
-    let link = match args.as_slice() {
-        [arg] if lancast::event_link::is_link(arg) => Some(arg.clone()),
-        _ => None,
-    };
+    // An event link (lancast://…) from the browser opens the GUI (D27);
+    // arguments after it are ignored (see `event_link::from_args`).
+    let link = lancast::event_link::from_args(&args).map(str::to_owned);
     let gui = args.is_empty() || link.is_some();
     if !gui {
         attach_parent_console();
@@ -27,6 +25,12 @@ fn main() {
     // SAFETY: still single-threaded here; no thread has been spawned yet.
     unsafe { ndi_config::init_before_threads() };
     info!(version = lancast::VERSION, log = ?log_path, gui, "LANcast starting");
+    if link.is_some() && args.len() > 1 {
+        warn!(
+            ignored = args.len() - 1,
+            "ignoring arguments after the event link"
+        );
+    }
 
     let result = if gui { app::run(link) } else { cli::run(args) };
     if let Err(err) = result {

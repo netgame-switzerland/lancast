@@ -129,7 +129,21 @@ pub struct EventLink {
 
 /// Whether a command-line argument is an event link.
 pub fn is_link(arg: &str) -> bool {
-    arg.len() > SCHEME.len() && arg[..SCHEME.len() + 1].eq_ignore_ascii_case("lancast:")
+    // `get` rather than slicing: a multi-byte character at the cut must
+    // not panic.
+    arg.get(..SCHEME.len() + 1)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("lancast:"))
+}
+
+/// The event link a browser started LANcast with, if any.
+///
+/// The registered command is `"LANcast.exe" "%1"`, and Windows inserts the
+/// link verbatim: a `"` in a crafted link closes the quotes and the rest
+/// becomes extra arguments. So a link as the first argument always means
+/// GUI mode and the rest is ignored; it must never reach the command line,
+/// which starts sending without asking.
+pub fn from_args(args: &[String]) -> Option<&str> {
+    args.first().map(String::as_str).filter(|arg| is_link(arg))
 }
 
 /// Parses an event link. Unknown keys are ignored; invalid values are
@@ -314,6 +328,28 @@ mod tests {
         assert!(parse("lancast://config?event=a%0Ab").is_err());
         assert!(parse("lancast://event?level=ndi").is_err()); // unsigned "event" link
         assert!(parse("https://example.com").is_err());
+    }
+
+    #[test]
+    fn link_detection_never_panics() {
+        assert!(is_link("lancast://config?event=x"));
+        assert!(is_link("LANCAST:config"));
+        assert!(!is_link("lancasté")); // é straddles the prefix boundary
+        assert!(!is_link("Zürich Kart"));
+        assert!(!is_link("€€€"));
+        assert!(!is_link("lancast"));
+    }
+
+    #[test]
+    fn link_arguments_never_reach_the_cli() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let injected = args(&["lancast://x", "--cursor", "--name", "Pwned"]);
+        assert_eq!(from_args(&injected), Some("lancast://x"));
+        let single = args(&["lancast://config?fps=30"]);
+        assert_eq!(from_args(&single), Some("lancast://config?fps=30"));
+        assert_eq!(from_args(&args(&["Counter-Strike", "--fps", "30"])), None);
+        assert_eq!(from_args(&args(&["--list"])), None);
+        assert_eq!(from_args(&[]), None);
     }
 
     #[test]
