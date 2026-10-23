@@ -1273,6 +1273,41 @@ Versions checked with `cargo info` on 2026-10-17.
   clean. Not yet tested with a receiver: a Studio Monitor limited to `lancast` should list the
   stream, one on `Public` too, one on another group not.
 
+### D40. Setup: firewall rule and lancast: links after install (2026-10-23)
+Source: https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/rules
+("Rule precedence", "Applications rules").
+
+- **Report:** after installing (all users) with the firewall task, Windows still asked about the
+  firewall on the first start; and an event link clicked right after setup did not open the
+  installed (organizer) LANcast.
+- **Firewall, findings** on the dev PC (firewall event log, `Get-NetFirewallRule`):
+  - The task works: netsh added the rule "LANcast" (allow, inbound, Domain+Private, any protocol)
+    at every install.
+  - The prompt still comes, because Windows asks when there is "no active … allow rule" and our
+    rule leaves out Public. The PC has a connected interface without a network profile (the WSL
+    adapter), which counts as Public. That this triggered it is our reading, not verified.
+  - The prompt of 2026-10-21 had been cancelled. Windows then created the block rule "TCP Query
+    User{…}" for the exe on Private+Public, and "explicit block rules take precedence over any
+    conflicting allow rules". So the setup's rule was dead for TCP. The setup's
+    `delete rule name="LANcast"` did not remove it (its name is the exe's description).
+- **Firewall, decision:** setup and uninstall delete every rule for the exe
+  (`delete rule name=all program="{app}\LANcast.exe"`) before adding ours. Running the setup again
+  repairs a cancelled prompt. The rule stays on Domain+Private (D25): opening Public is a
+  security decision for the user. `packaging/README.txt` says to answer the prompt with "Allow
+  access", not "Cancel".
+- **Links, findings:** the log showed the click 7 s after setup finished started the dev build:
+  `HKCU\Software\Classes\lancast` (written by another copy, D27) wins over the setup's HKLM entry.
+  The installed copy does not take the link over at startup either (it only registers when
+  nothing valid is registered).
+- **Links, decision:** an all-users install deletes the installing user's
+  `HKCU\Software\Classes\lancast` (`[Registry]` with `deletekey`, `Check: IsAdminInstallMode`,
+  `UsedUserAreasWarning=no`). "HKCU" is the account that ran the setup; for an admin who installs
+  for another user (over-the-shoulder UAC) it is the admin's. A per-user install overwrites HKCU
+  anyway. ZIP copies still register themselves only when nothing valid is registered, and
+  *Settings → Links → Use this copy* still overrides.
+- **Verified:** the script compiles (ISCC 6.7.3, organizer edition). Install test pending (needs
+  UAC).
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

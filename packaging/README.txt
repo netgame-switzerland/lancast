@@ -39,6 +39,10 @@ FIRST START: WINDOWS WARNINGS
 - Firewall: Windows asks whether LANcast may communicate on networks. Allow
   it for PRIVATE networks. Receivers connect TO your PC; if this is blocked,
   your source may appear but stay black.
+  The setup already allows LANcast on private networks. Windows may still ask
+  if the PC also has a "Public" network (e.g. a WSL, VPN or virtual adapter).
+  Click "Allow access" then, not "Cancel": Cancel blocks LANcast on private
+  networks too. Running the setup again repairs it.
   Admins can add the rule manually:
     netsh advfirewall firewall add rule name="LANcast" dir=in action=allow ^
           program="C:\path\to\LANcast.exe" profile=private

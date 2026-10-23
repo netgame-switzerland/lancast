@@ -84,7 +84,7 @@ All keys are optional, but a link must set at least one. Unknown keys are ignore
 - **A different copy** (an older install, a moved ZIP folder): *Use this copy* registers the current one for your Windows user.
 - **Not set up:** *Set up for this copy* registers it.
 
-LANcast also re-registers itself automatically at startup if the registered program no longer exists. The registration lives in `HKEY_CURRENT_USER\Software\Classes\lancast`, or in `HKEY_LOCAL_MACHINE` for an all-users install; the uninstaller removes it.
+LANcast also re-registers itself automatically at startup if the registered program no longer exists. The registration lives in `HKEY_CURRENT_USER\Software\Classes\lancast`, or in `HKEY_LOCAL_MACHINE` for an all-users install; the uninstaller removes it. A registration for your Windows user wins over the all-users one, so an all-users install removes the installing user's own registration: the link opens the installed LANcast right after setup.
 
 ## Event edition ("LAN distro")
 An event edition is a LANcast package built for one event. It **only sends with that event's configuration**, signed by the organizer:
