@@ -505,10 +505,15 @@ impl Controller {
     }
 
     /// Parses an event link; an event edition only accepts links signed for
-    /// it (D28).
+    /// it (D28), including a personal user id (D38).
     fn check_link(&self, url: &str) -> anyhow::Result<PendingLink> {
-        let link = event_link::parse(url)?;
+        let mut link = event_link::parse(url)?;
         if !distro::is_distro() {
+            // Personal user ids are for event editions only, which can
+            // check them.
+            if link.user.take().is_some() {
+                info!("ignoring the personal id of the link (not an event edition)");
+            }
             return Ok(PendingLink {
                 link,
                 verified: false,
@@ -517,7 +522,10 @@ impl Controller {
         let Some(signed) = &link.signed else {
             anyhow::bail!("this event edition only accepts signed event links");
         };
-        distro::verify_signature_for_this_build(signed)?;
+        let payload = distro::verify_signature_for_this_build(signed)?;
+        if let Some(user) = &link.user {
+            distro::verify_user_for_this_build(user, &payload.event_id)?;
+        }
         Ok(PendingLink {
             link,
             verified: true,

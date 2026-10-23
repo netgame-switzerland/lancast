@@ -70,6 +70,7 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
 3. **Stream name**: `Hostname (Username - Gamename)`, e.g. `LAN-PC-07 (Player1 - war3)` (D26).
    - NDI prepends the hostname itself (D4); LANcast sends `Username - Gamename`. The UI shows the resulting full name.
    - "Your name" defaults to the Windows login name, is editable, and is saved globally (§4.6).
+   - In an organizer or event edition, a personal event link can set the name instead; it is then fixed while that event is in force (D38).
    - "Game" is proposed from the process name without `.exe` (e.g. `war3`), is editable, and is remembered per process.
 4. **Send / Stop**: "Send" starts streaming and "Stop" ends it. If the target window closes, sending stops automatically and a notice appears (also as a tray notification).
 5. **Preview (miniview)**: a live preview of what is sent.

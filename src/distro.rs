@@ -11,6 +11,9 @@
 //! The signed payload holds the event name/id, a validity window (local
 //! dates, inclusive: everyone at a LAN party shares the time zone) and the **enforced** settings. **Defaults** travel unsigned next
 //! to it and stay user-changeable.
+//!
+//! A personal link also carries a signed **user id** (D38): the participant's
+//! name for the stream name, signed with the same key and bound to the event.
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -85,6 +88,13 @@ pub fn decode_payload(signed: &SignedEvent) -> Result<EventPayload> {
 
 /// Verifies the signature with `public_key` (base64url) and decodes.
 pub fn verify(signed: &SignedEvent, public_key: &str) -> Result<EventPayload> {
+    verify_bytes(signed, public_key)
+        .map_err(|_| anyhow!("the signature is not valid for this LANcast edition"))?;
+    decode_payload(signed)
+}
+
+/// Checks the Ed25519 signature of `signed` over its payload bytes.
+fn verify_bytes(signed: &SignedEvent, public_key: &str) -> Result<()> {
     let key: [u8; 32] = URL_SAFE_NO_PAD
         .decode(public_key.trim())
         .ok()
@@ -98,19 +108,106 @@ pub fn verify(signed: &SignedEvent, public_key: &str) -> Result<EventPayload> {
         .ok_or_else(|| anyhow!("invalid signature encoding"))?;
     let payload = URL_SAFE_NO_PAD
         .decode(signed.payload.trim())
-        .context("invalid event payload encoding")?;
+        .context("invalid payload encoding")?;
     key.verify(&payload, &Signature::from_bytes(&signature))
-        .map_err(|_| anyhow!("the signature is not valid for this LANcast edition"))?;
-    decode_payload(signed)
+        .map_err(|_| anyhow!("invalid signature"))
+}
+
+/// The compiled-in public key of an event edition.
+fn this_build_key() -> Result<&'static str> {
+    DISTRO_KEY
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| anyhow!("this LANcast is not an event edition"))
 }
 
 /// Verifies the signature with the compiled-in key (not the dates: a
 /// configuration may arrive before the event starts).
 pub fn verify_signature_for_this_build(signed: &SignedEvent) -> Result<EventPayload> {
-    let key = DISTRO_KEY
-        .filter(|k| !k.is_empty())
-        .ok_or_else(|| anyhow!("this LANcast is not an event edition"))?;
-    verify(signed, key)
+    verify(signed, this_build_key()?)
+}
+
+/// A participant's personal identity (D38), signed by the organizer with the
+/// event key and carried as `id=` in a personal event link. It sets the
+/// user name in the stream name while its event is in force.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserPayload {
+    pub v: u32,
+    /// The event it belongs to (`EventPayload::event_id`).
+    pub event_id: String,
+    pub user: String,
+}
+
+/// Longest user name a personal link may set.
+pub const MAX_USER_LEN: usize = 32;
+
+/// The `id=` token: `<payload>.<signature>`, both base64url (the dot is not
+/// in the base64url alphabet).
+pub fn user_token(signed: &SignedEvent) -> String {
+    format!("{}.{}", signed.payload, signed.signature)
+}
+
+pub fn parse_user_token(token: &str) -> Result<SignedEvent> {
+    let (payload, signature) = token
+        .trim()
+        .split_once('.')
+        .ok_or_else(|| anyhow!("id= must look like <payload>.<signature>"))?;
+    Ok(SignedEvent {
+        payload: payload.to_owned(),
+        signature: signature.to_owned(),
+    })
+}
+
+/// Decodes a signed identity without checking the signature.
+pub fn decode_user(signed: &SignedEvent) -> Result<UserPayload> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(signed.payload.trim())
+        .context("invalid id encoding")?;
+    let payload: UserPayload = serde_json::from_slice(&bytes).context("invalid id payload")?;
+    if payload.v != PAYLOAD_VERSION {
+        bail!("unsupported id version {}", payload.v);
+    }
+    check_user(&payload.user)?;
+    Ok(payload)
+}
+
+/// A user name for the stream name: 1–32 characters, no control characters.
+pub fn check_user(user: &str) -> Result<()> {
+    if user.trim().is_empty()
+        || user.trim() != user
+        || user.chars().count() > MAX_USER_LEN
+        || user.chars().any(char::is_control)
+    {
+        bail!(
+            "the user name must be 1–{MAX_USER_LEN} characters without control characters or surrounding spaces"
+        );
+    }
+    Ok(())
+}
+
+/// Verifies a signed identity with `public_key` and checks that it belongs
+/// to `event_id`.
+pub fn verify_user(signed: &SignedEvent, public_key: &str, event_id: &str) -> Result<UserPayload> {
+    verify_bytes(signed, public_key)
+        .map_err(|_| anyhow!("the personal id is not signed for this LANcast edition"))?;
+    let payload = decode_user(signed)?;
+    if payload.event_id != event_id {
+        bail!(
+            "the personal id belongs to another event ({})",
+            payload.event_id
+        );
+    }
+    Ok(payload)
+}
+
+/// [`verify_user`] with the compiled-in key.
+pub fn verify_user_for_this_build(signed: &SignedEvent, event_id: &str) -> Result<UserPayload> {
+    verify_user(signed, this_build_key()?, event_id)
+}
+
+/// Signs a personal identity (organizer tool, event website).
+pub fn sign_user(payload: &UserPayload, secret: &[u8; 32]) -> Result<SignedEvent> {
+    check_user(&payload.user)?;
+    sign_bytes(&serde_json::to_vec(payload)?, secret)
 }
 
 /// Verifies with the compiled-in key and checks today's date.
@@ -122,10 +219,13 @@ pub fn verify_for_this_build(signed: &SignedEvent) -> Result<EventPayload> {
 
 /// Signs `payload` with a 32-byte Ed25519 secret key (organizer tool).
 pub fn sign(payload: &EventPayload, secret: &[u8; 32]) -> Result<SignedEvent> {
-    let bytes = serde_json::to_vec(payload)?;
-    let signature = SigningKey::from_bytes(secret).sign(&bytes);
+    sign_bytes(&serde_json::to_vec(payload)?, secret)
+}
+
+fn sign_bytes(bytes: &[u8], secret: &[u8; 32]) -> Result<SignedEvent> {
+    let signature = SigningKey::from_bytes(secret).sign(bytes);
     Ok(SignedEvent {
-        payload: URL_SAFE_NO_PAD.encode(&bytes),
+        payload: URL_SAFE_NO_PAD.encode(bytes),
         signature: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
     })
 }
@@ -178,6 +278,11 @@ impl EventFile {
             link.push_str(&format!("&{key}={}", event_link::encode(value)));
         }
         link
+    }
+
+    /// The personal link (D38): [`Self::link`] plus the signed user id.
+    pub fn personal_link(&self, user: &SignedEvent) -> String {
+        format!("{}&id={}", self.link(), user_token(user))
     }
 }
 
@@ -315,6 +420,59 @@ mod tests {
         assert!(today.starts_with("20"), "{today}");
     }
 
+    fn user(event_id: &str, name: &str) -> UserPayload {
+        UserPayload {
+            v: 1,
+            event_id: event_id.into(),
+            user: name.into(),
+        }
+    }
+
+    #[test]
+    fn user_ids_sign_and_verify() {
+        let secret = generate_secret().unwrap();
+        let key = public_key(&secret);
+        let signed = sign_user(&user("netgame-2026", "Alice"), &secret).unwrap();
+        let token = user_token(&signed);
+        let parsed = parse_user_token(&token).unwrap();
+        assert_eq!(parsed, signed);
+        assert_eq!(
+            verify_user(&parsed, &key, "netgame-2026").unwrap(),
+            user("netgame-2026", "Alice")
+        );
+        // Another event, another key, a changed name: rejected.
+        assert!(verify_user(&parsed, &key, "netgame-2027").is_err());
+        let other = generate_secret().unwrap();
+        assert!(verify_user(&parsed, &public_key(&other), "netgame-2026").is_err());
+        let mut changed = parsed.clone();
+        changed.payload =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&user("netgame-2026", "Bob")).unwrap());
+        assert!(verify_user(&changed, &key, "netgame-2026").is_err());
+    }
+
+    #[test]
+    fn user_ids_and_event_configurations_are_not_interchangeable() {
+        let secret = generate_secret().unwrap();
+        let key = public_key(&secret);
+        let event = sign(&payload(), &secret).unwrap();
+        let id = sign_user(&user("netgame-2026", "Alice"), &secret).unwrap();
+        assert!(verify_user(&event, &key, "netgame-2026").is_err());
+        assert!(verify(&id, &key).is_err());
+    }
+
+    #[test]
+    fn user_names_are_checked() {
+        assert!(check_user("Alice").is_ok());
+        assert!(check_user("Zoë the 2nd").is_ok());
+        assert!(check_user("").is_err());
+        assert!(check_user(" Alice").is_err());
+        assert!(check_user("a\nb").is_err());
+        assert!(check_user(&"x".repeat(MAX_USER_LEN + 1)).is_err());
+        let secret = generate_secret().unwrap();
+        assert!(sign_user(&user("netgame-2026", ""), &secret).is_err());
+        assert!(parse_user_token("no-dot").is_err());
+    }
+
     #[test]
     fn event_file_and_link_round_trip() {
         let secret = generate_secret().unwrap();
@@ -331,5 +489,27 @@ mod tests {
         assert_eq!(link.signed.as_ref(), Some(&file.signed));
         assert_eq!(link.defaults.audio_gain_db, Some(0.0));
         assert_eq!(link.enforced.max_fps, Some(60));
+        assert_eq!(link.user, None);
+    }
+
+    #[test]
+    fn personal_links() {
+        let secret = generate_secret().unwrap();
+        let file = EventFile {
+            signed: sign(&payload(), &secret).unwrap(),
+            defaults: BTreeMap::new(),
+        };
+        let id = sign_user(&user("netgame-2026", "Zoë"), &secret).unwrap();
+        let link = event_link::parse(&file.personal_link(&id)).unwrap();
+        assert_eq!(link.user.as_ref(), Some(&id));
+        assert_eq!(link.user_name().as_deref(), Some("Zoë"));
+        // An id for another event, or a broken one, rejects the whole link.
+        let foreign = sign_user(&user("netgame-2027", "Zoë"), &secret).unwrap();
+        assert!(event_link::parse(&file.personal_link(&foreign)).is_err());
+        assert!(event_link::parse(&format!("{}&id=abc", file.link())).is_err());
+        // Only signed event links carry an id.
+        let config =
+            event_link::parse(&format!("lancast://config?event=X&id={}", user_token(&id))).unwrap();
+        assert_eq!(config.user, None);
     }
 }

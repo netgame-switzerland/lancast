@@ -30,7 +30,7 @@ use crate::{
         video::{PreviewSlot, VideoOptions},
     },
     config::{Config, ConfigStore},
-    distro,
+    distro::{self, SignedEvent},
     event_link::{EventLink, EventValues},
     ndi_config::Discovery,
     ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
@@ -100,6 +100,8 @@ pub struct LancastApp {
     event: Option<ActiveEvent>,
     event_error: Option<String>,
     event_checked: Instant,
+    /// Event edition: the verified user name of a personal link (D38).
+    event_user: Option<String>,
     /// Where Windows shows the tray icon (D29), and when last checked.
     tray_placement: IconPlacement,
     tray_checked: Option<Instant>,
@@ -160,6 +162,7 @@ impl LancastApp {
             event: None,
             event_error: None,
             event_checked: Instant::now(),
+            event_user: None,
             tray_placement: IconPlacement::Shown,
             tray_checked: None,
             confirm_quit: false,
@@ -198,6 +201,7 @@ impl LancastApp {
                 enforced: payload.enforced_values()?,
                 defaults: file.defaults()?,
                 signed: Some(file.signed.clone()),
+                user: None,
             })
         });
         match checked {
@@ -215,6 +219,7 @@ impl LancastApp {
     fn refresh_event(&mut self) {
         self.event_checked = Instant::now();
         self.event_error = None;
+        self.event_user = None;
         if distro::is_distro() {
             let Some(signed) = &self.config.event_signed else {
                 self.event = None;
@@ -227,6 +232,15 @@ impl LancastApp {
                 ));
                 return;
             };
+            // The personal name shows even outside the event's dates, so a
+            // link clicked before the event visibly took effect (D38).
+            self.event_user = self.config.event_user.as_ref().and_then(|user| {
+                let event = distro::verify_signature_for_this_build(signed).ok()?;
+                distro::verify_user_for_this_build(user, &event.event_id)
+                    .inspect_err(|err| tracing::warn!("ignoring the stored user id: {err:#}"))
+                    .ok()
+                    .map(|u| u.user)
+            });
             let checked = distro::verify_for_this_build(signed).and_then(|payload| {
                 Ok(ActiveEvent {
                     enforced: payload.enforced_values()?,
@@ -260,6 +274,12 @@ impl LancastApp {
             .as_ref()
             .map(|e| e.enforced.clone())
             .unwrap_or_default()
+    }
+
+    /// The user part of the stream name: the personal event link's, else
+    /// the user's own.
+    fn stream_user(&self) -> &str {
+        self.event_user.as_deref().unwrap_or(&self.user_name)
     }
 
     /// The settings sent to the controller: the user's choices with the
@@ -358,9 +378,16 @@ impl LancastApp {
                     );
                 }
             }
-            if !link.enforced.is_empty() {
+            let user = link.user_name();
+            if !link.enforced.is_empty() || user.is_some() {
                 ui.add_space(6.0);
                 ui.label("Fixed while the event is active:");
+                if let Some(user) = &user {
+                    ui.horizontal(|ui| {
+                        ui.label("Your name in the stream name:");
+                        ui.strong(user);
+                    });
+                }
                 values_grid(ui, "link_enforced", &link.enforced);
             }
             if !link.defaults.is_empty() {
@@ -442,8 +469,19 @@ impl LancastApp {
     /// a longer validity; it was verified when the link arrived.
     fn take_repeated_link(&mut self, link: &EventLink) {
         tracing::info!(event = ?link.event, "event link repeats the event in force; nothing to confirm");
-        if distro::is_distro() && link.signed.is_some() && link.signed != self.config.event_signed {
+        if !distro::is_distro() {
+            return;
+        }
+        let new_signed = link.signed.is_some() && link.signed != self.config.event_signed;
+        // The same name, signed again: keep the newer id.
+        let new_user = link.user.is_some() && link.user != self.config.event_user;
+        if new_signed {
             self.config.event_signed = link.signed.clone();
+        }
+        if new_user {
+            self.config.event_user = link.user.clone();
+        }
+        if new_signed || new_user {
             self.changed_at = Some(Instant::now());
             self.refresh_event();
         }
@@ -454,6 +492,13 @@ impl LancastApp {
     fn apply_link(&mut self, link: &EventLink) {
         self.config.event_name = link.event.clone().unwrap_or_default();
         if distro::is_distro() {
+            // A personal id sets the user name; a link without one keeps the
+            // stored id if it is still the same event (D38).
+            if link.user.is_some() {
+                self.config.event_user = link.user.clone();
+            } else if !same_event_id(self.config.event_signed.as_ref(), link.signed.as_ref()) {
+                self.config.event_user = None;
+            }
             self.config.event_signed = link.signed.clone();
             self.config.event_enforced.clear();
         } else {
@@ -506,6 +551,7 @@ impl LancastApp {
         self.config.event_name.clear();
         self.config.event_enforced.clear();
         self.config.event_signed = None;
+        self.config.event_user = None;
         self.changed_at = Some(Instant::now());
         self.refresh_event();
     }
@@ -655,7 +701,7 @@ impl eframe::App for LancastApp {
         if let Some((w, h)) = enforced.max_size {
             video.max_size = (video.max_size.0.min(w), video.max_size.1.min(h));
         }
-        self.settings.source_name = crate::config::source_name(&self.user_name, &self.game_name);
+        self.settings.source_name = crate::config::source_name(self.stream_user(), &self.game_name);
         self.sync_config(&ctx);
         let settings = self.effective_settings();
         if self.sent_settings.as_ref() != Some(&settings) {
@@ -851,12 +897,21 @@ impl LancastApp {
             }
             None => {
                 ui.label("Your name:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.user_name)
-                        .hint_text("e.g. your nickname")
-                        .desired_width(130.0),
-                )
-                .on_hover_text("Shown in the stream name so the organizers know who is casting.");
+                if let Some(user) = self.event_user.clone() {
+                    ui.label(RichText::new(user).strong()).on_hover_text(
+                        "Set by your personal event link; fixed while the event is active.",
+                    );
+                    ui.label(RichText::new("(set by the event)").small().color(BLUE));
+                } else {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.user_name)
+                            .hint_text("e.g. your nickname")
+                            .desired_width(130.0),
+                    )
+                    .on_hover_text(
+                        "Shown in the stream name so the organizers know who is casting.",
+                    );
+                }
                 ui.add_space(8.0);
                 ui.label("Game:");
                 ui.add(egui::TextEdit::singleline(&mut self.game_name).desired_width(150.0));
@@ -1617,12 +1672,21 @@ fn repeats_event(config: &Config, link: &EventLink, distro: bool) -> bool {
         else {
             return false;
         };
-        return match (stored.enforced_values(), new.enforced_values()) {
+        let same_values = match (stored.enforced_values(), new.enforced_values()) {
             (Ok(a), Ok(b)) => {
                 stored.event == new.event && stored.event_id == new.event_id && a == b
             }
             _ => false,
         };
+        // A personal link repeats only with the name already in force; a
+        // link without an id keeps the stored one (D38).
+        let user_name = |user: Option<&SignedEvent>| {
+            user.and_then(|u| distro::decode_user(u).ok())
+                .map(|u| u.user)
+        };
+        let same_user = link.user.is_none()
+            || user_name(link.user.as_ref()) == user_name(config.event_user.as_ref());
+        return same_values && same_user;
     }
     if config.event_name.is_empty() && config.event_enforced.is_empty() {
         return false;
@@ -1631,6 +1695,16 @@ fn repeats_event(config: &Config, link: &EventLink, distro: bool) -> bool {
     let stored = EventValues::from_pairs(pairs.map(|(k, v)| (k.as_str(), v.as_str())));
     config.event_name == link.event.as_deref().unwrap_or_default()
         && stored.is_ok_and(|s| s == link.enforced)
+}
+
+/// Whether two signed event configurations are for the same `event_id`.
+fn same_event_id(a: Option<&SignedEvent>, b: Option<&SignedEvent>) -> bool {
+    let id = |s: Option<&SignedEvent>| {
+        s.and_then(|s| distro::decode_payload(s).ok())
+            .map(|p| p.event_id)
+    };
+    let a = id(a);
+    a.is_some() && a == id(b)
 }
 
 /// Lowercase exe name, the key for remembered source names.
@@ -1698,7 +1772,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::distro::{EventPayload, SignedEvent};
+    use crate::distro::EventPayload;
 
     fn values(pairs: &[(&str, &str)]) -> EventValues {
         EventValues::from_pairs(pairs.iter().copied()).unwrap()
@@ -1710,6 +1784,7 @@ mod tests {
             enforced: values(enforced),
             defaults: values(&[("border", "1")]),
             signed: None,
+            user: None,
         }
     }
 
@@ -1797,5 +1872,55 @@ mod tests {
             &link("NetGame 2026", &enforced),
             true
         ));
+    }
+
+    fn user_id(name: &str, secret: &[u8; 32]) -> SignedEvent {
+        let payload = distro::UserPayload {
+            v: 1,
+            event_id: "netgame-2026".into(),
+            user: name.into(),
+        };
+        distro::sign_user(&payload, secret).unwrap()
+    }
+
+    #[test]
+    fn personal_links_repeat_only_with_the_same_name() {
+        let secret = distro::generate_secret().unwrap();
+        let enforced = [("max", "1280x720")];
+        let event = signed("netgame-2026", "2026-11-05", &enforced, &secret);
+        let with = |user: Option<SignedEvent>| EventLink {
+            signed: Some(event.clone()),
+            user,
+            ..link("NetGame 2026", &enforced)
+        };
+        let mut config = Config {
+            event_signed: Some(event.clone()),
+            ..Config::default()
+        };
+        // A personal link for the event in force, no name yet: ask.
+        let alice = with(Some(user_id("Alice", &secret)));
+        assert!(!repeats_event(&config, &alice, true));
+        config.event_user = alice.user.clone();
+        assert!(repeats_event(&config, &alice, true));
+        // The generic link of the same event keeps the name: no question.
+        assert!(repeats_event(&config, &with(None), true));
+        // Another name: ask.
+        assert!(!repeats_event(
+            &config,
+            &with(Some(user_id("Bob", &secret))),
+            true
+        ));
+    }
+
+    #[test]
+    fn same_event_id_compares_signed_payloads() {
+        let secret = distro::generate_secret().unwrap();
+        let a = signed("netgame-2026", "2026-11-05", &[("fps", "60")], &secret);
+        let b = signed("netgame-2026", "2026-11-06", &[("fps", "30")], &secret);
+        let c = signed("netgame-2027", "2026-11-05", &[("fps", "60")], &secret);
+        assert!(same_event_id(Some(&a), Some(&b)));
+        assert!(!same_event_id(Some(&a), Some(&c)));
+        assert!(!same_event_id(None, Some(&a)));
+        assert!(!same_event_id(None, None));
     }
 }

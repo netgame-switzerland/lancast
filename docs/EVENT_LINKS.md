@@ -171,6 +171,23 @@ This creates `dist\LANcast-<ver>-netgame-win64.zip` and `…-setup.exe` (with `-
 
 Trade-off: anyone holding the organizer's key can sign configurations for every event of that organizer, and a lost key affects all of them. Changing the key needs a new organizer edition (set the new public key and release again).
 
+### Personal links (participant name)
+An organizer or event edition can take the participant's name from the link instead of the Windows login name (D38). The event website gives every participant their own link: the event's signed link plus a signed **user id**, `&id=<payload>.<signature>`. The stream name then reads `HOST (<name> - <game>)`, with the computer name added by NDI as always.
+- **Fixed while the event is in force.** The name field shows the name, marked *(set by the event)*. The participant's own name is kept and comes back when another event replaces this one.
+- **Persists:** the id is stored with the event configuration. Every link of the same event (`event_id`) keeps it, including the generic link without `id=` (for example a landing page, or a new link after changing the limits). A link for another event drops it.
+- **Asks once:** the first personal link shows the name in the confirmation dialog. The same link again opens without a question (D36). A different name asks again.
+- **Signed and bound to the event:** the id is signed with the same key as the event configuration and names its `event_id`. LANcast rejects the whole link if the id is not signed with the edition's key or belongs to another event. A participant cannot make up a name or move an id to another event.
+- **Normal edition:** ignores `id=` (it can't check the signature) and keeps the participant's own name.
+- **Names:** 1–32 characters, no control characters, no leading or trailing spaces.
+
+For a test, or a few participants without a website:
+```powershell
+target\release\lancast-event user $dir\LANcast.event "Alice" $dir\secret.key   # prints Alice's personal link
+```
+A website signs the id itself, once per participant and event ([below](#personal-user-ids)).
+
+**What it does not prove:** the name in the stream is public on the LAN, like every NDI source name. Another NDI sender (OBS, a normal LANcast) can announce the same name. The signature stops participants from choosing a name in the edition; it does not authenticate the stream at the receiver.
+
 ### Signed links: format, signing and verifying yourself
 `lancast-event sign` is the reference, but any program can create and check signed links, e.g. an event website that lets the organizers change the configuration. This section is the complete format.
 
@@ -189,10 +206,11 @@ Trade-off: anyone holding the organizer's key can sign configurations for every 
 | `valid_from`, `valid_until` | string | Local dates `YYYY-MM-DD`, inclusive; `valid_from` ≤ `valid_until`. |
 | `enforced` | object | Settings from the [key table](#keys), **all values as strings** (`"fps": "60"`, `"border": "1"`). |
 
-**Link:** `lancast://event?p=<payload>&s=<signature>[&<defaults>]`
+**Link:** `lancast://event?p=<payload>&s=<signature>[&<defaults>][&id=<user id>]`
 - `p` = base64url (no padding) of the exact payload bytes.
 - `s` = base64url (no padding) of the 64-byte Ed25519 signature over **those bytes**. The signature covers bytes, not JSON semantics: key order and whitespace are free when signing, but a verifier must check the decoded `p` bytes as they are and never re-serialize the JSON.
 - Defaults follow as unsigned `&key=value` pairs, percent-encoded, with the keys from the key table.
+- `id` makes it a [personal link](#personal-links-participant-name); see [Personal user ids](#personal-user-ids).
 - At most 4096 characters.
 
 The `LANcast.event` file carries the same data as TOML: `payload = "<p>"`, `signature = "<s>"`, and a `[defaults]` table.
@@ -376,6 +394,71 @@ console.log(checked.payload.enforced, checked.defaults, checked.validOn(localDat
 - `verifyEventLink` is stricter than LANcast: it also refuses unknown keys among the defaults, like `lancast-event`.
 - Other runtimes: without `node:crypto` (e.g. some edge runtimes), use Web Crypto's `Ed25519` (raw key import for the public key, PKCS#8 for the private key with the header above) or a library such as `@noble/ed25519`. The format stays the same.
 
+#### Personal user ids
+The `id` parameter of a [personal link](#personal-links-participant-name) (D38) is `<payload>.<signature>`. Both parts are base64url without padding, and the dot is not part of that alphabet. The signature is Ed25519 over the payload bytes, with the **same key** as the event configuration.
+
+| Field | Type | Rule |
+|---|---|---|
+| `v` | number | Always `1`. |
+| `event_id` | string | The `event_id` of the event payload in the same link. |
+| `user` | string | 1–32 characters (Unicode code points), no control characters, no leading or trailing spaces. |
+
+- The two payload types can't be mixed up: an id has no `event`/dates, an event payload no `user`, and LANcast rejects either in the other's place.
+- Sign once per participant and event, and store the link. The name is readable by anyone (no encryption), so use the participant's nickname, not private data.
+
+```ts
+export interface UserPayload {
+  v: 1;
+  event_id: string; // the event payload's event_id
+  user: string;
+}
+
+const MAX_USER = 32;
+
+/** Throws unless `user` is a valid name for the stream name (same rules as LANcast). */
+export function checkUser(user: unknown): asserts user is string {
+  if (typeof user !== "string" || !user.trim() || user.trim() !== user || [...user].length > MAX_USER || /\p{Cc}/u.test(user)) {
+    throw new Error(`user: 1-${MAX_USER} characters, no control characters or surrounding spaces`);
+  }
+}
+
+/** The `id=` value: `user`, signed for one event. */
+export function signUserId(payload: UserPayload, secret: KeyObject): string {
+  if (payload?.v !== 1 || typeof payload.event_id !== "string" || !/^[A-Za-z0-9_-]+$/.test(payload.event_id)) {
+    throw new Error("invalid user id payload");
+  }
+  checkUser(payload.user);
+  const bytes = Buffer.from(JSON.stringify(payload), "utf8");
+  return `${bytes.toString("base64url")}.${sign(null, bytes, secret).toString("base64url")}`;
+}
+
+/** A participant's personal link: the event's signed link plus the id. */
+export function personalLink(eventLink: string, id: string): string {
+  const link = `${eventLink}&id=${id}`;
+  if (link.length > MAX_LINK) throw new Error("the link is too long");
+  return link;
+}
+
+/** Verifies an `id=` value for `eventId` and returns the user name. */
+export function verifyUserId(id: string, eventId: string, key: KeyObject): string {
+  const [p, s, ...rest] = id.trim().split(".");
+  if (rest.length || !BASE64URL.test(p ?? "") || !BASE64URL.test(s ?? "")) throw new Error("id must be <payload>.<signature>");
+  const bytes = Buffer.from(p, "base64url");
+  const signature = Buffer.from(s, "base64url");
+  if (signature.length !== 64 || !verify(null, bytes, key, signature)) throw new Error("the id signature is not valid for this key");
+  const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as UserPayload;
+  if (payload?.v !== 1 || payload.event_id !== eventId) throw new Error("the id belongs to another event");
+  checkUser(payload.user);
+  return payload.user;
+}
+```
+
+Usage, with `link` from the example above:
+```ts
+const id = signUserId({ v: 1, event_id: "netgame-2026", user: "Alice" }, secret);
+const alicesLink = personalLink(link, id);
+```
+
 #### Test vector
 Ed25519 is deterministic, so an implementation must reproduce this exactly. **Test key only, never use it for an event.**
 - Secret key: `AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA` (bytes `01 02 … 20`)
@@ -386,6 +469,11 @@ Ed25519 is deterministic, so an implementation must reproduce this exactly. **Te
   ```
   lancast://event?p=eyJ2IjoxLCJldmVudCI6Ik5ldEdhbWUgMjAyNiIsImV2ZW50X2lkIjoibmV0Z2FtZS0yMDI2IiwidmFsaWRfZnJvbSI6IjIwMjYtMTEtMDEiLCJ2YWxpZF91bnRpbCI6IjIwMjYtMTEtMDUiLCJlbmZvcmNlZCI6eyJkaXNjb3ZlcnkiOiIxMC4wLjAuNSIsIm1heCI6IjEyODB4NzIwIiwiZnBzIjoiNjAifX0&s=etDE8XfuKaeE9rJ5o-oZ0rrMWqqHs-RiFLtvxukEJKx15EhFniYFq6_v2-i06EfDpzVVnAdwM7vm6IAGDZrCBg&level=unity
   ```
+- User id for `Alice`, payload bytes `{"v":1,"event_id":"netgame-2026","user":"Alice"}`:
+  ```
+  eyJ2IjoxLCJldmVudF9pZCI6Im5ldGdhbWUtMjAyNiIsInVzZXIiOiJBbGljZSJ9.sMT4LH6taUK0O8TYaUkl_iznszzEAgOXBF3gAEgfma6DPijanfeidETBPdNZ239TFfwgercD8nQ6NwvbR2TcAw
+  ```
+  Alice's personal link is the link above plus `&id=` and this value. `lancast-event user` with a `LANcast.event` of the link above and the test key prints exactly that.
 
 **Cross-check with the reference tool:** `lancast-event verify` reads a `LANcast.event` file. Write `p` and `s` from a link into one and check it with the public key:
 ```powershell

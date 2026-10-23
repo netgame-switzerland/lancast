@@ -1,13 +1,15 @@
 //! Organizer tool for LANcast event editions (D28): creates the signing key,
 //! signs an event description into `LANcast.event` and prints the matching
-//! `lancast://event?…` link. The release workflow also uses it to write the
-//! signed update manifest (D37). Not shipped to participants.
+//! `lancast://event?…` link, and personal links with a signed user name
+//! (D38). The release workflow also uses it to write the signed update
+//! manifest (D37). Not shipped to participants.
 //!
 //! ```text
 //! lancast-event keygen <secret.key>
 //! lancast-event pubkey <secret.key>
 //! lancast-event sign <event.toml> <secret.key> <LANcast.event>
 //! lancast-event verify <LANcast.event> <public key>
+//! lancast-event user <LANcast.event> <name> <secret.key>
 //! lancast-event update-manifest <dist> <version> <notes url> <secret.key> <out.json>
 //! ```
 
@@ -15,7 +17,7 @@ use std::{collections::BTreeMap, path::Path, process::ExitCode};
 
 use anyhow::{Context, Result, bail};
 use lancast::{
-    distro::{self, EventFile, EventPayload},
+    distro::{self, EventFile, EventPayload, UserPayload},
     event_link::EventValues,
     update::{self, Asset, EditionFiles, Manifest},
 };
@@ -27,6 +29,7 @@ Usage:
   lancast-event pubkey <secret.key>                         prints the public key
   lancast-event sign <event.toml> <secret.key> <out.event>  writes LANcast.event, prints the link
   lancast-event verify <file.event> <public key>            checks a LANcast.event
+  lancast-event user <file.event> <name> <secret.key>       prints the personal link for <name>
   lancast-event update-manifest <dist> <version> <notes url> <secret.key> <out.json>
                                                             signed update manifest of a release
 
@@ -57,6 +60,7 @@ fn main() -> ExitCode {
         }),
         ["sign", spec, secret, out] => sign(Path::new(spec), Path::new(secret), Path::new(out)),
         ["verify", file, key] => verify(Path::new(file), key),
+        ["user", file, name, secret] => user(Path::new(file), name, Path::new(secret)),
         ["update-manifest", dist, version, notes, secret, out] => update_manifest(
             Path::new(dist),
             version,
@@ -173,6 +177,28 @@ fn verify(path: &Path, public_key: &str) -> Result<()> {
         Ok(()) => println!("valid today"),
         Err(err) => println!("not valid today: {err:#}"),
     }
+    Ok(())
+}
+
+/// Prints the personal link (D38) of the event in `path` for `name`.
+fn user(path: &Path, name: &str, secret: &Path) -> Result<()> {
+    let file = distro::read_event_file(path)?;
+    let secret = read_secret(secret)?;
+    let public_key = distro::public_key(&secret);
+    let event = distro::verify(&file.signed, &public_key)
+        .with_context(|| format!("{} is not signed with this key", path.display()))?;
+    let payload = UserPayload {
+        v: 1,
+        event_id: event.event_id.clone(),
+        user: name.trim().to_owned(),
+    };
+    let id = distro::sign_user(&payload, &secret)?;
+    distro::verify_user(&id, &public_key, &event.event_id)?;
+    eprintln!(
+        "Personal link of \"{}\" for \"{}\" ({}):",
+        payload.user, event.event, event.event_id
+    );
+    println!("{}", file.personal_link(&id));
     Ok(())
 }
 

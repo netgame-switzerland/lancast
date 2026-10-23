@@ -1181,6 +1181,44 @@ Versions checked with `cargo info` on 2026-10-17.
     Release workflow itself (it needs the secret and runs only on GitHub). If the UAC prompt is
     declined, LANcast has already quit; the user starts it again.
 
+### D38. Personal links: the participant's name from the event website (2026-10-23)
+- **Requirement (user):** in the organizer and event editions, a personalized link on the
+  organizer's website sets the user name (the user part of the stream name, D26) instead of the
+  Windows login name, and the personalization persists.
+- **Format:** the signed event link plus `&id=<payload>.<signature>`. The payload is
+  `{"v":1,"event_id":…,"user":…}`, signed with the same organizer/event key (Ed25519, D28).
+  A separate id rather than a `user` key in `enforced`, so that:
+  - the event configuration stays one signature per change, and the website signs only the small
+    id per participant;
+  - the name survives links without an id for the same event (landing page, a new link after
+    changing the limits). With `user` in the signed configuration, every generic link would drop
+    it, and every change would need re-signing for every participant.
+- **Bound to the event:** the id names the `event_id`; the parser rejects a link whose id belongs
+  to another event, and the edition checks the signature and the `event_id` again when the link
+  arrives and at every start. A name can neither be made up nor moved to another event. The two
+  payload types can't stand in for each other (an id lacks `event`/dates, an event payload lacks
+  `user`, so deserializing fails); a unit test covers it.
+- **Persistence:** `event_user` in `LANcast.toml`, next to `event_signed`. A link with an id
+  replaces it; a link without one keeps it if the `event_id` stays the same, else clears it.
+  `user_name` (the participant's own name) is not touched and applies again without an event
+  id. A stored id that no longer verifies is ignored with a warning (own name instead).
+- **Asking (D36):** a link repeats the event in force only if it has no id or the same name; a
+  new name shows the confirmation dialog with "Your name in the stream name". The same name
+  re-signed is taken silently.
+- **Normal edition:** ignores `id=` (logged), since it cannot check the signature and the
+  participant can edit the name anyway. `lancast://config` links have no `id`.
+- **Names:** 1–32 code points, no control characters, no leading or trailing spaces, checked when
+  signing and when verifying.
+- **Organizer tool:** `lancast-event user <LANcast.event> <name> <secret.key>` prints the personal
+  link. `docs/EVENT_LINKS.md` has the format, TypeScript for websites and a test vector (produced
+  by the Rust code; the TypeScript could not be run here, no Node.js on the dev machine).
+- **Out of scope (discussed):** a short token in the stream name to authenticate streams at the
+  receiver. NDI source names are visible to the whole LAN, so such a token can be copied into
+  any NDI sender; real authenticity needs the receiver/gateway to take part (e.g. a challenge over
+  NDI metadata, bound to the sender's IP). Postponed until there is a gateway of our own.
+- **Verified:** unit tests (sign/verify, wrong key, other event, changed name, type confusion,
+  name rules, link parsing, D36 repeat rules with ids, same-event detection); clippy clean.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

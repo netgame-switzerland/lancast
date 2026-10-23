@@ -59,6 +59,10 @@ pub struct Config {
     pub event_enforced: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_signed: Option<crate::distro::SignedEvent>,
+    /// Event edition: the signed user id of a personal event link (D38). It
+    /// replaces `user_name` while its event is in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_user: Option<crate::distro::SignedEvent>,
     /// Signature of the bundled `LANcast.event` applied last, so an updated
     /// file is picked up once but does not override a later event link.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -119,6 +123,7 @@ impl Default for Config {
             event_name: String::new(),
             event_enforced: BTreeMap::new(),
             event_signed: None,
+            event_user: None,
             event_bundled: String::new(),
             source_names: BTreeMap::new(),
             check_updates: true,

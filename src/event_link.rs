@@ -16,6 +16,8 @@
 //!   `discovery`, `max`, `fps` are enforced, the others are defaults)
 //! - `lancast://event?p=<payload>&s=<signature>&level=…` (signed enforced
 //!   section in `p`, unsigned defaults as further parameters)
+//! - the same with `&id=<payload>.<signature>`: a personal link with the
+//!   participant's signed user name (D38)
 
 use std::collections::BTreeMap;
 
@@ -125,6 +127,17 @@ pub struct EventLink {
     /// Signed links (event editions): the signed enforced section, still to be
     /// verified by `distro::verify_for_this_build`.
     pub signed: Option<SignedEvent>,
+    /// Personal links (D38): the signed user id, still to be verified by
+    /// `distro::verify_user_for_this_build`. Only with `signed`.
+    pub user: Option<SignedEvent>,
+}
+
+impl EventLink {
+    /// The user name a personal link claims (not verified).
+    pub fn user_name(&self) -> Option<String> {
+        let user = crate::distro::decode_user(self.user.as_ref()?).ok()?;
+        Some(user.user)
+    }
 }
 
 /// Whether a command-line argument is an event link.
@@ -188,10 +201,12 @@ pub fn parse(url: &str) -> Result<EventLink> {
         "event" => {
             let mut payload = None;
             let mut signature = None;
+            let mut user = None;
             for (key, value) in &pairs {
                 match key.as_str() {
                     "p" => payload = Some(value.clone()),
                     "s" => signature = Some(value.clone()),
+                    "id" => user = Some(crate::distro::parse_user_token(value)?),
                     _ => {
                         if !link.defaults.set(key, value)? {
                             tracing::info!(key, "ignoring unknown event link key");
@@ -207,7 +222,17 @@ pub fn parse(url: &str) -> Result<EventLink> {
             let claimed = crate::distro::decode_payload(&signed)?;
             link.event = Some(clean_text(&claimed.event, 64)?);
             link.enforced = claimed.enforced_values()?;
+            if let Some(user) = &user {
+                let claimed_user = crate::distro::decode_user(user)?;
+                if claimed_user.event_id != claimed.event_id {
+                    bail!(
+                        "the personal id belongs to another event ({})",
+                        claimed_user.event_id
+                    );
+                }
+            }
             link.signed = Some(signed);
+            link.user = user;
         }
         other => bail!("unknown link action {other:?} (expected config or event)"),
     }
