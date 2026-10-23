@@ -1126,7 +1126,7 @@ impl LancastApp {
                     .num_columns(3)
                     .spacing([18.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Window").weak());
+                        group_label(ui, "Window");
                         if ui
                             .checkbox(&mut self.to_tray, "Close and minimize to tray")
                             .on_hover_text(
@@ -1199,7 +1199,7 @@ impl LancastApp {
                             ui.end_row();
                         }
 
-                        ui.label(RichText::new("Capture").weak());
+                        group_label(ui, "Capture");
                         let enforced = self.enforced();
                         enforced_checkbox(
                             ui,
@@ -1219,7 +1219,7 @@ impl LancastApp {
                         );
                         ui.end_row();
 
-                        ui.label(RichText::new("Video").weak());
+                        group_label(ui, "Video");
                         ui.add_enabled_ui(editable, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Max. frame rate");
@@ -1263,7 +1263,7 @@ impl LancastApp {
                         });
                         ui.end_row();
 
-                        ui.label(RichText::new("Audio").weak());
+                        group_label(ui, "Audio");
                         let forced_gain = enforced.audio_gain_db;
                         ui.add_enabled_ui(editable && forced_gain.is_none(), |ui| {
                             ui.horizontal(|ui| {
@@ -1299,15 +1299,15 @@ impl LancastApp {
                         });
                         ui.end_row();
 
-                        ui.label(RichText::new("Network").weak());
+                        group_label(ui, "Network");
                         self.network_settings(ui, state);
                         ui.end_row();
 
-                        ui.label(RichText::new("Links").weak());
+                        group_label(ui, "Links");
                         self.link_settings(ui);
                         ui.end_row();
 
-                        ui.label(RichText::new("Updates").weak());
+                        group_label(ui, "Updates");
                         self.update_settings(ui);
                         ui.end_row();
                     });
@@ -1687,6 +1687,19 @@ fn reachability(ui: &mut egui::Ui, reachable: Option<bool>) {
         Some(false) => ui.colored_label(RED, "NOT reachable"),
         None => ui.weak("checking…"),
     };
+}
+
+/// A settings group name, at the top of its grid row (the grid centers
+/// cells vertically), level with the first control of the row.
+fn group_label(ui: &mut egui::Ui, text: &str) {
+    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+        let height = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(0.0, height),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| ui.label(RichText::new(text).weak()),
+        );
+    });
 }
 
 /// The values of one event section, for the confirmation dialog.
