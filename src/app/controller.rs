@@ -51,6 +51,8 @@ pub struct Settings {
     pub audio_gain_db: f32,
     /// Discovery server choice, applied at the next send (D23).
     pub discovery: Discovery,
+    /// NDI send groups (D39), applied at the next send.
+    pub groups: String,
     /// Why sending is not allowed (event edition without a valid event
     /// configuration, D28); `None` = allowed.
     pub send_blocked: Option<String>,
@@ -359,6 +361,7 @@ impl Controller {
         let config = SessionConfig {
             window,
             source_name: settings.source_name.clone(),
+            groups: settings.groups.clone(),
             video: settings.video.clone(),
             audio,
             audio_gain_db: settings.audio_gain_db,

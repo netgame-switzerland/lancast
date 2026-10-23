@@ -39,6 +39,8 @@ pub struct Config {
     pub discovery_server: String,
     /// Ignore the discovery server configured in NDI Access Manager (D14).
     pub ignore_system_discovery: bool,
+    /// NDI send groups, comma-separated (D39); empty = NDI's own setting.
+    pub ndi_groups: String,
     /// Main window: inner size and outer position in points (position
     /// unset = let Windows choose), and whether it was maximized.
     pub window_width: f32,
@@ -114,6 +116,7 @@ impl Default for Config {
             audio_gain_db: 0.0,
             discovery_server: String::new(),
             ignore_system_discovery: false,
+            ndi_groups: crate::ndi_out::DEFAULT_GROUPS.to_owned(),
             window_width: DEFAULT_WINDOW_SIZE.0,
             window_height: DEFAULT_WINDOW_SIZE.1,
             window_x: None,
@@ -144,6 +147,10 @@ impl Config {
         }
         self.audio_gain_db = self.audio_gain_db.clamp(-40.0, 40.0);
         self.discovery_server = self.discovery_server.trim().to_owned();
+        self.ndi_groups = crate::event_link::groups(&self.ndi_groups).unwrap_or_else(|err| {
+            warn!("{err:#}; using the default NDI groups");
+            crate::ndi_out::DEFAULT_GROUPS.to_owned()
+        });
         self.user_name = self.user_name.trim().to_owned();
         self.update_url = self.update_url.trim().to_owned();
         let finite_or = |v: f32, default: f32| if v.is_finite() { v } else { default };
@@ -262,6 +269,20 @@ mod tests {
         assert!(!config.to_tray);
         assert!(config.check_updates);
         assert_eq!((config.max_width, config.max_height), (1920, 1080));
+        assert_eq!(config.ndi_groups, crate::ndi_out::DEFAULT_GROUPS);
+    }
+
+    #[test]
+    fn ndi_groups_are_normalized() {
+        let config: Config = toml::from_str("ndi_groups = \" a , B,b \"\n").unwrap();
+        assert_eq!(config.sanitized().ndi_groups, "a,B");
+        let config: Config = toml::from_str("ndi_groups = \"\"\n").unwrap();
+        assert_eq!(config.sanitized().ndi_groups, "");
+        let config: Config = toml::from_str("ndi_groups = \"a;b\"\n").unwrap();
+        assert_eq!(
+            config.sanitized().ndi_groups,
+            crate::ndi_out::DEFAULT_GROUPS
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ LANcast is the participant's side of a simpler setup:
   - automatic discovery (mDNS)
   - an optional NDI Discovery Server
   - a warning if a stale discovery server is configured in NDI Access Manager
+  - NDI groups (default `Public,lancast`): a projector PC that receives only `lancast` lists just the LANcast streams
 - **Remembers** settings, window size and position, and the game name per game.
 - **Update check** at startup (can be turned off): LANcast looks for a newer release of its own edition. An installed LANcast updates with one click (it runs the new setup and restarts); a portable copy links to the download. Without a connection LANcast starts normally.
 - **Anti-cheat friendly:** no injection, no hooks, no overlays in the game process. Only Windows APIs:
@@ -79,6 +80,7 @@ Organizers can configure every participant's LANcast with one link on the event 
 |---|---|
 | `event` | Event name, shown in the settings |
 | `discovery` | The event's NDI Discovery Server ("gateway"), `host[:port]`; empty = automatic (mDNS) |
+| `groups` | NDI send groups, comma-separated (LANcast's default: `Public,lancast`), e.g. so the projector PC lists only the event's streams. Groups sort sources; they are no access control |
 | `max`, `fps` | **Limits** that keep the network bandwidth in check; users can only choose lower values |
 | `level`, `border`, `cursor` | **Defaults** (receiver audio level `unity`/`ndi`, capture border, cursor `1`/`0`) |
 

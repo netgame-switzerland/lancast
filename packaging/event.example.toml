@@ -13,6 +13,7 @@ valid_until = "2026-11-05"
 discovery = "10.0.0.5"            # NDI discovery server; "" = automatic (mDNS)
 max = "1280x720"                  # max. resolution (limit)
 fps = 60                          # max. frame rate (limit)
+# groups = "lancast"              # NDI send groups; default "Public,lancast", "" = NDI's own setting
 
 # Unsigned starting values: participants may change them.
 [defaults]

@@ -31,9 +31,9 @@ use crate::{
     },
     config::{Config, ConfigStore},
     distro::{self, SignedEvent},
-    event_link::{EventLink, EventValues},
+    event_link::{self, EventLink, EventValues},
     ndi_config::Discovery,
-    ndi_out::AUDIO_GAIN_STUDIO_MONITOR_DB,
+    ndi_out::{AUDIO_GAIN_STUDIO_MONITOR_DB, DEFAULT_GROUPS},
     tray::{self, TrayHandle},
     tray_visibility::IconPlacement,
     update,
@@ -81,6 +81,8 @@ pub struct LancastApp {
     /// Discovery server setting as typed (checked when editing ends).
     discovery_server: String,
     ignore_system_discovery: bool,
+    /// NDI send groups as typed (D39); normalized when editing ends.
+    ndi_groups: String,
     /// Persistent settings (`LANcast.toml`) and when they last changed.
     config: Config,
     store: ConfigStore,
@@ -141,6 +143,7 @@ impl LancastApp {
                 },
                 audio_gain_db: config.audio_gain_db,
                 discovery: Discovery::System,
+                groups: config.ndi_groups.clone(),
                 send_blocked: None,
             },
             sent_settings: None,
@@ -148,6 +151,7 @@ impl LancastApp {
             always_on_top: config.always_on_top,
             discovery_server: config.discovery_server.clone(),
             ignore_system_discovery: config.ignore_system_discovery,
+            ndi_groups: config.ndi_groups.clone(),
             user_name: config.user_name.clone(),
             game_name: String::new(),
             check_updates: config.check_updates,
@@ -298,8 +302,17 @@ impl LancastApp {
             settings.video.capture_cursor = cursor;
         }
         settings.discovery = self.discovery();
+        settings.groups = self.groups();
         settings.send_blocked = self.event_error.clone();
         settings
+    }
+
+    /// NDI send groups in use: the event's, else the user's (the default
+    /// while the typed list is invalid).
+    fn groups(&self) -> String {
+        self.enforced().groups.unwrap_or_else(|| {
+            event_link::groups(&self.ndi_groups).unwrap_or_else(|_| DEFAULT_GROUPS.to_owned())
+        })
     }
 
     /// Discovery servers in use: the event's, else the user's.
@@ -338,6 +351,9 @@ impl LancastApp {
         config.audio_gain_db = self.settings.audio_gain_db;
         config.discovery_server = self.discovery_server.trim().to_owned();
         config.ignore_system_discovery = self.ignore_system_discovery;
+        if let Ok(groups) = event_link::groups(&self.ndi_groups) {
+            config.ndi_groups = groups;
+        }
         config.user_name = self.user_name.trim().to_owned();
         config.check_updates = self.check_updates;
         if config != self.config {
@@ -508,6 +524,9 @@ impl LancastApp {
         let defaults = &link.defaults;
         if let Some(servers) = &defaults.discovery {
             self.discovery_server = servers.clone();
+        }
+        if let Some(groups) = &defaults.groups {
+            self.ndi_groups = groups.clone();
         }
         if let Some(size) = defaults.max_size {
             self.settings.video.max_size = size;
@@ -1480,9 +1499,55 @@ impl LancastApp {
         });
     }
 
+    /// Discovery server and NDI groups.
+    fn network_settings(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        ui.vertical(|ui| {
+            self.discovery_settings(ui, state);
+            self.groups_settings(ui);
+        });
+    }
+
+    /// NDI send groups (D39): the event's, or editable.
+    fn groups_settings(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("NDI groups");
+            if let Some(groups) = self.enforced().groups {
+                ui.strong(groups_text(&groups));
+                ui.label(RichText::new("(set by the event)").small().color(BLUE));
+                return;
+            }
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.ndi_groups)
+                    .hint_text("NDI default (Access Manager)")
+                    .desired_width(160.0),
+            );
+            match event_link::groups(&self.ndi_groups) {
+                Ok(groups) if response.lost_focus() => self.ndi_groups = groups,
+                Ok(_) => {}
+                Err(err) => {
+                    ui.colored_label(RED, format!("{err}"));
+                }
+            }
+            if self.ndi_groups != DEFAULT_GROUPS
+                && ui
+                    .small_button("Default")
+                    .on_hover_text(format!("Sets {}.", DEFAULT_GROUPS))
+                    .clicked()
+            {
+                self.ndi_groups = DEFAULT_GROUPS.to_owned();
+            }
+            ui.label(RichText::new("Applies at the next Send.").small().weak())
+                .on_hover_text(
+                    "Comma-separated. Receivers list the stream only if they receive in one of \
+                     these groups (NDI Access Manager → Receive Groups). Public is NDI's default.\n\
+                     Groups only sort sources; they don't restrict who can watch or send.",
+                );
+        });
+    }
+
     /// Discovery server setting with its reachability, and the system
     /// setting from NDI Access Manager (SPEC §5.4).
-    fn network_settings(&mut self, ui: &mut egui::Ui, state: &AppState) {
+    fn discovery_settings(&mut self, ui: &mut egui::Ui, state: &AppState) {
         if let Some(servers) = self.enforced().discovery {
             ui.horizontal(|ui| {
                 ui.label("Discovery server");
@@ -1607,6 +1672,15 @@ fn enforced_checkbox(
     }
 }
 
+/// NDI groups for display; empty = NDI's own setting.
+fn groups_text(groups: &str) -> String {
+    if groups.is_empty() {
+        "NDI default (Access Manager)".to_owned()
+    } else {
+        groups.replace(',', ", ")
+    }
+}
+
 fn reachability(ui: &mut egui::Ui, reachable: Option<bool>) {
     match reachable {
         Some(true) => ui.colored_label(Color32::from_rgb(60, 190, 80), "reachable"),
@@ -1634,6 +1708,9 @@ fn values_grid(ui: &mut egui::Ui, id: &str, values: &EventValues) {
                     servers.clone()
                 };
                 row("NDI discovery server", text);
+            }
+            if let Some(groups) = &values.groups {
+                row("NDI groups", groups_text(groups));
             }
             if let Some((w, h)) = values.max_size {
                 row("Max. resolution", format!("{w}×{h}"));

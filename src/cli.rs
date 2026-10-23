@@ -21,9 +21,10 @@ use crate::{
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
-pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB]]
+pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB]]
   Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
-  --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).";
+  --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).
+  --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioChoice {
@@ -37,6 +38,7 @@ enum AudioChoice {
 struct Args {
     target: String,
     name: Option<String>,
+    groups: String,
     video: VideoOptions,
     audio: AudioChoice,
     audio_gain_db: f32,
@@ -81,6 +83,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     };
     let config = SessionConfig {
         source_name: args.name.unwrap_or_else(|| window.default_source_name()),
+        groups: args.groups,
         window,
         video: args.video,
         audio,
@@ -169,6 +172,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
     let mut args = args.into_iter();
     let mut target = None;
     let mut name = None;
+    let mut groups = crate::ndi_out::DEFAULT_GROUPS.to_owned();
     let mut video = VideoOptions::default();
     let mut audio = AudioChoice::Game;
     let mut audio_gain_db = 0.0f32;
@@ -181,6 +185,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
         match arg.as_str() {
             "--list" => return Ok(None),
             "--name" => name = Some(value("--name")?),
+            "--groups" => groups = crate::event_link::groups(&value("--groups")?)?,
             "--fps" => {
                 video.fps_cap = value("--fps")?.parse().context("--fps must be a number")?;
                 if !(1..=240).contains(&video.fps_cap) {
@@ -225,6 +230,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
     Ok(Some(Args {
         target,
         name,
+        groups,
         video,
         audio,
         audio_gain_db,

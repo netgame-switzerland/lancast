@@ -225,7 +225,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - Resolume: unverified. Its forum says NDI audio input is not supported at all (D17). Measure on site before the event with a known test tone.
 - Timecode: the default `NDIlib_send_timecode_synthesize` (the crate's default).
 - Optional: with 0 receivers, reduce the capture rate (e.g. 5 fps for the preview only) to save CPU.
-- Groups: none set (default "Public"). Receivers such as DistroAV and Studio Monitor only see their configured receive groups; a dedicated group would make the sources invisible to them (D10).
+- Groups (D39): sent in `Public,lancast` by default. `Public` keeps the stream visible to receivers with NDI's default receive groups (DistroAV, Studio Monitor, D10); a receiver limited to `lancast` lists only LANcast sources. Configurable in "Network → NDI groups" (empty = NDI's own setting) and enforceable by an event (`groups`). Groups only filter what receivers list; they are no access control.
 
 ### 5.4 Discovery and network (how the stream reaches the central machine)
 - **There is no target address.** The sender announces itself and **the receiver connects to the sender** (D10). On the central machine, the source is picked from a list:
@@ -260,9 +260,10 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 ### 5.4.1 Event links (D27)
 An event website can configure every LANcast with one click:
 
-`lancast://config?event=<name>&discovery=<host[:port],…>&max=<W>x<H>&fps=<N>&level=unity|ndi&border=0|1&cursor=0|1`
+`lancast://config?event=<name>&discovery=<host[:port],…>&groups=<group,…>&max=<W>x<H>&fps=<N>&level=unity|ndi&border=0|1&cursor=0|1`
 
 - `discovery` sets the event's NDI discovery server (gateway).
+- `groups` sets the NDI send groups (D39).
 - `max` and `fps` are **limits** the user cannot exceed.
 - The other keys are **defaults**.
 

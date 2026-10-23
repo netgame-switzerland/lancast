@@ -26,6 +26,12 @@ use crate::capture::audio::{AudioChunk, CHANNELS, CHUNK_FRAMES, SAMPLE_RATE};
 /// (D17).
 pub const AUDIO_GAIN_STUDIO_MONITOR_DB: f32 = 20.0;
 
+/// Default NDI send groups (D39): `Public` keeps the stream visible to
+/// receivers with NDI's default settings; a receiver limited to `lancast`
+/// lists only LANcast sources. Groups filter discovery; they are no access
+/// control.
+pub const DEFAULT_GROUPS: &str = "Public,lancast";
+
 /// How often the receiver count is refreshed.
 const CONNECTION_POLL: Duration = Duration::from_secs(1);
 
@@ -55,9 +61,10 @@ pub struct NdiOutput {
 }
 
 impl NdiOutput {
-    /// Creates the NDI source `name` and starts sending from `inputs`.
+    /// Creates the NDI source `name` in `groups` (comma-separated; empty =
+    /// NDI's own setting) and starts sending from `inputs`.
     /// `audio_gain_db` is applied to all audio (see [`AUDIO_GAIN_STUDIO_MONITOR_DB`]).
-    pub fn start(name: &str, audio_gain_db: f32, inputs: NdiInputs) -> Result<Self> {
+    pub fn start(name: &str, groups: &str, audio_gain_db: f32, inputs: NdiInputs) -> Result<Self> {
         let audio_gain = 10f32.powf(audio_gain_db / 20.0);
         let stop = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(NdiStats::default());
@@ -69,9 +76,10 @@ impl NdiOutput {
             .name("ndi-send".into())
             .spawn({
                 let name = name.to_owned();
+                let groups = groups.to_owned();
                 let stop = stop.clone();
                 let stats = stats.clone();
-                move || match create_sender(&name) {
+                move || match create_sender(&name, &groups) {
                     Ok((sender, source)) => {
                         let _ = ready_tx.send(Ok(source));
                         run(sender, inputs, audio_gain, &stop, &stats);
@@ -86,7 +94,7 @@ impl NdiOutput {
         let source_name = ready_rx
             .recv()
             .map_err(|_| anyhow!("NDI thread exited during start-up"))??;
-        info!(source = %source_name, "NDI source created");
+        info!(source = %source_name, groups, "NDI source created");
         Ok(Self {
             thread: Some(thread),
             stop,
@@ -116,14 +124,18 @@ impl Drop for NdiOutput {
 }
 
 /// The sender keeps the NDI runtime alive for its own lifetime.
-fn create_sender(name: &str) -> Result<(Sender, String)> {
+fn create_sender(name: &str, groups: &str) -> Result<(Sender, String)> {
     let ndi = NDI::new().context("failed to initialize the NDI runtime")?;
     // Video clocks the stream; audio (M2) is submitted from this same thread
     // and must not be clocked as well (D3).
-    let options = SenderOptions::builder(name)
+    let mut options = SenderOptions::builder(name)
         .clock_video(true)
-        .clock_audio(false)
-        .build();
+        .clock_audio(false);
+    // No groups given: NDI uses its own setting (Access Manager, else Public).
+    if !groups.is_empty() {
+        options = options.groups(groups);
+    }
+    let options = options.build();
     let sender = Sender::new(&ndi, &options).context("failed to create the NDI sender")?;
     let source = sender
         .source()

@@ -33,6 +33,8 @@ pub struct SessionConfig {
     pub window: WindowInfo,
     /// NDI source name without the machine prefix.
     pub source_name: String,
+    /// NDI send groups, comma-separated; empty = NDI's own setting (D39).
+    pub groups: String,
     pub video: VideoOptions,
     /// `None` sends video only.
     pub audio: Option<AudioSource>,
@@ -88,6 +90,7 @@ impl Session {
         let (audio_tx, audio_rx) = crossbeam_channel::bounded(AUDIO_QUEUE);
         let ndi = NdiOutput::start(
             &config.source_name,
+            &config.groups,
             config.audio_gain_db,
             NdiInputs {
                 video: frame_rx,

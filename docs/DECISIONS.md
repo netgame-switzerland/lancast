@@ -223,6 +223,7 @@ https://docs.ndi.video/tools/tools-for-windows/studio-monitor, DistroAV `src/ndi
   permissions".
 - Groups: `NULL` gives "Public". DistroAV and Studio Monitor search with the default receive groups.
   **Decision:** set no group of our own (a "lancast" group would be invisible to them).
+  *Superseded by D39:* LANcast sends in `Public,lancast`, so it stays visible to them.
 - Bandwidth "Lowest" is chosen by the receiver (`NDIlib_recv_bandwidth_lowest`, DistroAV "Bandwidth"
   property). It needs no sender code. That it costs extra sender CPU is an assumption, not documented;
   measure it.
@@ -1218,6 +1219,59 @@ Versions checked with `cargo info` on 2026-10-17.
   NDI metadata, bound to the sender's IP). Postponed until there is a gateway of our own.
 - **Verified:** unit tests (sign/verify, wrong key, other event, changed name, type confusion,
   name rules, link parsing, D36 repeat rules with ids, same-event detection); clippy clean.
+
+### D39. NDI groups: a discovery filter, not access control (2026-10-23)
+- **Question (from a team member):** support NDI groups "to gain more control over the users"?
+  Do groups control who may be part of a group?
+- **Finding: no.** Groups only decide which sources a receiver *lists*:
+  - Every device has send groups and receive groups. A receiver lists a source if they share a
+    group; the default for both is `Public`. Names are plain strings, compared
+    case-insensitively, at most 248 bytes per list (NDI white paper, *NDI Groups*:
+    https://docs.ndi.video/all/getting-started/white-paper/discovery-and-registration/ndi-groups).
+  - Each machine sets its own groups: in NDI Access Manager (`ndi-config.v1.json`), or the
+    application through `NDIlib_send_create_t::p_groups` / the finder's `p_groups`
+    (https://docs.ndi.video/all/using-ndi/ndi-tools/ndi-tools-for-windows/access-manager).
+    Nobody hands out or checks membership. NDI's docs describe groups as "visibility and
+    discoverability" and never as authentication. Vizrt's TriCaster best-practices guide
+    says knowing the group name is all it takes to gain access
+    (https://www.vizrt.com/wp-content/uploads/2024/11/NDI_Best_Practices_with_TriCaster__Final__1_-1.pdf).
+  - The Discovery Server supports groups but documents no authentication
+    (https://docs.ndi.video/all/getting-started/white-paper/discovery-and-registration/discovery-server).
+    NDI on the LAN has no stream encryption or authentication; only NDI Bridge encrypts, for
+    links across the internet.
+  - So any participant can send into the projector's group (Access Manager, another NDI tool),
+    or receive in it and watch every stream there.
+  - Not verified: whether a receiver can still connect to a source outside its groups when it
+    knows the source's name or IP ("External Sources"). It doesn't change the answer, since
+    joining a group is free anyway.
+- **What groups are good for:** order. A projector PC that receives only `lancast` lists just
+  the LANcast streams, not every camera, OBS or NDI tool on the event network.
+- **Where control comes from instead:** the operator choosing the source at the receiver; the
+  network (VLANs, firewall rules); LANcast's signed event configuration (D28, D35), which
+  makes the organizer's settings the default and stops tampering within LANcast, but not other
+  NDI software (see EVENT_LINKS "What it does not do").
+- **Decision (user):** support groups anyway, for order:
+  - **Default** `Public,lancast` (`ndi_out::DEFAULT_GROUPS`), not `lancast` alone: receivers
+    with NDI's default settings (OBS/DistroAV, Studio Monitor) keep seeing LANcast without any
+    change after the update (D10), and an organizer can still filter by `lancast`.
+  - **Setting** `ndi_groups` in `LANcast.toml` and in *Settings → Network*. It is passed to
+    `SenderOptions::groups` (grafton-ndi 2.0.0, `p_groups`) and applies at the next Send. Empty
+    = no `p_groups`, so NDI uses Access Manager's send groups (else `Public`). Sending explicit
+    groups overrides Access Manager's send groups for LANcast, which is intended (the default
+    must not depend on how the PC is configured); clearing the field restores them.
+  - **Event key** `groups`: enforced in `lancast://config` links (with the other network keys),
+    either section in signed configurations. An organizer can enforce e.g. `lancast` or
+    `NetGame`, so the projector lists only the event's LANcast streams. Older LANcast versions
+    ignore the unknown key (`EventValues::from_pairs`), so signed configurations stay usable.
+  - **Validation** (`event_link::groups`, same in the TypeScript of EVENT_LINKS): comma-separated
+    names of letters, digits, space, `.`, `-`, `_`, at most 64 characters each, at most 248 in
+    all; whitespace trimmed, duplicates (case-insensitive) dropped. An invalid value in
+    `LANcast.toml` falls back to the default; in the UI it is flagged and the default is used
+    until fixed.
+  - CLI: `--groups`, same default.
+- **Verified:** unit tests (parsing, normalization, limits, round trip, config fallback); clippy
+  clean. Not yet tested with a receiver: a Studio Monitor limited to `lancast` should list the
+  stream, one on `Public` too, one on another group not.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

@@ -7,13 +7,14 @@
 //! - **defaults**: starting values the user may change afterwards; never
 //!   signed. Enforced values always win over defaults.
 //!
-//! Keys: `discovery` (NDI discovery server / gateway), `max` (max.
-//! resolution, a limit), `fps` (max. frame rate, a limit), `level`
-//! (`unity`/`ndi`), `border`, `cursor` (`1`/`0`).
+//! Keys: `discovery` (NDI discovery server / gateway), `groups` (NDI send
+//! groups, D39), `max` (max. resolution, a limit), `fps` (max. frame rate, a
+//! limit), `level` (`unity`/`ndi`), `border`, `cursor` (`1`/`0`).
 //!
 //! Link forms:
 //! - `lancast://config?event=…&discovery=…&max=…&fps=…&level=…` (unsigned;
-//!   `discovery`, `max`, `fps` are enforced, the others are defaults)
+//!   `discovery`, `groups`, `max`, `fps` are enforced, the others are
+//!   defaults)
 //! - `lancast://event?p=<payload>&s=<signature>&level=…` (signed enforced
 //!   section in `p`, unsigned defaults as further parameters)
 //! - the same with `&id=<payload>.<signature>`: a personal link with the
@@ -33,6 +34,8 @@ const MAX_LENGTH: usize = 4096;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EventValues {
     pub discovery: Option<String>,
+    /// NDI send groups, normalized; empty = NDI's own setting (D39).
+    pub groups: Option<String>,
     pub max_size: Option<(u32, u32)>,
     pub max_fps: Option<u32>,
     pub audio_gain_db: Option<f32>,
@@ -50,6 +53,7 @@ impl EventValues {
         let value = value.trim();
         match key.to_ascii_lowercase().as_str() {
             "discovery" => self.discovery = Some(discovery(value)?),
+            "groups" => self.groups = Some(groups(value)?),
             "max" => {
                 let (w, h) = value
                     .split_once(['x', 'X'])
@@ -97,6 +101,9 @@ impl EventValues {
         let mut pairs = BTreeMap::new();
         if let Some(d) = &self.discovery {
             pairs.insert("discovery".into(), d.clone());
+        }
+        if let Some(g) = &self.groups {
+            pairs.insert("groups".into(), g.clone());
         }
         if let Some((w, h)) = self.max_size {
             pairs.insert("max".into(), format!("{w}x{h}"));
@@ -187,7 +194,7 @@ pub fn parse(url: &str) -> Result<EventLink> {
                     "event" => link.event = Some(clean_text(value, 64)?),
                     // The network and bandwidth settings stay fixed while
                     // the event is active; the rest are defaults.
-                    "discovery" | "max" | "fps" => {
+                    "discovery" | "groups" | "max" | "fps" => {
                         link.enforced.set(key, value)?;
                     }
                     _ => {
@@ -315,6 +322,32 @@ fn discovery(value: &str) -> Result<String> {
         .join(","))
 }
 
+/// NDI's limit for a group list (bytes, NDI Groups white paper).
+const MAX_GROUPS_LENGTH: usize = 248;
+
+/// Comma-separated NDI group names of letters, digits, space, `.`, `-` and
+/// `_`, at most 64 characters each, without duplicates (NDI compares them
+/// case-insensitively). Empty = NDI's own setting.
+pub fn groups(value: &str) -> Result<String> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in value.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        let valid = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'));
+        if !valid || name.len() > 64 {
+            bail!("invalid NDI group {name:?}");
+        }
+        if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            names.push(name);
+        }
+    }
+    let joined = names.join(",");
+    if joined.len() > MAX_GROUPS_LENGTH {
+        bail!("the NDI group list is longer than {MAX_GROUPS_LENGTH} characters");
+    }
+    Ok(joined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,9 +411,27 @@ mod tests {
     }
 
     #[test]
+    fn groups_are_enforced_and_normalized() {
+        let link = parse("lancast://config?event=x&groups=+NetGame%2C+Public+%2C,netgame").unwrap();
+        assert_eq!(link.enforced.groups.as_deref(), Some("NetGame,Public"));
+        let link = parse("lancast://config?event=x&groups=").unwrap();
+        assert_eq!(link.enforced.groups.as_deref(), Some(""));
+        assert!(parse("lancast://config?groups=a;b").is_err());
+        assert!(groups(&"g".repeat(65)).is_err());
+        let many: Vec<String> = (0..10).map(|i| format!("{i}{}", "g".repeat(30))).collect();
+        assert!(groups(&many.join(",")).is_err());
+        assert_eq!(groups("Public,lancast").unwrap(), "Public,lancast");
+    }
+
+    #[test]
     fn values_round_trip() {
-        let values =
-            EventValues::from_pairs([("max", "1280x720"), ("fps", "30"), ("cursor", "0")]).unwrap();
+        let values = EventValues::from_pairs([
+            ("max", "1280x720"),
+            ("fps", "30"),
+            ("cursor", "0"),
+            ("groups", "NetGame"),
+        ])
+        .unwrap();
         let pairs = values.to_pairs();
         let back =
             EventValues::from_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))).unwrap();

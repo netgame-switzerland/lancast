@@ -21,7 +21,7 @@ Every setting in an event configuration is in one of two sections:
 - **Enforced:** fixed while the event is active. Participants see them disabled, marked *(set by the event)*. Limits (`max`, `fps`) cap the participant's choice, marked *(event limit …)*; the other keys replace it.
 - **Defaults:** starting values, applied once when the event is applied. Participants can change them afterwards.
 
-In a `lancast://config` link (normal edition), `discovery`, `max` and `fps` are enforced, and `level`, `border` and `cursor` are defaults. In the [event edition](#event-edition-lan-distro) the organizer chooses for every key.
+In a `lancast://config` link (normal edition), `discovery`, `groups`, `max` and `fps` are enforced, and `level`, `border` and `cursor` are defaults. In the [event edition](#event-edition-lan-distro) the organizer chooses for every key.
 
 ## Changing enforced settings during an event
 Publish a new link; participants click it and confirm again. The new link replaces the event's enforced settings and sets its defaults once more. Which link LANcast accepts depends on the edition:
@@ -41,6 +41,7 @@ All keys are optional, but a link must set at least one. Unknown keys are ignore
 |---|---|---|---|
 | `event` | text, max. 64 characters | info | Event name shown in the settings and the dialog. |
 | `discovery` | `host[:port]`, comma-separated; empty = automatic (mDNS) | setting | NDI Discovery Server for LANcast's sender. Port 5959 if omitted. Receivers must use the same server. |
+| `groups` | NDI group names, comma-separated: letters, digits, space, `.`, `-`, `_`, max. 64 characters each, 248 in all; empty = NDI's own setting (Access Manager) | setting | NDI send groups. LANcast's default is `Public,lancast`. Receivers list the stream only if they receive in one of these groups, e.g. enforce `NetGame` and set the projector PC's receive group to `NetGame` in NDI Access Manager, so it lists only the event's LANcast streams. Groups sort sources; they don't stop anyone from joining a group (see below). |
 | `max` | `<W>x<H>`, 320×180 … 3840×2160 | **limit** | Maximum resolution. Users can only choose lower values; larger windows are scaled down. |
 | `fps` | 10 … 120 | **limit** | Maximum frame rate. |
 | `level` | `unity` (OBS/DistroAV) or `ndi` (+20 dB, NDI Studio Monitor) | default | Receiver audio level convention. |
@@ -94,7 +95,7 @@ Without a valid configuration (missing, not yet valid, expired, or not signed wi
 
 **How it is secured:** Ed25519 signatures. The organizer keeps the private key (`secret.key`); the event edition contains only the public key. Changing anything in the signed part, e.g. raising the resolution limit, makes the signature invalid. The defaults are deliberately unsigned, because participants may change them anyway.
 
-**What it does not do:** it cannot stop someone from running a normal LANcast or another NDI sender on the event network. Use the event's network setup (discovery server, switch limits) for that. The event edition makes the right configuration the default and stops tampering within it.
+**What it does not do:** it cannot stop someone from running a normal LANcast or another NDI sender on the event network. Nor do NDI groups: any NDI software can send or receive in any group by its name (D39). Use the event's network setup (discovery server, switch limits) for that, and pick the sources at the receiver. The event edition makes the right configuration the default and stops tampering within it.
 
 ### Building an event edition
 Keep `secret.key` and the event files **outside the repository**, e.g. in `%USERPROFILE%\lancast-netgame\` (`$dir` below), and back the key up in a password manager. A working copy is the wrong place: `git clean -fdx`, a fresh clone or deleting the checkout removes ignored files.
@@ -288,6 +289,15 @@ export function checkSetting(key: string, value: unknown): void {
         if (!/^[A-Za-z0-9.:_-]{1,253}$/.test(entry)) throw new Error(`invalid discovery server ${entry}`);
       }
       return;
+    case "groups": { // comma-separated NDI groups; empty = NDI's own setting
+      const names = v.split(",").map((g) => g.trim()).filter(Boolean);
+      for (const name of names) {
+        if (!/^[A-Za-z0-9 ._-]{1,64}$/.test(name)) throw new Error(`invalid NDI group ${name}`);
+      }
+      const unique = names.filter((g, i) => names.findIndex((o) => o.toLowerCase() === g.toLowerCase()) === i);
+      if (unique.join(",").length > 248) throw new Error("the NDI group list is longer than 248 characters");
+      return;
+    }
     case "max": {
       const m = /^(\d+)\s*[xX]\s*(\d+)$/.exec(v);
       const [w, h] = m ? [Number(m[1]), Number(m[2])] : [0, 0];
