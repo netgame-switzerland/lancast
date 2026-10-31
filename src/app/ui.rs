@@ -34,6 +34,7 @@ use crate::{
     dialog::{Dialog, Icon},
     distro::{self, SignedEvent},
     event_link::{self, EventLink, EventValues},
+    event_state::{self, ActiveEvent, EventState},
     ndi_config::Discovery,
     ndi_out::{AUDIO_GAIN_STUDIO_MONITOR_DB, DEFAULT_GROUPS},
     tray::{self, TrayHandle},
@@ -58,18 +59,10 @@ const SAVE_DELAY: Duration = Duration::from_millis(700);
 const EVENT_RECHECK: Duration = Duration::from_secs(60);
 const BLUE: Color32 = Color32::from_rgb(90, 170, 255);
 const GREEN: Color32 = Color32::from_rgb(60, 190, 80);
+/// Minimum height of the heading above the window carousel.
+const MIN_HEADER_HEIGHT: f32 = 20.0;
 /// A discovery server connection shows as missing only after this.
 const DISCOVERY_SETTLE: Duration = Duration::from_secs(5);
-
-/// The event in force (D27, D28).
-#[derive(Debug, Clone)]
-struct ActiveEvent {
-    name: String,
-    /// Values the user cannot change while the event is active.
-    enforced: EventValues,
-    /// Event edition: the validity window of the signed configuration.
-    valid: Option<(String, String)>,
-}
 
 /// What an open native dialog asks (D42).
 enum DialogKind {
@@ -129,6 +122,10 @@ pub struct LancastApp {
     confirm_quit: bool,
     /// The native dialog being shown (D42).
     dialog: Option<OpenDialog>,
+    /// Heights of rows whose content differs between stopped and sending;
+    /// the larger one seen is kept, so the preview area keeps its size.
+    header_height: f32,
+    name_row_height: f32,
     /// Update check and install (D37).
     updater: Updater,
     check_updates: bool,
@@ -191,6 +188,8 @@ impl LancastApp {
             tray_checked: None,
             confirm_quit: false,
             dialog: None,
+            header_height: MIN_HEADER_HEIGHT,
+            name_row_height: 0.0,
             updater,
             update_dismissed: false,
         };
@@ -211,31 +210,12 @@ impl LancastApp {
     /// (D28) when it is new. It comes with the original download, so it is
     /// applied without asking; a later event link still takes precedence.
     fn load_bundled_event(&mut self) {
-        if !distro::is_distro() {
-            return;
-        }
-        let Some(file) = distro::bundled_event_file() else {
-            return;
-        };
-        if file.signed.signature == self.config.event_bundled {
-            return;
-        }
-        let checked = distro::verify_signature_for_this_build(&file.signed).and_then(|payload| {
-            Ok(EventLink {
-                event: Some(payload.event.clone()),
-                enforced: payload.enforced_values()?,
-                defaults: file.defaults()?,
-                signed: Some(file.signed.clone()),
-                user: None,
-            })
-        });
-        match checked {
-            Ok(link) => {
-                tracing::info!(event = ?link.event, "applying the bundled event configuration");
-                self.apply_link(&link);
-                self.config.event_bundled = file.signed.signature.clone();
+        if let Some(link) = event_state::bundled_link(&self.config) {
+            tracing::info!(event = ?link.event, "applying the bundled event configuration");
+            self.apply_link(&link);
+            if let Some(signed) = &link.signed {
+                self.config.event_bundled = signed.signature.clone();
             }
-            Err(err) => tracing::warn!("{} is not valid: {err:#}", distro::EVENT_FILE),
         }
     }
 
@@ -243,54 +223,10 @@ impl LancastApp {
     /// edition verifies the signature and the dates again (D28).
     fn refresh_event(&mut self) {
         self.event_checked = Instant::now();
-        self.event_error = None;
-        self.event_user = None;
-        if distro::is_distro() {
-            let Some(signed) = &self.config.event_signed else {
-                self.event = None;
-                self.event_error = Some(format!(
-                    "this {} edition of LANcast sends only with a signed event configuration. \
-                     Click the event link on the event website, or put the event's {} next to \
-                     LANcast.exe.",
-                    distro::DISTRO_NAME.unwrap_or("event"),
-                    distro::EVENT_FILE
-                ));
-                return;
-            };
-            // The personal name shows even outside the event's dates, so a
-            // link clicked before the event visibly took effect (D38).
-            self.event_user = self.config.event_user.as_ref().and_then(|user| {
-                let event = distro::verify_signature_for_this_build(signed).ok()?;
-                distro::verify_user_for_this_build(user, &event.event_id)
-                    .inspect_err(|err| tracing::warn!("ignoring the stored user id: {err:#}"))
-                    .ok()
-                    .map(|u| u.user)
-            });
-            let checked = distro::verify_for_this_build(signed).and_then(|payload| {
-                Ok(ActiveEvent {
-                    enforced: payload.enforced_values()?,
-                    name: payload.event,
-                    valid: Some((payload.valid_from, payload.valid_until)),
-                })
-            });
-            match checked {
-                Ok(event) => self.event = Some(event),
-                Err(err) => {
-                    self.event = None;
-                    self.event_error = Some(format!("{err:#}."));
-                }
-            }
-        } else if self.config.event_name.is_empty() && self.config.event_enforced.is_empty() {
-            self.event = None;
-        } else {
-            let pairs = self.config.event_enforced.iter();
-            self.event = Some(ActiveEvent {
-                name: self.config.event_name.clone(),
-                enforced: EventValues::from_pairs(pairs.map(|(k, v)| (k.as_str(), v.as_str())))
-                    .unwrap_or_default(),
-                valid: None,
-            });
-        }
+        let state = EventState::from_config(&self.config);
+        self.event = state.event;
+        self.event_error = state.error;
+        self.event_user = state.user;
     }
 
     /// The enforced values of the event in force (empty without an event).
@@ -313,15 +249,7 @@ impl LancastApp {
     fn effective_settings(&self) -> Settings {
         let enforced = self.enforced();
         let mut settings = self.settings.clone();
-        if let Some(gain) = enforced.audio_gain_db {
-            settings.audio_gain_db = gain;
-        }
-        if let Some(border) = enforced.show_border {
-            settings.video.show_border = border;
-        }
-        if let Some(cursor) = enforced.capture_cursor {
-            settings.video.capture_cursor = cursor;
-        }
+        event_state::enforce(&enforced, &mut settings.video, &mut settings.audio_gain_db);
         settings.discovery = self.discovery();
         settings.groups = self.groups();
         settings.send_blocked = self.event_error.clone();
@@ -825,8 +753,10 @@ impl eframe::App for LancastApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            if state.sending.is_some() {
-                ui.horizontal(|ui| {
+            // Same height in both states, so the preview keeps its size.
+            let header = ui.horizontal(|ui| {
+                ui.set_min_height(self.header_height);
+                if state.sending.is_some() {
                     lock_icon(ui, AMBER);
                     ui.label(
                         RichText::new(
@@ -836,14 +766,15 @@ impl eframe::App for LancastApp {
                         .size(15.0)
                         .color(AMBER),
                     );
-                });
-            } else {
-                ui.label(
-                    RichText::new("Choose the window to cast")
-                        .strong()
-                        .size(15.0),
-                );
-            }
+                } else {
+                    ui.label(
+                        RichText::new("Choose the window to cast")
+                            .strong()
+                            .size(15.0),
+                    );
+                }
+            });
+            self.header_height = self.header_height.max(header.response.rect.height());
             ui.add_space(4.0);
             let selected = state.selected.as_ref().map(|w| w.hwnd);
             let locked = state.sending.is_some();
@@ -937,7 +868,17 @@ impl LancastApp {
     }
 
     fn source_name(&mut self, ui: &mut egui::Ui, state: &AppState) {
-        ui.horizontal(|ui| match &state.sending {
+        // While sending, the row has no text fields; keep its height anyway.
+        let min_height = self.name_row_height;
+        let row = ui.horizontal(|ui| {
+            ui.set_min_height(min_height);
+            self.source_name_contents(ui, state);
+        });
+        self.name_row_height = self.name_row_height.max(row.response.rect.height());
+    }
+
+    fn source_name_contents(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        match &state.sending {
             Some(sending) => {
                 ui.label("Stream name:");
                 ui.label(RichText::new(&sending.source_name).strong());
@@ -967,7 +908,7 @@ impl LancastApp {
                 ui.label(RichText::new(format!("Stream name: {name}")).weak())
                     .on_hover_text("Computer name (added by NDI), your name and the game.");
             }
-        });
+        }
     }
 
     fn audio_and_status(&mut self, ui: &mut egui::Ui, state: &AppState) {
@@ -1021,9 +962,7 @@ impl LancastApp {
                         s.source_size.0, s.source_size.1
                     ));
                 }
-                ui.horizontal_wrapped(|ui| {
-                    // Word-like gaps between the parts of one status line.
-                    ui.spacing_mut().item_spacing.x = 4.0;
+                status_line(ui, |ui| {
                     ui.label(line);
                     discovery_status(ui, sending);
                 });
@@ -1051,13 +990,25 @@ impl LancastApp {
             },
         }
 
-        if let Some(notice) = &state.notice {
-            let color = match notice.level {
-                NoticeLevel::Info => ui.visuals().text_color(),
-                NoticeLevel::Warning => AMBER,
-                NoticeLevel::Error => RED,
-            };
-            ui.colored_label(color, &notice.text);
+        match &state.notice {
+            Some(notice) => {
+                let color = match notice.level {
+                    NoticeLevel::Info => ui.visuals().text_color(),
+                    NoticeLevel::Warning => AMBER,
+                    NoticeLevel::Error => RED,
+                };
+                status_line(ui, |ui| {
+                    ui.colored_label(color, &notice.text);
+                });
+            }
+            // Holds the place of the "Sending …" line, so the preview area
+            // keeps its size when sending starts.
+            None if state.sending.is_none() => {
+                status_line(ui, |ui| {
+                    ui.label("");
+                });
+            }
+            None => {}
         }
     }
 
@@ -1760,6 +1711,16 @@ fn discovery_text(servers: &str) -> String {
     } else {
         format!("the server {servers}")
     }
+}
+
+/// One line of the status area. The same row type for the "Sending …"
+/// line, notices and the empty placeholder, so they have the same height.
+fn status_line(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_wrapped(|ui| {
+        // Word-like gaps between the parts of one line.
+        ui.spacing_mut().item_spacing.x = 4.0;
+        contents(ui);
+    });
 }
 
 /// How receivers find the stream while sending, appended to the status

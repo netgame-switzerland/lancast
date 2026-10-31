@@ -230,6 +230,7 @@ src/
   event_link.rs      lancast:// links: enforced and default sections
   url_scheme.rs      registration of the lancast: scheme
   distro.rs          organizer and event editions: signed event configurations (Ed25519)
+  event_state.rs     the event in force and its enforced values (GUI and CLI)
   bin/lancast-event.rs  organizer tool: key, sign, verify
   tray.rs            tray states, commands, icon drawing; backend tray/win32.rs
                      (Shell_NotifyIconW, notifications, single instance)

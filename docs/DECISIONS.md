@@ -1381,6 +1381,19 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   - Task dialogs follow the light system dialog style, not LANcast's dark theme.
   - Checked visually with a temporary example (both dialogs, manifest present).
 
+### D43. The CLI obeys the event too (2026-10-31)
+- **Finding:** the CLI ignored the event entirely: limits, groups, discovery and the event
+  edition's send block could all be bypassed with `LANcast.exe <hwnd> …`.
+- **Decision:** the event logic moved from the UI to `event_state.rs` (event in force from the
+  saved settings, bundled `LANcast.event`, `enforce()`). The CLI loads `LANcast.toml`, takes a
+  bundled event the GUI has not applied yet (without saving it), and applies the enforced values
+  on top of its options, logging a warning for each value the event overrules ("overruled by the
+  event: frame rate 30 fps instead of 60"). The personal user name (D38) prefixes the stream
+  name. An event edition without a valid event refuses to send with the GUI's reason.
+- **Verified** (non-event build, event from a plain link in a portable `LANcast.toml`): fps, size,
+  border and discovery were overruled with warnings, and the enforced server was connected. The
+  event-edition path (signature, send block) is the GUI's code, but not run through the CLI yet.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

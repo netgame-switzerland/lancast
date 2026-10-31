@@ -14,6 +14,8 @@ use tracing::{debug, info, warn};
 
 use crate::{
     capture::{audio::AudioSource, video::VideoOptions},
+    config::ConfigStore,
+    event_state::{self, EventState},
     ndi_config::{self, Discovery},
     os_caps::OsCaps,
     session::{POLL_INTERVAL, Session, SessionConfig, SessionEvent},
@@ -26,7 +28,8 @@ pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups 
   Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
   --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).
   --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).
-  --discovery sets the NDI discovery server(s), host[:port],… (\"\" = mDNS; default: NDI Access Manager's).";
+  --discovery sets the NDI discovery server(s), host[:port],… (\"\" = mDNS; default: NDI Access Manager's).
+  An active event (event link, event edition) overrules these options where it fixes a value.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioChoice {
@@ -76,6 +79,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
     // users may share their log file, so titles are logged at debug only.
     debug!(title = %window.title, "target window title");
 
+    let mut args = args;
+    let user = obey_event(&mut args)?;
     let audio = match args.audio {
         AudioChoice::Game => Some(AudioSource::Process {
             pid: window.pid,
@@ -85,7 +90,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
         AudioChoice::None => None,
     };
     let config = SessionConfig {
-        source_name: args.name.unwrap_or_else(|| window.default_source_name()),
+        source_name: {
+            let name = args.name.unwrap_or_else(|| window.default_source_name());
+            match &user {
+                Some(user) => crate::config::source_name(user, &name),
+                None => name,
+            }
+        },
         groups: args.groups,
         window,
         video: args.video,
@@ -122,6 +133,71 @@ pub fn run(args: Vec<String>) -> Result<()> {
     session.stop();
     info!("stopped");
     Ok(())
+}
+
+/// Applies the event in force like the GUI does (D43): enforced values
+/// overrule the options, with a warning for each, and an event edition
+/// refuses to send without a valid event. Returns the personal user name
+/// for the stream name (D38).
+fn obey_event(args: &mut Args) -> Result<Option<String>> {
+    let (_store, mut config) = ConfigStore::load();
+    // The GUI applies a new bundled event file at its next start.
+    if let Some(link) = event_state::bundled_link(&config) {
+        config.event_name = link.event.clone().unwrap_or_default();
+        config.event_signed = link.signed.clone();
+        config.event_enforced.clear();
+    }
+    let state = EventState::from_config(&config);
+    if let Some(reason) = &state.error {
+        bail!("sending is disabled: {reason}");
+    }
+    let Some(event) = &state.event else {
+        return Ok(None);
+    };
+    info!(event = %event.name, "event in force");
+    let enforced = &event.enforced;
+    let overruled = |what: &str| {
+        warn!(event = %event.name, "overruled by the event: {what}");
+    };
+    for change in event_state::enforce(enforced, &mut args.video, &mut args.audio_gain_db) {
+        overruled(&change);
+    }
+    if let Some(groups) = &enforced.groups
+        && *groups != args.groups
+    {
+        overruled(&format!(
+            "NDI groups {groups:?} instead of {:?}",
+            args.groups
+        ));
+        args.groups = groups.clone();
+    }
+    if let Some(servers) = &enforced.discovery {
+        let discovery = if servers.is_empty() {
+            Discovery::Mdns
+        } else {
+            Discovery::Servers(servers.clone())
+        };
+        if discovery != args.discovery {
+            overruled(&format!(
+                "discovery {} instead of {}",
+                discovery_text(&discovery),
+                discovery_text(&args.discovery)
+            ));
+            args.discovery = discovery;
+        }
+    }
+    if let Some(user) = &state.user {
+        overruled(&format!("your name in the stream name is {user:?}"));
+    }
+    Ok(state.user.clone())
+}
+
+fn discovery_text(discovery: &Discovery) -> String {
+    match discovery {
+        Discovery::System => "as in NDI Access Manager".to_owned(),
+        Discovery::Mdns => "mDNS".to_owned(),
+        Discovery::Servers(servers) => format!("server {servers}"),
+    }
 }
 
 fn supervise(session: &mut Session, interrupted: &AtomicBool, servers: &str) -> &'static str {
