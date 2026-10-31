@@ -35,7 +35,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [target.'cfg(windows)'.dependencies]
 ureq = { version = "3.5.0", default-features = false, features = ["native-tls-no-default"] }
 wasapi = "0.26.0"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm", "Win32_System_Threading", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_UI_HiDpi", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Com", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm", "Win32_System_Threading", "Wdk_System_SystemServices", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Security", "Win32_UI_HiDpi", "Win32_System_Registry", "Win32_System_DataExchange", "Win32_System_Com", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_UI_Controls"] }
 windows-capture = "2.0.1"
 
 # winit needs at least one windowing backend on Linux.

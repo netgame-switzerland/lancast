@@ -1,7 +1,10 @@
 //! Facts about this process from the OS: loaded DLLs, own TCP connections,
 //! and waiting for another process to exit (D41).
 
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::{
+    ffi::{CStr, c_char},
+    net::{Ipv4Addr, SocketAddrV4},
+};
 
 use windows::{
     Win32::{
@@ -24,6 +27,26 @@ pub fn module_loaded(name: &str) -> bool {
     // SAFETY: GetModuleHandleW only reads the NUL-terminated name; the
     // returned handle is not used (and needs no release).
     unsafe { GetModuleHandleW(&HSTRING::from(name)).is_ok() }
+}
+
+// From delayimp.lib of the MSVC toolchain, which `build.rs` links into every
+// target. The unload only works in an exe linked with /DELAY:UNLOAD.
+unsafe extern "system" {
+    fn __FUnloadDelayLoadedDLL2(name: *const c_char) -> i32;
+}
+
+/// Unloads a delay-loaded DLL; its next call loads it again. Returns
+/// `false` if the DLL was not delay-loaded (with /DELAY:UNLOAD) or not
+/// loaded.
+///
+/// # Safety
+/// Nothing may use the DLL any more: no thread inside it, no pointer to its
+/// code or data. Its own background threads must have ended (for NDI:
+/// after `NDIlib_destroy`).
+pub unsafe fn unload_delay_loaded(name: &CStr) -> bool {
+    // SAFETY: `name` is NUL-terminated; the caller guarantees the DLL is
+    // no longer in use.
+    unsafe { __FUnloadDelayLoadedDLL2(name.as_ptr()) != 0 }
 }
 
 /// Remote addresses of this process's established IPv4 TCP connections.

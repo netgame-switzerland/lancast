@@ -31,6 +31,7 @@ use crate::{
         video::{PreviewSlot, VideoOptions},
     },
     config::{Config, ConfigStore},
+    dialog::{Dialog, Icon},
     distro::{self, SignedEvent},
     event_link::{self, EventLink, EventValues},
     ndi_config::Discovery,
@@ -68,6 +69,19 @@ struct ActiveEvent {
     enforced: EventValues,
     /// Event edition: the validity window of the signed configuration.
     valid: Option<(String, String)>,
+}
+
+/// What an open native dialog asks (D42).
+enum DialogKind {
+    Quit,
+    /// The link as shown, applied on "Apply".
+    Link(Box<EventLink>),
+}
+
+struct OpenDialog {
+    kind: DialogKind,
+    /// The index of the chosen button, once answered.
+    choice: crossbeam_channel::Receiver<usize>,
 }
 
 pub struct LancastApp {
@@ -113,6 +127,8 @@ pub struct LancastApp {
     tray_checked: Option<Instant>,
     /// × was pressed while sending: ask before quitting.
     confirm_quit: bool,
+    /// The native dialog being shown (D42).
+    dialog: Option<OpenDialog>,
     /// Update check and install (D37).
     updater: Updater,
     check_updates: bool,
@@ -174,6 +190,7 @@ impl LancastApp {
             tray_placement: IconPlacement::Shown,
             tray_checked: None,
             confirm_quit: false,
+            dialog: None,
             updater,
             update_dismissed: false,
         };
@@ -371,111 +388,116 @@ impl LancastApp {
     }
 
     /// Asks before applying an event link; nothing is applied silently.
+    /// Asks before applying an event link, in a native dialog (D42).
     fn confirm_link(&mut self, ctx: &egui::Context, pending: &PendingLink) {
-        let link = &pending.link;
-        let mut decision = None;
-        egui::Modal::new(egui::Id::unique("event_link")).show(ctx, |ui| {
-            ui.set_width(440.0);
-            let title = link.event.as_deref().unwrap_or("an event");
-            ui.heading(format!("Apply settings for {title}?"));
-            ui.add_space(4.0);
-            if let Some(signed) = &link.signed {
-                let window = distro::decode_payload(signed)
-                    .map(|p| format!(", valid {} to {}", p.valid_from, p.valid_until))
-                    .unwrap_or_default();
-                if pending.verified {
-                    ui.colored_label(
-                        Color32::from_rgb(60, 190, 80),
-                        format!("Signed by the event organizers{window}."),
-                    );
-                } else {
-                    ui.label(
-                        RichText::new(format!(
-                            "Signed event configuration{window} (only an event edition checks the signature)."
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                }
-            }
-            let user = link.user_name();
-            if !link.enforced.is_empty() || user.is_some() {
-                ui.add_space(6.0);
-                ui.label("Fixed while the event is active:");
-                if let Some(user) = &user {
-                    ui.horizontal(|ui| {
-                        ui.label("Your name in the stream name:");
-                        ui.strong(user);
-                    });
-                }
-                values_grid(ui, "link_enforced", &link.enforced);
-            }
-            if !link.defaults.is_empty() {
-                ui.add_space(6.0);
-                ui.label("Starting values you can change afterwards:");
-                values_grid(ui, "link_defaults", &link.defaults);
-            }
-            if self.event.is_some() {
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("This replaces the current event's settings.")
-                        .small()
-                        .color(AMBER),
-                );
-            }
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new("Only settings are changed; nothing is sent until you click Send.")
-                    .small()
-                    .weak(),
-            );
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Apply").clicked() {
-                    decision = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    decision = Some(false);
-                }
-            });
-        });
-        match decision {
-            Some(true) => {
-                self.apply_link(link);
-                self.send(Command::DismissLink);
-            }
-            Some(false) => self.send(Command::DismissLink),
-            None => {}
+        if self.dialog.is_some() {
+            return;
         }
+        let link = &pending.link;
+        let mut icon = Icon::Information;
+        let mut parts = Vec::new();
+        if let Some(signed) = &link.signed {
+            let window = distro::decode_payload(signed)
+                .map(|p| format!(", valid {} to {}", p.valid_from, p.valid_until))
+                .unwrap_or_default();
+            if pending.verified {
+                icon = Icon::Shield;
+                parts.push(format!("Signed by the event organizers{window}."));
+            } else {
+                parts.push(format!(
+                    "Signed event configuration{window} (only an event edition checks the signature)."
+                ));
+            }
+        }
+        let user = link.user_name();
+        if !link.enforced.is_empty() || user.is_some() {
+            let mut lines = vec!["Fixed while the event is active:".to_owned()];
+            if let Some(user) = &user {
+                lines.push(format!("•  Your name in the stream name: {user}"));
+            }
+            lines.extend(value_lines(&link.enforced));
+            parts.push(lines.join("\n"));
+        }
+        if !link.defaults.is_empty() {
+            let mut lines = vec!["Starting values you can change afterwards:".to_owned()];
+            lines.extend(value_lines(&link.defaults));
+            parts.push(lines.join("\n"));
+        }
+        if self.event.is_some() {
+            parts.push("This replaces the current event's settings.".to_owned());
+        }
+        let event = link.event.as_deref().unwrap_or("an event");
+        let dialog = Dialog {
+            title: "LANcast".to_owned(),
+            instruction: format!("Apply settings for {event}?"),
+            content: parts.join("\n\n"),
+            footer: Some(
+                "Only settings are changed; nothing is sent until you click Send.".to_owned(),
+            ),
+            icon,
+            buttons: vec!["Apply".to_owned(), "Cancel".to_owned()],
+            default: 0,
+            cancel: 1,
+        };
+        self.open_dialog(ctx, DialogKind::Link(Box::new(link.clone())), dialog);
     }
 
+    /// Asks before quitting while sending, in a native dialog (D29, D42).
     fn confirm_quit(&mut self, ctx: &egui::Context) {
-        let mut decision = None;
-        let modal = egui::Modal::new(egui::Id::unique("confirm_quit")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.heading("Stop sending and quit LANcast?");
-            ui.add_space(4.0);
-            ui.label("Your game is on air. Quitting stops sending.");
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Quit").clicked() {
-                    decision = Some(true);
-                }
-                if ui.button("Keep running").clicked() {
-                    decision = Some(false);
-                }
-            });
-        });
-        if modal.should_close() && decision.is_none() {
-            decision = Some(false);
+        if self.dialog.is_some() {
+            return;
         }
-        match decision {
-            Some(true) => {
+        let dialog = Dialog {
+            title: "LANcast".to_owned(),
+            instruction: "Stop sending and quit LANcast?".to_owned(),
+            content: "Your game is on air. Quitting stops sending.".to_owned(),
+            footer: None,
+            icon: Icon::Warning,
+            buttons: vec!["Quit".to_owned(), "Keep running".to_owned()],
+            default: 1,
+            cancel: 1,
+        };
+        self.open_dialog(ctx, DialogKind::Quit, dialog);
+    }
+
+    /// Shows a native dialog; [`Self::poll_dialog`] acts on the answer.
+    fn open_dialog(&mut self, ctx: &egui::Context, kind: DialogKind, dialog: Dialog) {
+        let (choice_tx, choice) = crossbeam_channel::bounded(1);
+        let ctx = ctx.clone();
+        crate::dialog::show(self.hwnd, dialog, move |index| {
+            let _ = choice_tx.send(index);
+            ctx.request_repaint();
+        });
+        self.dialog = Some(OpenDialog { kind, choice });
+    }
+
+    /// Acts on the answer of the open dialog, once there is one. The first
+    /// button is the affirmative one.
+    fn poll_dialog(&mut self) {
+        let Some(open) = &self.dialog else {
+            return;
+        };
+        let confirmed = match open.choice.try_recv() {
+            Ok(index) => index == 0,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => false,
+        };
+        let Some(open) = self.dialog.take() else {
+            return;
+        };
+        match open.kind {
+            DialogKind::Quit => {
                 self.confirm_quit = false;
-                self.send(Command::Quit);
+                if confirmed {
+                    self.send(Command::Quit);
+                }
             }
-            Some(false) => self.confirm_quit = false,
-            None => {}
+            DialogKind::Link(link) => {
+                if confirmed {
+                    self.apply_link(&link);
+                }
+                self.send(Command::DismissLink);
+            }
         }
     }
 
@@ -694,6 +716,7 @@ impl eframe::App for LancastApp {
             }
             return;
         }
+        self.poll_dialog();
         if self.confirm_quit {
             self.confirm_quit(&ctx);
         }
@@ -998,8 +1021,12 @@ impl LancastApp {
                         s.source_size.0, s.source_size.1
                     ));
                 }
-                ui.label(line);
-                discovery_status(ui, sending);
+                ui.horizontal_wrapped(|ui| {
+                    // Word-like gaps between the parts of one status line.
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(line);
+                    discovery_status(ui, sending);
+                });
             }
             None => match (&state.selected, &state.audio_check) {
                 (Some(_), AudioCheck::GameAudio) => {
@@ -1589,16 +1616,11 @@ impl LancastApp {
                 {
                     reachability(ui, network.own_reachable);
                 }
-                let applies = if state.network.in_use.is_some() {
-                    "Optional. Applies after a restart of LANcast."
-                } else {
-                    "Optional. Applies at the next Send."
-                };
-                ui.label(RichText::new(applies).small().weak()).on_hover_text(
-                    "Leave empty for automatic discovery (mDNS), which works when all PCs \
-                     share one network.\nWith a discovery server, receivers must use the same server.\n\
-                     NDI reads this setting once, at the first Send after LANcast starts.",
-                );
+                ui.label(RichText::new("Optional. Applies at the next Send.").small().weak())
+                    .on_hover_text(
+                        "Leave empty for automatic discovery (mDNS), which works when all PCs \
+                         share one network.\nWith a discovery server, receivers must use the same server.",
+                    );
             });
             if let Some(system) = &state.network.system_servers {
                 ui.horizontal(|ui| {
@@ -1624,32 +1646,38 @@ impl LancastApp {
         });
     }
 
-    /// Offers a restart when the discovery setting differs from what NDI
-    /// uses: NDI reads it only once per process (D41).
+    /// Tells when the discovery setting differs from what NDI uses: while
+    /// sending it applies at the next Send; if NDI could not be unloaded
+    /// after sending, only a restart applies it (D41).
     fn discovery_restart(&mut self, ui: &mut egui::Ui, state: &AppState) {
         let network = &state.network;
-        if !network.restart_needed() {
+        if !network.setting_pending() {
             return;
         }
         let (Some(used), wanted) = (&network.in_use, &network.wanted) else {
             return;
         };
+        let (used, wanted) = (discovery_text(used), discovery_text(wanted));
+        if state.sending.is_some() {
+            banner(
+                ui,
+                AMBER,
+                &format!(
+                    "The stream uses {used}. The new setting ({wanted}) applies at the next Send: \
+                     press Stop, then Send."
+                ),
+            );
+            ui.add_space(4.0);
+            return;
+        }
         banner(
             ui,
             AMBER,
             &format!(
-                "The discovery setting changed: NDI still uses {}, the setting is now {}. \
-                 NDI reads it only once – restart LANcast to apply it.",
-                discovery_text(used),
-                discovery_text(wanted),
+                "NDI still uses {used} and could not be reset. Restart LANcast to use {wanted}."
             ),
         );
-        let label = if state.sending.is_some() {
-            "Restart LANcast (stops sending)"
-        } else {
-            "Restart LANcast"
-        };
-        if ui.button(label).clicked() {
+        if ui.button("Restart LANcast").clicked() {
             self.store.save(&self.config);
             self.changed_at = None;
             self.send(Command::Restart);
@@ -1734,31 +1762,27 @@ fn discovery_text(servers: &str) -> String {
     }
 }
 
-/// How receivers find the stream while sending: mDNS, or the discovery
-/// server(s) with this process's connection to each (D41).
+/// How receivers find the stream while sending, appended to the status
+/// line: mDNS, or the discovery server(s) with this process's connection to
+/// each (D41).
 fn discovery_status(ui: &mut egui::Ui, sending: &Sending) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Discovery:");
-        if sending.discovery.is_empty() {
-            ui.label("automatic (mDNS)");
-            return;
-        }
-        // NDI connects within a moment of the start.
-        let settling = sending.started.elapsed() < DISCOVERY_SETTLE;
-        for (i, (server, connected)) in sending.discovery.iter().enumerate() {
-            if i > 0 {
-                ui.label("·");
-            }
-            ui.label(format!("server {server}"));
-            match (connected, settling) {
-                (true, _) => ui.colored_label(GREEN, "connected"),
-                (false, true) => ui.weak("connecting…"),
-                (false, false) => ui
-                    .colored_label(RED, "NOT connected")
-                    .on_hover_text("Receivers using this server will not find your stream."),
-            };
-        }
-    });
+    if sending.discovery.is_empty() {
+        ui.label("· discovery: mDNS")
+            .on_hover_text("Automatic discovery: receivers on the same network find the stream.");
+        return;
+    }
+    // NDI connects within a moment of the start.
+    let settling = sending.started.elapsed() < DISCOVERY_SETTLE;
+    for (server, connected) in &sending.discovery {
+        ui.label(format!("· discovery server {server}"));
+        match (connected, settling) {
+            (true, _) => ui.colored_label(GREEN, "connected"),
+            (false, true) => ui.weak("connecting…"),
+            (false, false) => ui
+                .colored_label(RED, "NOT connected")
+                .on_hover_text("Receivers using this server will not find your stream."),
+        };
+    }
 }
 
 fn reachability(ui: &mut egui::Ui, reachable: Option<bool>) {
@@ -1782,50 +1806,44 @@ fn group_label(ui: &mut egui::Ui, text: &str) {
     });
 }
 
-/// The values of one event section, for the confirmation dialog.
-fn values_grid(ui: &mut egui::Ui, id: &str, values: &EventValues) {
+/// The values of an event link section, one bullet line each.
+fn value_lines(values: &EventValues) -> Vec<String> {
     let on_off = |b: bool| if b { "on" } else { "off" };
-    egui::Grid::new(id)
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            let mut row = |label: &str, value: String| {
-                ui.label(label);
-                ui.strong(value);
-                ui.end_row();
-            };
-            if let Some(servers) = &values.discovery {
-                let text = if servers.is_empty() {
-                    "automatic (mDNS)".to_owned()
-                } else {
-                    servers.clone()
-                };
-                row("NDI discovery server", text);
-            }
-            if let Some(groups) = &values.groups {
-                row("NDI groups", groups_text(groups));
-            }
-            if let Some((w, h)) = values.max_size {
-                row("Max. resolution", format!("{w}×{h}"));
-            }
-            if let Some(fps) = values.max_fps {
-                row("Max. frame rate", format!("{fps} fps"));
-            }
-            if let Some(gain) = values.audio_gain_db {
-                let text = if gain == 0.0 {
-                    "Unity (OBS / DistroAV)"
-                } else {
-                    "NDI standard +20 dB"
-                };
-                row("Receiver level", text.to_owned());
-            }
-            if let Some(border) = values.show_border {
-                row("Show capture border", on_off(border).to_owned());
-            }
-            if let Some(cursor) = values.capture_cursor {
-                row("Capture cursor", on_off(cursor).to_owned());
-            }
-        });
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    if let Some(servers) = &values.discovery {
+        let text = if servers.is_empty() {
+            "automatic (mDNS)".to_owned()
+        } else {
+            servers.clone()
+        };
+        rows.push(("NDI discovery server", text));
+    }
+    if let Some(groups) = &values.groups {
+        rows.push(("NDI groups", groups_text(groups)));
+    }
+    if let Some((w, h)) = values.max_size {
+        rows.push(("Max. resolution", format!("{w}×{h}")));
+    }
+    if let Some(fps) = values.max_fps {
+        rows.push(("Max. frame rate", format!("{fps} fps")));
+    }
+    if let Some(gain) = values.audio_gain_db {
+        let text = if gain == 0.0 {
+            "Unity (OBS / DistroAV)"
+        } else {
+            "NDI standard +20 dB"
+        };
+        rows.push(("Receiver level", text.to_owned()));
+    }
+    if let Some(border) = values.show_border {
+        rows.push(("Show capture border", on_off(border).to_owned()));
+    }
+    if let Some(cursor) = values.capture_cursor {
+        rows.push(("Capture cursor", on_off(cursor).to_owned()));
+    }
+    rows.into_iter()
+        .map(|(label, value)| format!("•  {label}: {value}"))
+        .collect()
 }
 
 /// Whether an event link only repeats the event in force: the same event

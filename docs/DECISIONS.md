@@ -1334,11 +1334,26 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
     server, `--discovery ""` does not, `--discovery 127.0.0.1:5999` (nothing listening) reports
     "not connected". Nothing in the capture path calls NDI (`VideoFrame` is plain Rust), so the
     preview does not load the DLL.
-  - `ndi_config::apply` writes the file only while the DLL is not loaded (`GetModuleHandleW`). After
-    that, the setting in use is frozen. If the setting differs, the UI shows a banner with
-    "Restart LANcast" (stops sending). The restarted process gets the old process id in
-    `LANCAST_RESTART_AFTER` and waits up to 10 s for it to exit before the single-instance check.
-    A helper process per session would avoid restarts but means passing frames between processes.
+  - **Unload after each send** (follow-up the same day). `/DELAY:UNLOAD` plus
+    `__FUnloadDelayLoadedDLL2` (delayimp.lib) unloads the DLL; its next call loads it again and
+    NDI reads the file anew. Probes: 20 cycles sending 1280×720 video and audio, unloaded right
+    after dropping the sender mid-stream; 16 cycles with a receiver (`ndi_probe`) connected and
+    reconnecting each cycle (2 connections, ~60 fps); and 4 sessions through the real code path
+    (`apply` → `Session::start` → `stop` → `unload`) alternating server / mDNS. Every cycle
+    re-read the file (machinename and 5959 connection followed it); no crash or hang.
+    - `ndi_config::unload` runs after every session (and after a failed start). It unloads only
+      if `grafton_ndi::NDI::is_running()` is false, i.e. no NDI handle exists and grafton-ndi has
+      called `NDIlib_destroy`. Nothing else in LANcast calls NDI.
+    - So the discovery setting applies at the next Send again. A change during a send shows a
+      banner "applies at the next Send: press Stop, then Send".
+  - Fallback: `ndi_config::apply` writes the file only while the DLL is not loaded
+    (`GetModuleHandleW`). If unloading failed, the UI shows a banner with "Restart LANcast". The
+    restarted process gets the old process id in `LANCAST_RESTART_AFTER` and waits up to 10 s for
+    it to exit before the single-instance check. (A helper process per session would also work,
+    but means passing frames between processes.)
+  - Only `ndi-config.v1.json` settings are affected (discovery; also machine name, adapters,
+    multicast, which LANcast copies from the system file). Frame rate, resolution, audio and NDI
+    groups are per session (sender options, capture options) and were never frozen.
   - While sending, the UI shows "Discovery: automatic (mDNS)" or each server with "connected" /
     "connecting…" (first 5 s) / "NOT connected". The SDK has no sender API for this, so LANcast
     checks its own established TCP connections (`GetExtendedTcpTable`,
@@ -1346,6 +1361,25 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
     is matched by address and port, a host name by port only (no DNS lookup).
   - The CLI takes `--discovery SERVERS` (`""` = mDNS) and logs the connection state with the
     status.
+
+### D42. Confirmations as native Windows dialogs (2026-10-31)
+- **Problem:** the egui modals (quit while sending, event link) looked like part of the canvas,
+  not like Windows dialogs.
+- **Decision:** task dialogs (`TaskDialogIndirect`, comctl32; learn.microsoft.com,
+  "TaskDialogIndirect function": Windows Vista+, needs Common Controls v6 via the app manifest).
+  Main instruction, content, footer, system icon (warning; shield for a verified event signature),
+  custom buttons; Esc and the close box choose the cancel button.
+  - `build.rs` embeds a manifest with only the Common-Controls 6.0 dependency (winresource; it is
+    linked into every target, examples included). No `supportedOS` or DPI entries, so OS
+    compatibility and DPI handling stay as before (`os_caps` uses `RtlGetVersion` anyway).
+  - `TaskDialogIndirect` is resolved with `GetProcAddress` at the call: without v6 comctl32 a
+    static import would keep the exe from starting. Fallback: `MessageBoxW` with OK/Cancel.
+  - The dialog runs on its own thread with the main window as owner: modal for the user (the owner
+    is disabled), while egui keeps drawing preview and meter. The answer arrives through a channel
+    and wakes egui. The event link dialog applies the link as shown, even if another one arrives
+    meanwhile.
+  - Task dialogs follow the light system dialog style, not LANcast's dark theme.
+  - Checked visually with a temporary example (both dialogs, manifest present).
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

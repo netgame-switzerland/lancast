@@ -11,6 +11,16 @@ use std::{
 
 const NDI_DLL: &str = "Processing.NDI.Lib.x64.dll";
 const DEFAULT_SDK_DIR: &str = r"C:\Program Files\NDI\NDI 6 SDK";
+const MANIFEST: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
+        processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"#;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -23,11 +33,13 @@ fn main() {
     }
     println!("cargo:rerun-if-env-changed=NDI_SDK_DIR");
     // The NDI runtime reads NDI_CONFIG_DIR once, when its DLL loads. Loaded
-    // at startup it would run before `main` sets the variable; delay-loaded
-    // it loads at the first send (D41).
+    // at startup it would run before `main` sets the variable. Delay-loaded,
+    // it loads at each send and is unloaded after it (D41).
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bin=LANcast=/DELAYLOAD:{NDI_DLL}");
-        println!("cargo:rustc-link-arg-bin=LANcast=delayimp.lib");
+        println!("cargo:rustc-link-arg-bin=LANcast=/DELAY:UNLOAD");
+        // All targets: `process_info` refers to the unload helper.
+        println!("cargo:rustc-link-arg=delayimp.lib");
     }
 
     let sdk_dir = env::var_os("NDI_SDK_DIR")
@@ -144,7 +156,10 @@ fn embed_exe_resources(version: &str) {
         .set(
             "LegalCopyright",
             "Copyright 2026 Kay Huber. Apache License 2.0.",
-        );
+        )
+        // Common Controls v6: native task dialogs (D42). No other manifest
+        // settings, so OS compatibility and DPI handling stay as they were.
+        .set_manifest(MANIFEST);
     if let Err(err) = res.compile() {
         println!("cargo:warning=failed to embed the exe icon: {err}");
     }

@@ -49,8 +49,7 @@ pub struct Settings {
     pub source_name: String,
     pub video: VideoOptions,
     pub audio_gain_db: f32,
-    /// Discovery server choice, applied at the first send of the process
-    /// (D23, D41).
+    /// Discovery server choice, applied at the next send (D23, D41).
     pub discovery: Discovery,
     /// NDI send groups (D39), applied at the next send.
     pub groups: String,
@@ -78,16 +77,18 @@ pub struct NetworkStatus {
     pub own_servers: String,
     /// `None` while checking (or nothing set).
     pub own_reachable: Option<bool>,
-    /// Discovery servers NDI uses in this process (`""` = mDNS); `None`
-    /// until the first send loads the NDI runtime (D41).
+    /// Discovery servers NDI uses (`""` = mDNS) while its runtime is loaded,
+    /// i.e. during a send; `None` otherwise (D41).
     pub in_use: Option<String>,
     /// Discovery servers the current setting asks for (`""` = mDNS).
     pub wanted: String,
 }
 
 impl NetworkStatus {
-    /// The setting differs from what NDI uses; only a restart applies it.
-    pub fn restart_needed(&self) -> bool {
+    /// The setting differs from what the loaded NDI runtime uses. While
+    /// sending it applies at the next send; otherwise unloading failed and
+    /// only a restart applies it.
+    pub fn setting_pending(&self) -> bool {
         self.in_use
             .as_ref()
             .is_some_and(|used| *used != self.wanted)
@@ -398,7 +399,7 @@ impl Controller {
             audio,
             audio_gain_db: settings.audio_gain_db,
         };
-        // NDI reads its configuration once, when the first session loads it.
+        // NDI reads its configuration when the session loads it.
         if let Err(err) = ndi_config::apply(&settings.discovery) {
             warn!("failed to apply the discovery setting: {err:#}");
         }
@@ -444,6 +445,7 @@ impl Controller {
             }
             Err(err) => {
                 warn!("failed to start sending: {err:#}");
+                self.release_ndi();
                 self.set_notice(
                     NoticeLevel::Error,
                     &format!("Could not start sending: {err:#}"),
@@ -460,6 +462,7 @@ impl Controller {
         };
         info!("stopping: {reason}");
         session.stop();
+        self.release_ndi();
         let mut state = self.state();
         state.sending = None;
         state.notice = Some(Notice {
@@ -470,6 +473,13 @@ impl Controller {
         // Back to the preview if the window still exists.
         self.start_preview();
         self.publish_tray();
+    }
+
+    /// Unloads the NDI runtime after a session, so the next one reads the
+    /// discovery setting again (D41).
+    fn release_ndi(&self) {
+        ndi_config::unload();
+        self.state().network.in_use = ndi_config::in_use();
     }
 
     fn switch_to_system_audio(&mut self) {

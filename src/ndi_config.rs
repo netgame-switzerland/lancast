@@ -2,11 +2,11 @@
 //!
 //! The standard NDI SDK reads `ndi-config.v1.json` from the folder in
 //! `NDI_CONFIG_DIR`, else from `C:\ProgramData\NDI\` (written by NDI Access
-//! Manager). It reads it **once per process, when its DLL loads** (D41).
-//! LANcast delay-loads the DLL, sets `NDI_CONFIG_DIR` at startup to its own
-//! folder and, until the first send loads the DLL, writes a copy of the
-//! system file there with only the discovery server adjusted. A later change
-//! needs a restart. The system file is never modified.
+//! Manager). It reads it **once, when its DLL loads** (D41). LANcast
+//! delay-loads the DLL, sets `NDI_CONFIG_DIR` at startup to its own folder
+//! and, before each send, writes a copy of the system file there with only
+//! the discovery server adjusted. After the send the DLL is unloaded, so the
+//! next send reads the file again. The system file is never modified.
 
 use std::{
     net::{Ipv4Addr, TcpStream, ToSocketAddrs},
@@ -23,8 +23,9 @@ const FILE_NAME: &str = "ndi-config.v1.json";
 /// Default port of the NDI Discovery Service.
 pub const DISCOVERY_PORT: u16 = 5959;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
-/// The NDI runtime DLL, delay-loaded at the first send (`build.rs`).
+/// The NDI runtime DLL, delay-loaded at each send (`build.rs`).
 const NDI_DLL: &str = "Processing.NDI.Lib.x64.dll";
+const NDI_DLL_C: &std::ffi::CStr = c"Processing.NDI.Lib.x64.dll";
 
 /// Discovery servers in the file LANcast last wrote (`""` = mDNS); `None`
 /// if it wrote none, so NDI uses the system file.
@@ -107,8 +108,31 @@ pub fn in_use() -> Option<String> {
     Some(written.unwrap_or_else(|| resolve(&Discovery::System)))
 }
 
+/// Unloads the NDI runtime after a send, so the next send loads it again and
+/// reads the configuration anew (D41). Only while no NDI handle exists;
+/// returns whether the DLL is unloaded now.
+pub fn unload() -> bool {
+    if !ndi_loaded() {
+        return true;
+    }
+    if grafton_ndi::NDI::is_running() {
+        warn!("NDI is still in use; not unloading it");
+        return false;
+    }
+    // SAFETY: no NDI handle exists, so grafton-ndi has called NDIlib_destroy,
+    // which ends NDI's threads. Frames are plain Rust memory, and nothing
+    // else in LANcast calls NDI.
+    let unloaded = unsafe { crate::process_info::unload_delay_loaded(NDI_DLL_C) };
+    if unloaded {
+        info!("NDI runtime unloaded");
+    } else {
+        warn!("cannot unload the NDI runtime; a discovery change needs a restart");
+    }
+    unloaded
+}
+
 /// Prepares the configuration for the next send: writes it while the NDI
-/// runtime is not loaded yet; afterwards NDI would ignore it (D41).
+/// runtime is not loaded; once loaded, NDI would ignore it (D41).
 pub fn apply(discovery: &Discovery) -> Result<()> {
     if ndi_loaded() {
         let wanted = resolve(discovery);

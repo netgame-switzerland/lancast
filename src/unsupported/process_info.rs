@@ -1,9 +1,15 @@
 //! Stub of `process_info` for platforms other than Windows (D32).
 
-use std::net::SocketAddrV4;
+use std::{ffi::CStr, net::SocketAddrV4};
 
 /// Unknown here: callers then behave as before the DLL is loaded.
 pub fn module_loaded(_name: &str) -> bool {
+    false
+}
+
+/// # Safety
+/// No requirements here; mirrors the Windows signature.
+pub unsafe fn unload_delay_loaded(_name: &CStr) -> bool {
     false
 }
 

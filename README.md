@@ -223,6 +223,7 @@ src/
   ndi_out.rs         NDI sender thread
   ndi_config.rs      NDI network configuration (discovery server)
   process_info.rs    loaded DLLs, own TCP connections, waiting for a process to exit
+  dialog.rs          native confirmation dialogs (task dialogs)
   config.rs          LANcast.toml, data folder (%LOCALAPPDATA%\LANcast, portable mode)
   logging.rs         tracing to stdout and the log file
   os_caps.rs         OS build and optional capture features (process loopback, …)

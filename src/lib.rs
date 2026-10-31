@@ -9,6 +9,8 @@ pub mod app_icon;
 pub mod capture;
 pub mod cli;
 pub mod config;
+#[cfg_attr(not(windows), path = "unsupported/dialog.rs")]
+pub mod dialog;
 pub mod distro;
 pub mod event_link;
 // Windows-only modules have stubs in `unsupported/` elsewhere (D32).
