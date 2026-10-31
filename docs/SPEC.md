@@ -236,7 +236,8 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - The standard SDK has no API for this.
     - At startup, before any thread exists, LANcast sets `NDI_CONFIG_DIR` to `<data folder>\ndi\`.
     - Before each send it writes `ndi-config.v1.json` there: a copy of the system file with only `ndi.networks.discovery` adjusted. Without an override, the behaviour equals the system setting.
-  - The value takes effect at the next "Send", because each session initializes NDI anew. The UI says so (D23).
+  - NDI reads the file once per process, when its DLL loads at the first "Send" (the DLL is delay-loaded). A later change needs a restart; the UI then offers "Restart LANcast" (D41).
+  - While sending, the UI shows the discovery method in use: "automatic (mDNS)", or each server with "connected" / "NOT connected" (LANcast's own TCP connection to it, D41).
   - Caveat shown in the UI: with a discovery server set, the sender **stops announcing via mDNS**, so receivers must use the same server.
   - The server ships with NDI Tools / the NDI SDK (`NDI Discovery Service.exe`) and runs on the central machine or any server.
 - Alternative without a server, configured on the receiver: "Extra IPs" in NDI Access Manager on the central machine. Documented in the README only.

@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     capture::{audio::AudioSource, video::VideoOptions},
+    ndi_config::{self, Discovery},
     os_caps::OsCaps,
     session::{POLL_INTERVAL, Session, SessionConfig, SessionEvent},
     windows_list,
@@ -21,10 +22,11 @@ use crate::{
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
-pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB]]
+pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB] [--discovery SERVERS]]
   Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
   --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).
-  --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).";
+  --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).
+  --discovery sets the NDI discovery server(s), host[:port],… (\"\" = mDNS; default: NDI Access Manager's).";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioChoice {
@@ -42,6 +44,7 @@ struct Args {
     video: VideoOptions,
     audio: AudioChoice,
     audio_gain_db: f32,
+    discovery: Discovery,
 }
 
 /// Runs the CLI with the arguments after the program name.
@@ -89,7 +92,17 @@ pub fn run(args: Vec<String>) -> Result<()> {
         audio,
         audio_gain_db: args.audio_gain_db,
     };
+    // NDI reads its configuration when the session loads it (D41).
+    if let Err(err) = ndi_config::apply(&args.discovery) {
+        warn!("failed to apply the discovery setting: {err:#}");
+    }
     let (mut session, _audio_error) = Session::start(&config, &caps)?;
+    let servers = ndi_config::in_use().unwrap_or_default();
+    if servers.is_empty() {
+        info!("NDI discovery: automatic (mDNS)");
+    } else {
+        info!(%servers, "NDI discovery: server");
+    }
     if args.audio == AudioChoice::Game
         && session.audio_mode() == Some(crate::capture::audio::AudioMode::SystemLoopback)
     {
@@ -104,14 +117,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
     .context("failed to install the Ctrl-C handler")?;
     info!(source = %session.source_name(), "sending; press Ctrl-C to stop");
 
-    let reason = supervise(&mut session, &interrupted);
+    let reason = supervise(&mut session, &interrupted, &servers);
     info!("stopping: {reason}");
     session.stop();
     info!("stopped");
     Ok(())
 }
 
-fn supervise(session: &mut Session, interrupted: &AtomicBool) -> &'static str {
+fn supervise(session: &mut Session, interrupted: &AtomicBool, servers: &str) -> &'static str {
     let mut last_status = Instant::now();
     loop {
         std::thread::sleep(POLL_INTERVAL);
@@ -150,6 +163,9 @@ fn supervise(session: &mut Session, interrupted: &AtomicBool) -> &'static str {
                 receivers = s.receivers,
                 "status"
             );
+            if !servers.is_empty() {
+                info!(connections = ?ndi_config::connections(servers), "discovery");
+            }
             if let (Some(mode), Some(levels)) = (session.audio_mode(), session.audio_levels()) {
                 let (sent, dropped, padded_ms, trimmed_ms) = session.audio_counters();
                 info!(
@@ -176,6 +192,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
     let mut video = VideoOptions::default();
     let mut audio = AudioChoice::Game;
     let mut audio_gain_db = 0.0f32;
+    let mut discovery = Discovery::System;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
@@ -209,6 +226,14 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
             "--cursor" => video.capture_cursor = true,
             "--system-audio" => audio = AudioChoice::System,
             "--no-audio" => audio = AudioChoice::None,
+            "--discovery" => {
+                let servers = value("--discovery")?.trim().to_owned();
+                discovery = if servers.is_empty() {
+                    Discovery::Mdns
+                } else {
+                    Discovery::Servers(servers)
+                };
+            }
             "--audio-gain-db" => {
                 audio_gain_db = value("--audio-gain-db")?
                     .parse()
@@ -234,6 +259,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
         video,
         audio,
         audio_gain_db,
+        discovery,
     }))
 }
 

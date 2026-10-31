@@ -49,7 +49,8 @@ pub struct Settings {
     pub source_name: String,
     pub video: VideoOptions,
     pub audio_gain_db: f32,
-    /// Discovery server choice, applied at the next send (D23).
+    /// Discovery server choice, applied at the first send of the process
+    /// (D23, D41).
     pub discovery: Discovery,
     /// NDI send groups (D39), applied at the next send.
     pub groups: String,
@@ -77,6 +78,20 @@ pub struct NetworkStatus {
     pub own_servers: String,
     /// `None` while checking (or nothing set).
     pub own_reachable: Option<bool>,
+    /// Discovery servers NDI uses in this process (`""` = mDNS); `None`
+    /// until the first send loads the NDI runtime (D41).
+    pub in_use: Option<String>,
+    /// Discovery servers the current setting asks for (`""` = mDNS).
+    pub wanted: String,
+}
+
+impl NetworkStatus {
+    /// The setting differs from what NDI uses; only a restart applies it.
+    pub fn restart_needed(&self) -> bool {
+        self.in_use
+            .as_ref()
+            .is_some_and(|used| *used != self.wanted)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +119,10 @@ pub struct Sending {
     pub status: SessionStatus,
     pub minimized: bool,
     pub frames_missing: bool,
+    pub started: Instant,
+    /// `(server, connected)` for each discovery server in use; empty for
+    /// mDNS (D41).
+    pub discovery: Vec<(String, bool)>,
 }
 
 #[derive(Clone)]
@@ -143,6 +162,8 @@ pub enum Command {
     OpenLink(String),
     /// The pending event link was applied or declined.
     DismissLink,
+    /// Stop, then start LANcast anew (applies the discovery setting, D41).
+    Restart,
     Quit,
 }
 
@@ -178,10 +199,15 @@ impl Controller {
     pub fn run(mut self, commands: Receiver<Command>) {
         self.publish_tray();
         self.check_system_discovery();
+        let mut restart = false;
         loop {
             select! {
                 recv(commands) -> cmd => match cmd {
                     Ok(Command::Quit) | Err(_) => break,
+                    Ok(Command::Restart) => {
+                        restart = true;
+                        break;
+                    }
                     Ok(cmd) => self.handle(cmd),
                 },
                 default(POLL_INTERVAL) => {}
@@ -193,6 +219,9 @@ impl Controller {
             session.stop();
         }
         self.stop_preview();
+        if restart {
+            spawn_successor();
+        }
         info!("controller stopped");
     }
 
@@ -203,6 +232,9 @@ impl Controller {
             Command::Settings(settings) => {
                 let video_changed =
                     self.settings.as_ref().map(|s| &s.video) != Some(&settings.video);
+                if self.settings.as_ref().map(|s| &s.discovery) != Some(&settings.discovery) {
+                    self.state().network.wanted = ndi_config::resolve(&settings.discovery);
+                }
                 self.settings = Some(settings);
                 self.publish_tray();
                 // Border and cursor show in the preview right away.
@@ -242,7 +274,7 @@ impl Controller {
                 }
             },
             Command::DismissLink => self.state().pending_link = None,
-            Command::Quit => {}
+            Command::Restart | Command::Quit => {}
         }
         (self.wake)();
     }
@@ -366,8 +398,8 @@ impl Controller {
             audio,
             audio_gain_db: settings.audio_gain_db,
         };
-        // NDI reads its configuration when the session initializes it.
-        if let Err(err) = ndi_config::write_effective(&settings.discovery) {
+        // NDI reads its configuration once, when the first session loads it.
+        if let Err(err) = ndi_config::apply(&settings.discovery) {
             warn!("failed to apply the discovery setting: {err:#}");
         }
         // One capture of the window at a time: the session replaces the preview.
@@ -388,7 +420,11 @@ impl Controller {
                         true,
                     );
                 }
+                let in_use = ndi_config::in_use();
+                info!(discovery = ?in_use, "NDI discovery in use");
+                let discovery = ndi_config::connections(in_use.as_deref().unwrap_or_default());
                 let mut state = self.state();
+                state.network.in_use = in_use;
                 state.sending = Some(Sending {
                     source_name: session.source_name().to_owned(),
                     audio_mode: session.audio_mode(),
@@ -398,6 +434,8 @@ impl Controller {
                     status: SessionStatus::default(),
                     minimized: false,
                     frames_missing: false,
+                    started: Instant::now(),
+                    discovery,
                 });
                 state.notice = None;
                 drop(state);
@@ -487,11 +525,19 @@ impl Controller {
             self.last_status = Instant::now();
             let status = session.status();
             let (minimized, frames_missing) = (session.is_minimized(), session.frames_missing());
-            if let Some(sending) = self.state().sending.as_mut() {
+            let mut state = self.state();
+            let servers = state.network.in_use.clone().unwrap_or_default();
+            if let Some(sending) = state.sending.as_mut() {
                 sending.status = status;
                 sending.minimized = minimized;
                 sending.frames_missing = frames_missing;
+                let discovery = ndi_config::connections(&servers);
+                if discovery != sending.discovery {
+                    info!(?discovery, "NDI discovery server connections");
+                    sending.discovery = discovery;
+                }
             }
+            drop(state);
             self.publish_tray();
             changed = true;
         }
@@ -626,6 +672,24 @@ impl Controller {
 
     fn state(&self) -> std::sync::MutexGuard<'_, AppState> {
         lock(&self.state)
+    }
+}
+
+/// Starts a new LANcast that waits for this one to exit (single instance).
+fn spawn_successor() {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            warn!("cannot restart: {err}");
+            return;
+        }
+    };
+    let result = std::process::Command::new(exe)
+        .env(super::RESTART_ENV, std::process::id().to_string())
+        .spawn();
+    match result {
+        Ok(_) => info!("restarting LANcast"),
+        Err(err) => warn!("cannot restart: {err}"),
     }
 }
 

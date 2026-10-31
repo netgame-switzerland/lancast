@@ -21,9 +21,17 @@ use crate::{
 };
 use controller::{AppState, AudioCheck, Command, Controller, NetworkStatus, Wake};
 
+/// Set for a restarted LANcast: the process id of the one it replaces.
+pub const RESTART_ENV: &str = "LANCAST_RESTART_AFTER";
+
 /// Runs the GUI until the user quits. Exits the process. `link` is an event
-/// link from the command line (`lancast://…`, D27).
-pub fn run(link: Option<String>) -> Result<()> {
+/// link from the command line (`lancast://…`, D27). `restart_after` is the
+/// process id of a LANcast that restarts itself (D41).
+pub fn run(link: Option<String>, restart_after: Option<u32>) -> Result<()> {
+    if let Some(pid) = restart_after {
+        info!(pid, "restarted; waiting for the previous LANcast to exit");
+        crate::process_info::wait_for_exit(pid, 10_000);
+    }
     // One LANcast window per user: a second start shows the first one and
     // hands over the event link.
     if !tray::claim_single_instance(link.as_deref()) {
@@ -39,7 +47,10 @@ pub fn run(link: Option<String>) -> Result<()> {
     info!(path = %store.path().display(), "settings file");
 
     let state = Arc::new(Mutex::new(AppState {
-        network: NetworkStatus::default(),
+        network: NetworkStatus {
+            wanted: crate::ndi_config::resolve(&crate::ndi_config::Discovery::System),
+            ..NetworkStatus::default()
+        },
         pending_link: None,
         caps,
         selected: None,

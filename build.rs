@@ -22,6 +22,13 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-env-changed=NDI_SDK_DIR");
+    // The NDI runtime reads NDI_CONFIG_DIR once, when its DLL loads. Loaded
+    // at startup it would run before `main` sets the variable; delay-loaded
+    // it loads at the first send (D41).
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bin=LANcast=/DELAYLOAD:{NDI_DLL}");
+        println!("cargo:rustc-link-arg-bin=LANcast=delayimp.lib");
+    }
 
     let sdk_dir = env::var_os("NDI_SDK_DIR")
         .map(PathBuf::from)

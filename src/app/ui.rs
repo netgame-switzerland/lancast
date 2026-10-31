@@ -19,7 +19,8 @@ use eframe::egui::{
 use super::{
     carousel::Carousel,
     controller::{
-        AppState, AudioCheck, AudioChoice, Command, NoticeLevel, PendingLink, Settings, SharedState,
+        AppState, AudioCheck, AudioChoice, Command, NoticeLevel, PendingLink, Sending, Settings,
+        SharedState,
     },
     meter::Meter,
     updater::{UpdateStatus, Updater},
@@ -55,6 +56,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(700);
 /// An event edition re-checks the validity dates this often.
 const EVENT_RECHECK: Duration = Duration::from_secs(60);
 const BLUE: Color32 = Color32::from_rgb(90, 170, 255);
+const GREEN: Color32 = Color32::from_rgb(60, 190, 80);
+/// A discovery server connection shows as missing only after this.
+const DISCOVERY_SETTLE: Duration = Duration::from_secs(5);
 
 /// The event in force (D27, D28).
 #[derive(Debug, Clone)]
@@ -786,6 +790,7 @@ impl eframe::App for LancastApp {
             ui.add_space(6.0);
             self.update_banner(ui, &state);
             self.discovery_warning(ui, &state);
+            self.discovery_restart(ui, &state);
             self.source_name(ui, &state);
             ui.add_space(4.0);
             self.audio_and_status(ui, &state);
@@ -994,6 +999,7 @@ impl LancastApp {
                     ));
                 }
                 ui.label(line);
+                discovery_status(ui, sending);
             }
             None => match (&state.selected, &state.audio_check) {
                 (Some(_), AudioCheck::GameAudio) => {
@@ -1583,11 +1589,16 @@ impl LancastApp {
                 {
                     reachability(ui, network.own_reachable);
                 }
-                ui.label(RichText::new("Optional. Applies at the next Send.").small().weak())
-                    .on_hover_text(
-                        "Leave empty for automatic discovery (mDNS), which works when all PCs \
-                         share one network.\nWith a discovery server, receivers must use the same server.",
-                    );
+                let applies = if state.network.in_use.is_some() {
+                    "Optional. Applies after a restart of LANcast."
+                } else {
+                    "Optional. Applies at the next Send."
+                };
+                ui.label(RichText::new(applies).small().weak()).on_hover_text(
+                    "Leave empty for automatic discovery (mDNS), which works when all PCs \
+                     share one network.\nWith a discovery server, receivers must use the same server.\n\
+                     NDI reads this setting once, at the first Send after LANcast starts.",
+                );
             });
             if let Some(system) = &state.network.system_servers {
                 ui.horizontal(|ui| {
@@ -1611,6 +1622,39 @@ impl LancastApp {
                 });
             }
         });
+    }
+
+    /// Offers a restart when the discovery setting differs from what NDI
+    /// uses: NDI reads it only once per process (D41).
+    fn discovery_restart(&mut self, ui: &mut egui::Ui, state: &AppState) {
+        let network = &state.network;
+        if !network.restart_needed() {
+            return;
+        }
+        let (Some(used), wanted) = (&network.in_use, &network.wanted) else {
+            return;
+        };
+        banner(
+            ui,
+            AMBER,
+            &format!(
+                "The discovery setting changed: NDI still uses {}, the setting is now {}. \
+                 NDI reads it only once – restart LANcast to apply it.",
+                discovery_text(used),
+                discovery_text(wanted),
+            ),
+        );
+        let label = if state.sending.is_some() {
+            "Restart LANcast (stops sending)"
+        } else {
+            "Restart LANcast"
+        };
+        if ui.button(label).clicked() {
+            self.store.save(&self.config);
+            self.changed_at = None;
+            self.send(Command::Restart);
+        }
+        ui.add_space(4.0);
     }
 
     /// Warns when the discovery server from NDI Access Manager is in use but
@@ -1681,9 +1725,45 @@ fn groups_text(groups: &str) -> String {
     }
 }
 
+/// Discovery servers for display; `""` = mDNS.
+fn discovery_text(servers: &str) -> String {
+    if servers.is_empty() {
+        "automatic discovery (mDNS)".to_owned()
+    } else {
+        format!("the server {servers}")
+    }
+}
+
+/// How receivers find the stream while sending: mDNS, or the discovery
+/// server(s) with this process's connection to each (D41).
+fn discovery_status(ui: &mut egui::Ui, sending: &Sending) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Discovery:");
+        if sending.discovery.is_empty() {
+            ui.label("automatic (mDNS)");
+            return;
+        }
+        // NDI connects within a moment of the start.
+        let settling = sending.started.elapsed() < DISCOVERY_SETTLE;
+        for (i, (server, connected)) in sending.discovery.iter().enumerate() {
+            if i > 0 {
+                ui.label("·");
+            }
+            ui.label(format!("server {server}"));
+            match (connected, settling) {
+                (true, _) => ui.colored_label(GREEN, "connected"),
+                (false, true) => ui.weak("connecting…"),
+                (false, false) => ui
+                    .colored_label(RED, "NOT connected")
+                    .on_hover_text("Receivers using this server will not find your stream."),
+            };
+        }
+    });
+}
+
 fn reachability(ui: &mut egui::Ui, reachable: Option<bool>) {
     match reachable {
-        Some(true) => ui.colored_label(Color32::from_rgb(60, 190, 80), "reachable"),
+        Some(true) => ui.colored_label(GREEN, "reachable"),
         Some(false) => ui.colored_label(RED, "NOT reachable"),
         None => ui.weak("checking…"),
     };

@@ -85,6 +85,7 @@ Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.p
 - Open: because `grafton-ndi` links the import library, Windows searches for the DLL only in the exe
   folder and on `PATH`. A fallback to `NDI_RUNTIME_DIR_V6` would need delay-loading or
   `SetDllDirectory` before the first NDI call. Not needed while we ship the DLL ourselves.
+  (Since D41 the DLL is delay-loaded, so `SetDllDirectory` before the first send would now work.)
 
 ### D6. NDI|HX and bandwidth (SPEC §9)
 - **HX sending is not possible with the standard SDK.** "For HX codecs (H.264 and H.265), the SDK provides
@@ -211,6 +212,7 @@ https://docs.ndi.video/tools/tools-for-windows/studio-monitor, DistroAV `src/ndi
   settings are per instance"). The standard way is `ndi-config.v1.json`:
   - in `C:\ProgramData\NDI\` (system-wide, written by Access Manager), or
   - in the folder named by env `NDI_CONFIG_DIR`, read when `NDIlib_initialize` runs.
+    **Corrected by D41:** read once per process, when the DLL loads.
 
   Schema: `{"ndi":{"networks":{"discovery":"192.168.1.10"}}}`. "Senders however will avoid using mDNS
   when a discovery server is configured."
@@ -615,6 +617,8 @@ Versions checked with `cargo info` on 2026-10-17.
   - Before each session, a copy of `C:\ProgramData\NDI\ndi-config.v1.json` with an adjusted
     `ndi.networks.discovery` is written: own server, `""` for "Ignore it for LANcast", or unchanged.
     grafton-ndi destroys the runtime when the last handle drops, so each session re-reads the file.
+    **Wrong, see D41:** NDI read the file neither from `main` (the DLL loaded before it) nor again
+    after `NDIlib_destroy`.
   - **Verified end to end:** with `discovery_server = "10.255.255.1"` (unreachable) an mDNS receiver
     (`ndi_probe`) does **not** find the source; with an empty value it does. So the SDK honours
     LANcast's file, and a configured server disables mDNS announcing (as documented, D10).
@@ -1307,6 +1311,41 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   *Settings → Links → Use this copy* still overrides.
 - **Verified:** the script compiles (ISCC 6.7.3, organizer edition). Install test pending (needs
   UAC).
+
+### D41. NDI reads its configuration once, when the DLL loads (2026-10-31)
+- **Observed:** with `discovery_server = "127.0.0.1"` and a local `NDI Discovery Service.exe`
+  listening on TCP 5959, LANcast wrote the right `ndi-config.v1.json`, but the process had only mDNS
+  sockets (UDP 5353) and no connection to 5959.
+- **Findings** (probe sending with grafton-ndi 2.0.0 / NDI 6 runtime, checking its own sockets with
+  `netstat -ano`):
+  - `NDI_CONFIG_DIR` set inside `main`: the file was ignored entirely (`machinename` from it not
+    applied, no connection to the server). Set in the environment before the process starts: the
+    file was used (`PROBEHOST (…)`, connection to 127.0.0.1:5959 established). grafton-ndi links
+    the import library, so the DLL loads before `main` and reads the variable then.
+  - Read only once per process: after `NDIlib_destroy` and a new `NDIlib_initialize` with a
+    rewritten file (discovery `""`), the sender connected to 5959 again.
+  - So D23's end-to-end check cannot have tested LANcast's file. Event-enforced discovery servers
+    and "Ignore it for LANcast" had no effect; NDI always used the system file.
+- **Decision:**
+  - `build.rs` links `LANcast.exe` with `/DELAYLOAD:Processing.NDI.Lib.x64.dll` and `delayimp.lib`
+    (MSVC). The DLL loads at the first NDI call, `NDI::new()` at the first send, after `main` has
+    set `NDI_CONFIG_DIR` and the file is written. Verified with `llvm-readobj --coff-imports`
+    (DelayImport entry) and end to end: `LANcast.exe <hwnd> --discovery 127.0.0.1` connects to the
+    server, `--discovery ""` does not, `--discovery 127.0.0.1:5999` (nothing listening) reports
+    "not connected". Nothing in the capture path calls NDI (`VideoFrame` is plain Rust), so the
+    preview does not load the DLL.
+  - `ndi_config::apply` writes the file only while the DLL is not loaded (`GetModuleHandleW`). After
+    that, the setting in use is frozen. If the setting differs, the UI shows a banner with
+    "Restart LANcast" (stops sending). The restarted process gets the old process id in
+    `LANCAST_RESTART_AFTER` and waits up to 10 s for it to exit before the single-instance check.
+    A helper process per session would avoid restarts but means passing frames between processes.
+  - While sending, the UI shows "Discovery: automatic (mDNS)" or each server with "connected" /
+    "connecting…" (first 5 s) / "NOT connected". The SDK has no sender API for this, so LANcast
+    checks its own established TCP connections (`GetExtendedTcpTable`,
+    `TCP_TABLE_OWNER_PID_CONNECTIONS`, IPv4; learn.microsoft.com, iphlpapi, Windows Vista+). An IP
+    is matched by address and port, a host name by port only (no DNS lookup).
+  - The CLI takes `--discovery SERVERS` (`""` = mDNS) and logs the connection state with the
+    status.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

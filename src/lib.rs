@@ -18,6 +18,8 @@ pub mod logging;
 pub mod ndi_config;
 pub mod ndi_out;
 pub mod os_caps;
+#[cfg_attr(not(windows), path = "unsupported/process_info.rs")]
+pub mod process_info;
 pub mod session;
 pub mod tray;
 #[cfg_attr(not(windows), path = "unsupported/tray_visibility.rs")]

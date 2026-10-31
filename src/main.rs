@@ -24,6 +24,12 @@ fn main() {
     let log_path = logging::init();
     // SAFETY: still single-threaded here; no thread has been spawned yet.
     unsafe { ndi_config::init_before_threads() };
+    // A restart (D41) passes the old process id; not inherited further.
+    let restart_after = std::env::var(app::RESTART_ENV)
+        .ok()
+        .and_then(|pid| pid.parse().ok());
+    // SAFETY: still single-threaded, as above.
+    unsafe { std::env::remove_var(app::RESTART_ENV) };
     info!(version = lancast::VERSION, log = ?log_path, gui, "LANcast starting");
     if link.is_some() && args.len() > 1 {
         warn!(
@@ -32,7 +38,11 @@ fn main() {
         );
     }
 
-    let result = if gui { app::run(link) } else { cli::run(args) };
+    let result = if gui {
+        app::run(link, restart_after)
+    } else {
+        cli::run(args)
+    };
     if let Err(err) = result {
         error!("{err:#}");
         std::process::exit(1);
