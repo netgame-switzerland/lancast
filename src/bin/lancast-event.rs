@@ -47,6 +47,9 @@ struct EventSpec {
     /// Where event editions load the current configuration from (D44).
     #[serde(default)]
     source: Option<String>,
+    /// Minutes between loads of `source` while LANcast runs (D45).
+    #[serde(default)]
+    refresh_minutes: Option<u32>,
     #[serde(default)]
     enforced: BTreeMap<String, toml::Value>,
     #[serde(default)]
@@ -144,6 +147,17 @@ fn sign(spec_path: &Path, secret: &Path, out: &Path) -> Result<()> {
     if let Some(source) = &source {
         distro::check_source(source)?;
     }
+    if let Some(minutes) = spec.refresh_minutes {
+        if source.is_none() {
+            bail!("refresh_minutes needs a source");
+        }
+        if minutes > distro::MAX_REFRESH_MINUTES {
+            bail!(
+                "refresh_minutes must be 0 (only at startup) to {}",
+                distro::MAX_REFRESH_MINUTES
+            );
+        }
+    }
     // Every signature gets a later time, so editions take a newly signed
     // configuration from the source and never an older one (D44).
     let issued = std::time::SystemTime::now()
@@ -160,6 +174,7 @@ fn sign(spec_path: &Path, secret: &Path, out: &Path) -> Result<()> {
         enforced,
         source,
         issued: Some(issued),
+        refresh_minutes: spec.refresh_minutes,
     };
     let file = EventFile {
         signed: distro::sign(&payload, &secret)?,
@@ -197,6 +212,9 @@ fn verify(path: &Path, public_key: &str) -> Result<()> {
     println!("defaults: {:?}", file.defaults);
     if let Some(source) = &payload.source {
         println!("source: {source}");
+    }
+    if let Some(minutes) = payload.refresh_minutes {
+        println!("refresh_minutes: {minutes}");
     }
     if let Some(issued) = payload.issued {
         println!("issued: {issued} (Unix time)");

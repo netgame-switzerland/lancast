@@ -64,22 +64,53 @@ pub struct EventPayload {
     /// file cannot bring back looser settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issued: Option<u64>,
+    /// How often an edition loads `source` again while it runs, in minutes
+    /// (D45); `0` = only at startup and when a link is clicked. Default
+    /// [`DEFAULT_REFRESH_MINUTES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_minutes: Option<u32>,
 }
+
+/// Minutes between loads of `source` unless the configuration sets
+/// `refresh_minutes` (D44, D45).
+pub const DEFAULT_REFRESH_MINUTES: u32 = 5;
+/// Largest `refresh_minutes`: once a day.
+pub const MAX_REFRESH_MINUTES: u32 = 24 * 60;
 
 impl EventPayload {
     pub fn enforced_values(&self) -> Result<EventValues> {
         EventValues::from_pairs(self.enforced.iter().map(|(k, v)| (k.as_str(), v.as_str())))
     }
 
-    /// Checks the validity window against `today` (`YYYY-MM-DD`).
+    /// Checks the validity window against `today` (`YYYY-MM-DD`). The
+    /// messages show the dates in the user's format (D45).
     pub fn check_dates(&self, today: &str) -> Result<()> {
         if today < self.valid_from.as_str() {
-            bail!("the event configuration is valid from {}", self.valid_from);
+            bail!(
+                "the event configuration is valid from {}",
+                crate::locale::short_date(&self.valid_from)
+            );
         }
+        self.check_not_expired(today)
+    }
+
+    /// Checks only the end of the validity window.
+    pub fn check_not_expired(&self, today: &str) -> Result<()> {
         if today > self.valid_until.as_str() {
-            bail!("the event configuration expired on {}", self.valid_until);
+            bail!(
+                "the event configuration expired on {}",
+                crate::locale::short_date(&self.valid_until)
+            );
         }
         Ok(())
+    }
+
+    /// How often `source` is loaded again; `None` = never while running.
+    pub fn refresh(&self) -> Option<std::time::Duration> {
+        match self.refresh_minutes.unwrap_or(DEFAULT_REFRESH_MINUTES) {
+            0 => None,
+            minutes => Some(std::time::Duration::from_secs(u64::from(minutes) * 60)),
+        }
     }
 }
 
@@ -95,6 +126,12 @@ pub fn decode_payload(signed: &SignedEvent) -> Result<EventPayload> {
     payload.enforced_values()?; // reject invalid values early
     if let Some(source) = &payload.source {
         check_source(source)?;
+    }
+    if payload
+        .refresh_minutes
+        .is_some_and(|m| m > MAX_REFRESH_MINUTES)
+    {
+        bail!("refresh_minutes must be 0 to {MAX_REFRESH_MINUTES}");
     }
     Ok(payload)
 }
@@ -429,6 +466,7 @@ mod tests {
             .collect(),
             source: None,
             issued: None,
+            refresh_minutes: None,
         }
     }
 
@@ -473,6 +511,19 @@ mod tests {
 
         with.source = Some("file:///C:/evil.event".into());
         assert!(decode_payload(&sign(&with, &secret).unwrap()).is_err());
+    }
+
+    #[test]
+    fn refresh_interval() {
+        let mut p = payload();
+        assert_eq!(p.refresh(), Some(std::time::Duration::from_secs(300)));
+        p.refresh_minutes = Some(0);
+        assert_eq!(p.refresh(), None);
+        p.refresh_minutes = Some(60);
+        assert_eq!(p.refresh(), Some(std::time::Duration::from_secs(3600)));
+        let secret = generate_secret().unwrap();
+        p.refresh_minutes = Some(MAX_REFRESH_MINUTES + 1);
+        assert!(decode_payload(&sign(&p, &secret).unwrap()).is_err());
     }
 
     #[test]

@@ -32,7 +32,7 @@ Publish a new link; participants click it and confirm again. The new link replac
 | Signed `lancast://event?p=…&s=…` | Accepted, but the signature is **not checked** (no key); the dialog says "only an event edition checks the signature" | Accepted only if signed with the event's key; outside its dates Send stays disabled |
 | To change enforced settings | New `config` link | Edit `event.toml`, [sign again](#building-an-event-edition), publish the new signed link (no rebuild while the key stays the same) |
 
-In an organizer or event edition with a [configuration address](#configuration-address-source), participants don't need a new link at all: upload the newly signed `LANcast.event` there, and LANcast picks it up within five minutes or at its next start.
+In an organizer or event edition with a [configuration address](#configuration-address-source), participants don't need a new link at all: upload the newly signed `LANcast.event` there, and LANcast picks it up within `refresh_minutes` (default 5) or at its next start.
 
 So in a normal LANcast the only safeguard is the confirmation dialog; a signature counts only in an event edition. A website or [landing page](LANDING_PAGE.md) can keep its URL and just swap the link.
 
@@ -146,14 +146,15 @@ target\release\lancast-event verify $dir\LANcast.event <public key>   # check a 
 Participants get the new configuration from the new link, or from a new download (a changed `LANcast.event` is picked up at the next start).
 
 ### Configuration address (`source`)
-An organizer or event edition can keep its configuration up to date from a URL (D44). Put `source` into `event.toml`:
+An organizer or event edition can keep its configuration up to date from a URL (D44). Put `source` into `event.toml`, optionally with how often it is loaded:
 ```toml
 source = "https://example.org/lancast/LANcast.event"
+refresh_minutes = 5    # default 5; 0 = only at startup and on a link click; at most 1440 (once a day)
 ```
 and upload the `LANcast.event` that `lancast-event sign` writes to exactly that URL. `source` is part of the signed payload, so only the organizer can set or change it.
 
 - **First click:** the participant clicks the signed link as before. LANcast loads the configuration from `source` first and shows *that* in the confirmation dialog, noting "Loaded from example.org". It wins over the link's own settings. If the address can't be reached, the dialog shows the link's own settings and says so.
-- **Every start and every 5 minutes:** LANcast loads the configuration again and applies it **without asking**: it is signed with the same key as the one in force. A notice in the status line says when something changed. While a cast runs, the new settings apply at the next Send.
+- **Every start and every `refresh_minutes`:** LANcast loads the configuration again and applies it **without asking**: it is signed with the same key as the one in force. A notice in the status line says when something changed. While a cast runs, the new settings apply at the next Send.
 - **Sending waits for the first load** after the start, at most about 5 seconds. Offline (e.g. at home before the event), the saved configuration stays in force, and the status line says so.
 - **What LANcast accepts from the address:** a signature valid for the edition's key, not expired (one valid only later is fine), and **signed later** than the configuration in force (the signed `issued` time, set by `lancast-event sign`). Anything else is rejected with a notice, and the saved configuration stays. So someone on the network can't serve an older file with looser limits, and plain `http://` is fine, e.g. on a server on the event LAN.
 - **Another event:** the address may serve the next event's configuration (another `event_id`). An organizer edition then moves to the next event by itself; personal names (D38) belong to their event and are dropped.
@@ -226,6 +227,7 @@ A website signs the id itself, once per participant and event ([below](#personal
 | `valid_from`, `valid_until` | string | Local dates `YYYY-MM-DD`, inclusive; `valid_from` ≤ `valid_until`. |
 | `enforced` | object | Settings from the [key table](#keys), **all values as strings** (`"fps": "60"`, `"border": "1"`). |
 | `source` | string, optional | [Configuration address](#configuration-address-source): `http://` or `https://` URL with a host, at most 1024 characters, no spaces. |
+| `refresh_minutes` | number, optional | How often LANcast loads `source` again while it runs, 0–1440; default 5, `0` = only at startup and on a link click. |
 | `issued` | number, optional | When it was signed, Unix seconds. A configuration loaded from `source` must have a larger `issued` than the one in force. Always set it when you sign. |
 
 **Link:** `lancast://event?p=<payload>&s=<signature>[&<defaults>][&id=<user id>]`
@@ -275,6 +277,7 @@ export interface EventPayload {
   enforced: Record<string, string>;
   source?: string; // configuration address (D44)
   issued?: number; // Unix seconds; set it on every signature
+  refresh_minutes?: number; // 0-1440, default 5 (D45)
 }
 
 export interface VerifiedLink {
@@ -359,6 +362,9 @@ function checkPayload(p: EventPayload): void {
     }
   }
   if (p.issued !== undefined && (!Number.isSafeInteger(p.issued) || p.issued < 0)) throw new Error("issued must be Unix seconds");
+  if (p.refresh_minutes !== undefined && (!Number.isInteger(p.refresh_minutes) || p.refresh_minutes < 0 || p.refresh_minutes > 1440)) {
+    throw new Error("refresh_minutes must be 0 to 1440");
+  }
 }
 
 /** Signs `payload` and returns the complete link, with `defaults` appended unsigned. */

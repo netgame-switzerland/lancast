@@ -32,6 +32,16 @@ pub struct EventState {
     pub error: Option<String>,
     /// Event edition: the verified user name of a personal link (D38).
     pub user: Option<String>,
+    /// Event edition: where and how often the configuration is loaded (D44).
+    pub source: Option<EventSource>,
+}
+
+/// The configuration address of the configuration in force (D44, D45).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventSource {
+    pub url: String,
+    /// How often it is loaded again while LANcast runs; `None` = never.
+    pub refresh: Option<Duration>,
 }
 
 impl EventState {
@@ -67,8 +77,16 @@ impl EventState {
         };
         // The personal name shows even outside the event's dates, so a link
         // clicked before the event visibly took effect (D38).
+        let signed_payload = distro::verify_signature_for_this_build(signed).ok();
+        // Even an expired configuration names the place of the next one.
+        let source = signed_payload.as_ref().and_then(|payload| {
+            Some(EventSource {
+                url: payload.source.clone()?,
+                refresh: payload.refresh(),
+            })
+        });
         let user = config.event_user.as_ref().and_then(|user| {
-            let event = distro::verify_signature_for_this_build(signed).ok()?;
+            let event = signed_payload.as_ref()?;
             distro::verify_user_for_this_build(user, &event.event_id)
                 .inspect_err(|err| warn!("ignoring the stored user id: {err:#}"))
                 .ok()
@@ -86,11 +104,13 @@ impl EventState {
                 event: Some(event),
                 error: None,
                 user,
+                source,
             },
             Err(err) => Self {
                 event: None,
                 error: Some(format!("{err:#}.")),
                 user,
+                source,
             },
         }
     }
@@ -136,14 +156,9 @@ pub fn bundled_link(config: &Config) -> Option<EventLink> {
 }
 
 /// Event edition: the `source` URL of the stored configuration (D44), where
-/// the current configuration is loaded from. Only the signature is checked:
-/// an expired configuration still names the place of the next one.
+/// the current configuration is loaded from.
 pub fn source_url(config: &Config) -> Option<String> {
-    if !distro::is_distro() {
-        return None;
-    }
-    let signed = config.event_signed.as_ref()?;
-    distro::verify_signature_for_this_build(signed).ok()?.source
+    EventState::from_config(config).source.map(|s| s.url)
 }
 
 /// Longest configuration file accepted from a `source`.
@@ -174,9 +189,7 @@ pub fn fetched_link(
     today: &str,
 ) -> Result<Option<EventLink>> {
     let payload = distro::verify(&file.signed, public_key)?;
-    if today > payload.valid_until.as_str() {
-        bail!("the event configuration expired on {}", payload.valid_until);
-    }
+    payload.check_not_expired(today)?;
     let defaults = file.defaults()?;
     if let Some(stored) = stored {
         if *stored == file.signed {
@@ -289,6 +302,7 @@ mod tests {
             enforced: [("fps".to_owned(), "60".to_owned())].into_iter().collect(),
             source: Some("http://10.0.0.5/LANcast.event".into()),
             issued,
+            refresh_minutes: None,
         };
         EventFile {
             signed: distro::sign(&payload, secret).unwrap(),

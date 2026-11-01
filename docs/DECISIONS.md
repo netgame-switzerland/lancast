@@ -1464,6 +1464,33 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   - Unit tests: optional fields (old payloads still parse and verify), URL rules, accept/reject
     rules (same, newer, older, without `issued`, expired, other key, not valid yet).
 
+### D45. Dates in the user's format; configurable refresh interval (2026-11-01)
+- **Dates (user):** the link dialog showed "valid 2026-11-01 to 2026-11-05", the settings panel
+  "(valid until 2026-11-05)", and the banners "valid from …" / "expired on …", all in the stored
+  ISO form. Everything shown now uses the user's short date format (`src/locale.rs`):
+  `GetDateFormatEx` with `LOCALE_NAME_USER_DEFAULT` (a null locale name) and `DATE_SHORTDATE`,
+  no explicit format, so it follows *Region → Short date* in the Windows settings. Available
+  since Vista; the return value counts the terminating NUL, and 0 means failure
+  (https://learn.microsoft.com/windows/win32/api/datetimeapi/nf-datetimeapi-getdateformatex).
+  Needs the windows-rs feature `Win32_Globalization`. On the dev machine (de-CH, `dd.MM.yyyy`)
+  the dialog showed "valid 01.11.2026 to 05.11.2026". Stored and signed dates stay `YYYY-MM-DD`,
+  the logs too, and so does the organizer tool, whose input format is ISO. LANcast shows no other
+  dates or times. Other platforms keep ISO (D32).
+- **Refresh interval (user: make it configurable):** set by the **organizer**, signed with the
+  configuration: `refresh_minutes` in `event.toml` and the payload, 0–1440, default 5, `0` = only at
+  startup and when a link is clicked. Not a participant setting: the organizer knows the server and
+  how often the configuration changes, and participants have no reason to poll more or less often.
+  `lancast-event sign` refuses it without a `source` or above 1440.
+- **Scheduling** (`app/event_source.rs`): `EventState` now carries the source and interval of the
+  configuration in force (signature checked, even if expired). When either changes, e.g. after a
+  link is applied or a loaded configuration sets another interval, the next load counts from that
+  moment. The first load after the start is unchanged. The UI asks for a repaint at the next load,
+  so it doesn't depend on the 60 s date re-check. The dialog names the interval: "LANcast loads it
+  from there at every start and every minute".
+- **Verified** (test edition, `refresh_minutes = 1`): link clicked → dialog with Swiss dates and
+  "every minute"; Apply; a configuration signed afterwards was loaded one minute later, and the
+  settings panel showed "(valid until 05.11.2026)" and the new limit.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

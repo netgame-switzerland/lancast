@@ -8,9 +8,10 @@ event_id = "netgame-2026"         # letters, digits, - and _; names the download
 valid_from = "2026-11-01"         # local dates (the event's time zone), inclusive
 valid_until = "2026-11-05"
 # Configuration address (D44): organizer and event editions load the current
-# configuration from here at every start and every 5 minutes. Upload the
-# signed LANcast.event to this URL; plain http on the event LAN is fine.
+# configuration from here at every start and every refresh_minutes. Upload
+# the signed LANcast.event to this URL; plain http on the event LAN is fine.
 # source = "https://example.org/lancast/LANcast.event"
+# refresh_minutes = 5             # default 5; 0 = only at startup and on a link click; max. 1440
 
 # Signed: participants cannot change these while the event is active.
 [enforced]

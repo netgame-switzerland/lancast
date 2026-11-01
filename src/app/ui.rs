@@ -35,7 +35,7 @@ use crate::{
     dialog::{Dialog, Icon},
     distro::{self, EventFile, SignedEvent},
     event_link::{self, EventLink, EventValues},
-    event_state::{self, ActiveEvent, EventState},
+    event_state::{self, ActiveEvent, EventSource, EventState},
     ndi_config::Discovery,
     ndi_out::{AUDIO_GAIN_STUDIO_MONITOR_DB, DEFAULT_GROUPS},
     tray::{self, TrayHandle},
@@ -118,6 +118,9 @@ pub struct LancastApp {
     event_user: Option<String>,
     /// Event edition: loads the configuration from its `source` (D44).
     event_source: SourceLoader,
+    /// The `source` of the configuration in force and how often it is
+    /// loaded (D45).
+    source_config: Option<EventSource>,
     /// The last problem with the `source` that was shown, so a refresh
     /// that fails the same way does not show it again.
     source_problem: Option<String>,
@@ -193,6 +196,7 @@ impl LancastApp {
             event_checked: Instant::now(),
             event_user: None,
             event_source,
+            source_config: None,
             source_problem: None,
             tray_placement: IconPlacement::Shown,
             tray_checked: None,
@@ -231,7 +235,7 @@ impl LancastApp {
     }
 
     /// Event edition: loads the configuration from the `source` of the one
-    /// in force when due (D44): at startup, then every few minutes. Applies
+    /// in force when due (D44): at startup, then at its interval (D45). Applies
     /// what arrived. While a cast runs, it applies at the next Send, like
     /// every settings change.
     fn poll_event_source(&mut self, sending: bool) {
@@ -241,10 +245,10 @@ impl LancastApp {
         if !self.event_source.due() {
             return;
         }
-        match event_state::source_url(&self.config) {
-            Some(url) => {
-                tracing::info!(%url, "loading the event configuration");
-                self.event_source.start(url);
+        match self.source_config.clone() {
+            Some(source) => {
+                tracing::info!(url = %source.url, refresh = ?source.refresh, "loading the event configuration");
+                self.event_source.start(source.url, source.refresh);
             }
             None => self.event_source.none(),
         }
@@ -331,6 +335,12 @@ impl LancastApp {
         self.event = state.event;
         self.event_error = state.error;
         self.event_user = state.user;
+        // A new source or interval counts from now (D45).
+        if state.source != self.source_config {
+            self.event_source
+                .schedule(state.source.as_ref().and_then(|s| s.refresh));
+            self.source_config = state.source;
+        }
     }
 
     /// The enforced values of the event in force (empty without an event).
@@ -430,7 +440,13 @@ impl LancastApp {
         let mut parts = Vec::new();
         if let Some(signed) = &link.signed {
             let window = distro::decode_payload(signed)
-                .map(|p| format!(", valid {} to {}", p.valid_from, p.valid_until))
+                .map(|p| {
+                    format!(
+                        ", valid {} to {}",
+                        crate::locale::short_date(&p.valid_from),
+                        crate::locale::short_date(&p.valid_until)
+                    )
+                })
                 .unwrap_or_default();
             if pending.verified {
                 icon = Icon::Shield;
@@ -456,10 +472,21 @@ impl LancastApp {
             parts.push(lines.join("\n"));
         }
         match &pending.source {
-            Some(LinkSource::Loaded(host)) => parts.push(format!(
-                "Loaded from {host}, the event's configuration address. LANcast loads it from \
-                 there at every start and every few minutes."
-            )),
+            Some(LinkSource::Loaded(host)) => {
+                let when = link
+                    .signed
+                    .as_ref()
+                    .and_then(|signed| distro::decode_payload(signed).ok())
+                    .and_then(|payload| payload.refresh())
+                    .map_or_else(
+                        || "at every start".to_owned(),
+                        |refresh| format!("at every start and every {}", minutes(refresh)),
+                    );
+                parts.push(format!(
+                    "Loaded from {host}, the event's configuration address. LANcast loads it \
+                     from there {when}."
+                ));
+            }
             Some(LinkSource::Failed(host, err)) => parts.push(format!(
                 "These are the link's own settings: the current ones could not be loaded from \
                  {host} ({err}). LANcast tries again later."
@@ -812,6 +839,10 @@ impl eframe::App for LancastApp {
         // Keep the next repaint coming for the date re-check.
         if distro::is_distro() {
             ctx.request_repaint_after(EVENT_RECHECK);
+            // And for the next load from the source (D45).
+            if let Some(next) = self.event_source.next() {
+                ctx.request_repaint_after(next.saturating_duration_since(Instant::now()));
+            }
         }
 
         match preview_slot(&state) {
@@ -1208,9 +1239,12 @@ impl LancastApp {
                         ui.label(RichText::new(format!("–  Event: {name}")).color(BLUE));
                         if let Some((_, until)) = &event.valid {
                             ui.label(
-                                RichText::new(format!("(valid until {until})"))
-                                    .small()
-                                    .weak(),
+                                RichText::new(format!(
+                                    "(valid until {})",
+                                    crate::locale::short_date(until)
+                                ))
+                                .small()
+                                .weak(),
                             );
                         }
                         if !event.enforced.is_empty() {
@@ -1973,6 +2007,18 @@ fn repeats_event(config: &Config, link: &EventLink, distro: bool) -> bool {
         && stored.is_ok_and(|s| s == link.enforced)
 }
 
+/// "5 minutes", "minute", "2 hours" for an interval of whole minutes, as in
+/// "every …".
+fn minutes(interval: Duration) -> String {
+    let minutes = interval.as_secs() / 60;
+    match minutes {
+        1 => "minute".to_owned(),
+        60 => "hour".to_owned(),
+        m if m % 60 == 0 => format!("{} hours", m / 60),
+        m => format!("{m} minutes"),
+    }
+}
+
 /// Whether two signed event configurations are for the same `event_id`.
 fn same_event_id(a: Option<&SignedEvent>, b: Option<&SignedEvent>) -> bool {
     let id = |s: Option<&SignedEvent>| {
@@ -2112,6 +2158,7 @@ mod tests {
                 .collect::<BTreeMap<_, _>>(),
             source: None,
             issued: None,
+            refresh_minutes: None,
         };
         distro::sign(&payload, secret).unwrap()
     }
