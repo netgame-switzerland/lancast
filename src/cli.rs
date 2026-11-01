@@ -139,6 +139,37 @@ pub fn run(args: Vec<String>) -> Result<()> {
 /// overrule the options, with a warning for each, and an event edition
 /// refuses to send without a valid event. Returns the personal user name
 /// for the stream name (D38).
+/// Event edition: loads the current configuration from the `source` of the
+/// one in force (D44), as the GUI does at startup, but without saving it.
+/// Problems keep the configuration in force.
+fn load_from_source(config: &mut crate::config::Config) {
+    let Some(url) = event_state::source_url(config) else {
+        return;
+    };
+    info!(%url, "loading the event configuration");
+    let loaded = event_state::fetch_event_file(&url).and_then(|file| {
+        event_state::fetched_link_for_this_build(&file, config.event_signed.as_ref())
+    });
+    match loaded {
+        Ok(Some(link)) => {
+            info!(event = ?link.event, "event configuration loaded");
+            let event_id = |signed: Option<&crate::distro::SignedEvent>| {
+                signed
+                    .and_then(|s| crate::distro::decode_payload(s).ok())
+                    .map(|p| p.event_id)
+            };
+            // The personal name belongs to its event (D38).
+            if event_id(config.event_signed.as_ref()) != event_id(link.signed.as_ref()) {
+                config.event_user = None;
+            }
+            config.event_name = link.event.clone().unwrap_or_default();
+            config.event_signed = link.signed;
+        }
+        Ok(None) => info!("the event configuration is unchanged"),
+        Err(err) => warn!("event configuration not loaded, the saved one stays in force: {err:#}"),
+    }
+}
+
 fn obey_event(args: &mut Args) -> Result<Option<String>> {
     let (_store, mut config) = ConfigStore::load();
     // The GUI applies a new bundled event file at its next start.
@@ -147,6 +178,7 @@ fn obey_event(args: &mut Args) -> Result<Option<String>> {
         config.event_signed = link.signed.clone();
         config.event_enforced.clear();
     }
+    load_from_source(&mut config);
     let state = EventState::from_config(&config);
     if let Some(reason) = &state.error {
         bail!("sending is disabled: {reason}");

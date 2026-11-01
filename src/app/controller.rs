@@ -17,6 +17,7 @@ use crate::{
     },
     distro,
     event_link::{self, EventLink},
+    event_state,
     ndi_config::{self, Discovery},
     os_caps::OsCaps,
     session::{POLL_INTERVAL, Preview, Session, SessionConfig, SessionEvent, SessionStatus},
@@ -64,6 +65,18 @@ pub struct PendingLink {
     pub link: EventLink,
     /// The signature was checked against this event edition's key.
     pub verified: bool,
+    /// The link names a `source` (D44): what loading from there gave.
+    pub source: Option<LinkSource>,
+}
+
+/// The configuration of a link's `source` (D44), by the source's host.
+#[derive(Debug, Clone)]
+pub enum LinkSource {
+    /// `link` is the configuration loaded from there; it wins over the
+    /// link's own.
+    Loaded(String),
+    /// Loading failed (the reason): `link` is the link's own configuration.
+    Failed(String, String),
 }
 
 /// Reachability of NDI discovery servers (SPEC §5.4, D14).
@@ -163,6 +176,8 @@ pub enum Command {
     OpenLink(String),
     /// The pending event link was applied or declined.
     DismissLink,
+    /// A message from the UI for the status line.
+    Notice(NoticeLevel, String),
     /// Stop, then start LANcast anew (applies the discovery setting, D41).
     Restart,
     Quit,
@@ -264,7 +279,7 @@ impl Controller {
             Command::OpenLink(url) => match self.check_link(&url) {
                 Ok(pending) => {
                     info!(link = ?pending.link, verified = pending.verified, "event link received");
-                    self.state().pending_link = Some(pending);
+                    self.offer_link(pending);
                 }
                 Err(err) => {
                     warn!("event link rejected: {err:#}");
@@ -275,6 +290,7 @@ impl Controller {
                 }
             },
             Command::DismissLink => self.state().pending_link = None,
+            Command::Notice(level, text) => self.set_notice(level, &text),
             Command::Restart | Command::Quit => {}
         }
         (self.wake)();
@@ -576,6 +592,7 @@ impl Controller {
             return Ok(PendingLink {
                 link,
                 verified: false,
+                source: None,
             });
         }
         let Some(signed) = &link.signed else {
@@ -588,7 +605,37 @@ impl Controller {
         Ok(PendingLink {
             link,
             verified: true,
+            source: None,
         })
+    }
+
+    /// Hands a link to the UI for confirmation. A verified link with a
+    /// `source` (D44) is first replaced by the configuration loaded from
+    /// there, in the background, so the dialog shows what will be in force.
+    fn offer_link(&self, pending: PendingLink) {
+        let source = pending
+            .link
+            .signed
+            .as_ref()
+            .filter(|_| pending.verified)
+            .and_then(|signed| distro::decode_payload(signed).ok())
+            .and_then(|payload| payload.source);
+        let Some(url) = source else {
+            self.state().pending_link = Some(pending);
+            return;
+        };
+        info!(%url, "event link names a source; loading the configuration from there");
+        let (state, wake) = (self.state.clone(), self.wake.clone());
+        let spawned = std::thread::Builder::new()
+            .name("event-link-source".into())
+            .spawn(move || {
+                let pending = with_source(pending, &url);
+                lock(&state).pending_link = Some(pending);
+                wake();
+            });
+        if let Err(err) = spawned {
+            warn!("cannot start the event source thread: {err}");
+        }
     }
 
     /// Checks the discovery server from NDI Access Manager in the background.
@@ -705,4 +752,39 @@ fn spawn_successor() {
 
 fn lock(state: &SharedState) -> std::sync::MutexGuard<'_, AppState> {
     state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Loads the configuration of the link's `source` (D44) and puts it in
+/// place of the link's own; the user confirms it in the dialog, so it need
+/// not be newer than the link. The personal id stays if it belongs to the
+/// loaded event (D38). If loading fails, the link stays as it is.
+fn with_source(mut pending: PendingLink, url: &str) -> PendingLink {
+    let host = distro::source_host(url).to_owned();
+    let loaded = event_state::fetch_event_file(url)
+        .and_then(|file| event_state::fetched_link_for_this_build(&file, None))
+        .and_then(|link| link.ok_or_else(|| anyhow::anyhow!("no configuration")));
+    match loaded {
+        Ok(mut link) => {
+            info!(%url, event = ?link.event, "event configuration loaded for the link");
+            let event_id = link
+                .signed
+                .as_ref()
+                .and_then(|signed| distro::decode_payload(signed).ok())
+                .map(|payload| payload.event_id)
+                .unwrap_or_default();
+            if let Some(user) = pending.link.user.take() {
+                match distro::verify_user_for_this_build(&user, &event_id) {
+                    Ok(_) => link.user = Some(user),
+                    Err(err) => warn!("dropping the link's personal id: {err:#}"),
+                }
+            }
+            pending.link = link;
+            pending.source = Some(LinkSource::Loaded(host));
+        }
+        Err(err) => {
+            warn!(%url, "cannot load the event configuration for the link: {err:#}");
+            pending.source = Some(LinkSource::Failed(host, format!("{err:#}")));
+        }
+    }
+    pending
 }

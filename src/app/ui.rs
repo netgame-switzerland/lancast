@@ -19,9 +19,10 @@ use eframe::egui::{
 use super::{
     carousel::Carousel,
     controller::{
-        AppState, AudioCheck, AudioChoice, Command, NoticeLevel, PendingLink, Sending, Settings,
-        SharedState,
+        AppState, AudioCheck, AudioChoice, Command, LinkSource, NoticeLevel, PendingLink, Sending,
+        Settings, SharedState,
     },
+    event_source::SourceLoader,
     meter::Meter,
     updater::{UpdateStatus, Updater},
 };
@@ -32,7 +33,7 @@ use crate::{
     },
     config::{Config, ConfigStore},
     dialog::{Dialog, Icon},
-    distro::{self, SignedEvent},
+    distro::{self, EventFile, SignedEvent},
     event_link::{self, EventLink, EventValues},
     event_state::{self, ActiveEvent, EventState},
     ndi_config::Discovery,
@@ -115,6 +116,11 @@ pub struct LancastApp {
     event_checked: Instant,
     /// Event edition: the verified user name of a personal link (D38).
     event_user: Option<String>,
+    /// Event edition: loads the configuration from its `source` (D44).
+    event_source: SourceLoader,
+    /// The last problem with the `source` that was shown, so a refresh
+    /// that fails the same way does not show it again.
+    source_problem: Option<String>,
     /// Where Windows shows the tray icon (D29), and when last checked.
     tray_placement: IconPlacement,
     tray_checked: Option<Instant>,
@@ -141,8 +147,10 @@ impl LancastApp {
         hwnd: Option<isize>,
         store: ConfigStore,
         config: Config,
-        updater: Updater,
+        ctx: egui::Context,
     ) -> Self {
+        let updater = Updater::new(ctx.clone());
+        let event_source = SourceLoader::new(ctx);
         let mut app = Self {
             state,
             commands,
@@ -184,6 +192,8 @@ impl LancastApp {
             event_error: None,
             event_checked: Instant::now(),
             event_user: None,
+            event_source,
+            source_problem: None,
             tray_placement: IconPlacement::Shown,
             tray_checked: None,
             confirm_quit: false,
@@ -195,6 +205,7 @@ impl LancastApp {
         };
         app.load_bundled_event();
         app.refresh_event();
+        app.poll_event_source(false);
         let servers = app.effective_servers();
         if !servers.is_empty() {
             app.send(Command::CheckDiscovery(servers));
@@ -217,6 +228,99 @@ impl LancastApp {
                 self.config.event_bundled = signed.signature.clone();
             }
         }
+    }
+
+    /// Event edition: loads the configuration from the `source` of the one
+    /// in force when due (D44): at startup, then every few minutes. Applies
+    /// what arrived. While a cast runs, it applies at the next Send, like
+    /// every settings change.
+    fn poll_event_source(&mut self, sending: bool) {
+        if let Some((url, loaded)) = self.event_source.take() {
+            self.take_loaded(&url, loaded, sending);
+        }
+        if !self.event_source.due() {
+            return;
+        }
+        match event_state::source_url(&self.config) {
+            Some(url) => {
+                tracing::info!(%url, "loading the event configuration");
+                self.event_source.start(url);
+            }
+            None => self.event_source.none(),
+        }
+    }
+
+    /// Applies a configuration loaded from the `source` (D44) without
+    /// asking: it is signed by the organizers like the one in force, and
+    /// newer. Problems keep the configuration in force.
+    fn take_loaded(&mut self, url: &str, loaded: anyhow::Result<EventFile>, sending: bool) {
+        let host = distro::source_host(url).to_owned();
+        let file = match loaded {
+            Ok(file) => file,
+            Err(err) => {
+                // Offline (e.g. at home before the event) is normal.
+                tracing::info!(%url, "cannot load the event configuration: {err:#}");
+                self.source_problem(
+                    NoticeLevel::Info,
+                    format!(
+                        "Could not load the event configuration from {host}; the saved one stays in force."
+                    ),
+                );
+                return;
+            }
+        };
+        let stored = self.config.event_signed.clone();
+        match event_state::fetched_link_for_this_build(&file, stored.as_ref()) {
+            Ok(None) => {
+                tracing::info!(%url, "the event configuration is unchanged");
+                self.source_problem = None;
+            }
+            Ok(Some(link)) => {
+                self.source_problem = None;
+                tracing::info!(%url, event = ?link.event, "event configuration loaded");
+                if self.repeats_current_event(&link) {
+                    // Only the dates or the source changed (D36).
+                    self.take_repeated_link(&link);
+                    return;
+                }
+                self.apply_link(&link);
+                let event = link.event.as_deref().unwrap_or("the event");
+                let mut text = format!("Event configuration for {event} updated from {host}.");
+                if sending {
+                    text.push_str(" It applies at the next Send.");
+                }
+                self.send(Command::Notice(NoticeLevel::Info, text));
+            }
+            Err(err) => {
+                tracing::warn!(%url, "event configuration rejected: {err:#}");
+                self.source_problem(
+                    NoticeLevel::Warning,
+                    format!(
+                        "Event configuration from {host} rejected: {err:#}. The saved one stays in force."
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Shows a problem with the `source`, unless it was the last one shown.
+    fn source_problem(&mut self, level: NoticeLevel, text: String) {
+        if self.source_problem.as_ref() != Some(&text) {
+            self.source_problem = Some(text.clone());
+            self.send(Command::Notice(level, text));
+        }
+    }
+
+    /// Why sending is not possible right now: no valid event (event
+    /// edition, D28), or the first load from the `source` is still running
+    /// (D44), so no cast starts with settings about to be replaced.
+    fn send_block(&self) -> Option<String> {
+        if let Some(error) = &self.event_error {
+            return Some(error.clone());
+        }
+        self.event_source
+            .loading_first()
+            .map(|host| format!("loading the event configuration from {host}…"))
     }
 
     /// Recomputes the event in force from the saved settings. An event
@@ -252,7 +356,7 @@ impl LancastApp {
         event_state::enforce(&enforced, &mut settings.video, &mut settings.audio_gain_db);
         settings.discovery = self.discovery();
         settings.groups = self.groups();
-        settings.send_blocked = self.event_error.clone();
+        settings.send_blocked = self.send_block();
         settings
     }
 
@@ -351,6 +455,17 @@ impl LancastApp {
             lines.extend(value_lines(&link.defaults));
             parts.push(lines.join("\n"));
         }
+        match &pending.source {
+            Some(LinkSource::Loaded(host)) => parts.push(format!(
+                "Loaded from {host}, the event's configuration address. LANcast loads it from \
+                 there at every start and every few minutes."
+            )),
+            Some(LinkSource::Failed(host, err)) => parts.push(format!(
+                "These are the link's own settings: the current ones could not be loaded from \
+                 {host} ({err}). LANcast tries again later."
+            )),
+            None => {}
+        }
         if self.event.is_some() {
             parts.push("This replaces the current event's settings.".to_owned());
         }
@@ -442,7 +557,16 @@ impl LancastApp {
         if !distro::is_distro() {
             return;
         }
-        let new_signed = link.signed.is_some() && link.signed != self.config.event_signed;
+        // Never an older configuration than the one in force, e.g. a link
+        // without `source` after one loaded from there (D44).
+        let not_older = |signed: &SignedEvent| {
+            self.config
+                .event_signed
+                .as_ref()
+                .is_none_or(|stored| distro::issued(signed) >= distro::issued(stored))
+        };
+        let new_signed =
+            link.signed.as_ref().is_some_and(not_older) && link.signed != self.config.event_signed;
         // The same name, signed again: keep the newer id.
         let new_user = link.user.is_some() && link.user != self.config.event_user;
         if new_signed {
@@ -665,6 +789,9 @@ impl eframe::App for LancastApp {
         }
         if distro::is_distro() && self.event_checked.elapsed() >= EVENT_RECHECK {
             self.refresh_event();
+        }
+        if distro::is_distro() {
+            self.poll_event_source(state.sending.is_some());
         }
         // Event limits (D27, D28) cap what the user chose.
         let enforced = self.enforced();
@@ -1017,7 +1144,7 @@ impl LancastApp {
             egui::Button::new(RichText::new(text).size(16.0)).min_size(vec2(160.0, 34.0))
         };
         if state.sending.is_none()
-            && let Some(reason) = &self.event_error
+            && let Some(reason) = &self.send_block()
         {
             banner(ui, AMBER, &format!("Sending is disabled: {reason}"));
             ui.add_space(4.0);
@@ -1032,7 +1159,7 @@ impl LancastApp {
             let ready = state.selected.is_some()
                 && !self.game_name.trim().is_empty()
                 && state.caps.wgc
-                && self.event_error.is_none();
+                && self.send_block().is_none();
             match &state.audio_check {
                 AudioCheck::Unavailable(_) if state.selected.is_some() => {
                     // No plain "Send" that silently uses system audio (SPEC §3.1).
@@ -1983,6 +2110,8 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect::<BTreeMap<_, _>>(),
+            source: None,
+            issued: None,
         };
         distro::sign(&payload, secret).unwrap()
     }

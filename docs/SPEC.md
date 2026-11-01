@@ -276,6 +276,7 @@ An organizer can build a LANcast package with its public key compiled in. It sen
 - **Event edition (D28):** named after one event, with its signed `LANcast.event` in the download (`-EventConfig event.toml -SigningKey secret.key`, or the *Event package* workflow).
 - **Enforced** section: signed, with a validity window (local dates), fixed while the event is active.
 - **Defaults** section: unsigned starting values the user may change.
+- **Configuration address (D44):** a signed configuration may name a `source` URL serving the current signed `LANcast.event`. The edition loads it when the link is clicked (the dialog shows that configuration, which wins over the link's), at every start (Send waits up to about 5 s) and every 5 minutes, and applies it without asking if it is validly signed, not expired and signed later (`issued`) than the one in force. During a cast it applies at the next Send. Offline, the saved configuration stays. The normal edition ignores `source`.
 - Configurations are signed with the `lancast-event` tool or by the event website. The private key never goes into a build or the repository; an organizer keeps it in a password manager.
 
 ### 5.5 Performance roadmap (GPU)

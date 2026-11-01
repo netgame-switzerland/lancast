@@ -1394,6 +1394,76 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   border and discovery were overruled with warnings, and the enforced server was connected. The
   event-edition path (signature, send block) is the GUI's code, but not run through the CLI yet.
 
+### D44. Configuration address: the event configuration from a URL (2026-11-01)
+- **Requirement (user):** in organizer and event editions, the signed link can name a URL. LANcast
+  loads the event configuration from there when the link is clicked, and from then on at every
+  start, before anything else. The configuration from the URL wins over the link's.
+- **Decisions (with the user):** the URL may serve another event (an organizer edition moves to the
+  next event by itself); reject expired configurations and replays of older ones; no HTTPS
+  requirement; also refresh every 5 minutes, and a cast in progress keeps its settings until the
+  next Send.
+- **Format:** two optional fields in the signed payload (`distro::EventPayload`), so payloads from
+  before stay valid and older LANcast versions ignore them (serde ignores unknown fields):
+  - `source`: the URL, `http://` or `https://` with a host, at most 1024 characters, no spaces
+    (`distro::check_source`). In the payload rather than in `enforced`: it is not a setting, and
+    being signed means only the organizer can set or change it, so a forged link can't point an
+    edition at another server.
+  - `issued`: Unix seconds, set by `lancast-event sign` on every signature.
+  - The URL serves a normal signed `LANcast.event` (TOML), exactly what `lancast-event sign`
+    writes. Nothing new on the website; the organizer uploads a file.
+- **Trust:** the file at the URL is verified like a link: the signature for the compiled-in key,
+  not expired (a configuration valid only later is accepted, as links are, D28), and **signed
+  later** (`issued` larger) than the one in force (`event_state::fetched_link`). So plain HTTP on
+  an event LAN is fine (as for the update mirror, D37): someone on the network can neither forge a
+  configuration nor replay an older one with looser limits. The same file again counts as
+  unchanged. A configuration without `issued` counts as 0.
+- **Stored state:** none new. The URL is read from the stored signed configuration
+  (`event_signed`), checking only its signature, so an expired configuration still names the place
+  of the next one. A loaded configuration replaces `event_signed`; its own `source` moves the
+  address, and without one LANcast stops loading.
+- **When:**
+  - *Link clicked:* the controller loads the URL on a thread before handing the link to the UI. The
+    dialog shows the loaded configuration with "Loaded from <host>, the event's configuration
+    address". It need not be newer than the link, since the user confirms it. The link's personal
+    id (D38) stays if it belongs to the loaded event. If loading fails, the dialog shows the link's
+    own settings and says so.
+  - *Startup and every 5 minutes* (`app/event_source.rs`): loaded on a thread, checked and applied
+    in the UI thread **without asking**, since it is signed by the same organizer as the
+    configuration in force. Asking each time would only teach people to click Apply. A change that
+    only repeats the event (same enforced values, D36) is taken silently; otherwise
+    `apply_link` (defaults once, personal id dropped on another `event_id`) plus a notice "Event
+    configuration for … updated from <host>", with "It applies at the next Send" during a cast.
+    The controller hands settings to a session only when it starts, so a running cast is not
+    changed.
+  - *Send waits for the first load after the start* (`send_block`: "loading the event
+    configuration from <host>…"), at most `SOURCE_TIMEOUT` (5 s), so no cast starts with
+    settings about to be replaced. Later refreshes don't block.
+  - *Problems:* offline shows an info notice once ("the saved one stays in force"); a rejected
+    file shows a warning. The same problem is not shown again at every refresh.
+  - *CLI* (D43): loads once at the start, applies in memory without saving (like the bundled
+    file), and warns on problems.
+- **Silent repeats never go back:** `take_repeated_link` replaces the stored configuration only with
+  one signed at the same time or later. Otherwise a landing-page link signed before `source` was
+  added would silently drop the address again. Such a link with different enforced values still
+  asks, and applying it is the user's choice.
+- **Normal edition:** ignores `source` (it can't verify the file, so anyone could change its
+  settings through it).
+- **HTTP:** `update::fetch_text` (ureq with SChannel, redirects followed), shared with the update
+  check. Bodies above 64 KB are rejected.
+- **Verified** (event edition built with a test key, portable copy in `target\agent-source`, a
+  local `python -m http.server`):
+  - Stored v1 (30 fps) with `source`, server serving v2 (60 fps, signed later): at the start,
+    loaded and applied without a dialog, saved, the `border` default applied once, notice shown.
+  - Restart: "unchanged". Server replaying v1: "rejected: … not newer than the one in force", v2
+    kept. Server stopped: info notice "Could not load … the saved one stays in force", and Send
+    not blocked after the failed attempt.
+  - Fresh copy, v1 link clicked: the dialog showed v2's 60 fps with "Loaded from
+    127.0.0.1:8765"; Apply saved v2; the next start found it unchanged.
+  - Refresh: v3 (45 fps) signed and served after the start was loaded and saved at the
+    5-minute check.
+  - Unit tests: optional fields (old payloads still parse and verify), URL rules, accept/reject
+    rules (same, newer, older, without `issued`, expired, other key, not valid yet).
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

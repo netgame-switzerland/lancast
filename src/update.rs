@@ -246,13 +246,24 @@ fn newer(manifest: Manifest, current: &str, edition: &str, url: &str) -> Result<
 /// Fetches and verifies the manifest at `url`; `Ok(None)` = up to date.
 pub fn check(url: &str) -> Result<Option<Update>> {
     let edition = edition().ok_or_else(|| anyhow!("this edition is not updated online"))?;
-    let mut text = String::new();
-    backend::open(url, CHECK_TIMEOUT)?
-        .take(MAX_MANIFEST_BYTES)
-        .read_to_string(&mut text)
-        .with_context(|| format!("cannot read {url}"))?;
+    let text = fetch_text(url, CHECK_TIMEOUT, MAX_MANIFEST_BYTES)?;
     let manifest = verify_manifest(&text, UPDATE_KEY)?;
     newer(manifest, crate::VERSION, edition, url)
+}
+
+/// GETs `url` (HTTP or HTTPS, redirects followed) as text of at most
+/// `max_bytes`; a longer body is an error. `timeout` covers the whole
+/// request. Also used for the event configuration's `source` (D44).
+pub fn fetch_text(url: &str, timeout: Duration, max_bytes: u64) -> Result<String> {
+    let mut text = String::new();
+    backend::open(url, timeout)?
+        .take(max_bytes + 1)
+        .read_to_string(&mut text)
+        .with_context(|| format!("cannot read {url}"))?;
+    if text.len() as u64 > max_bytes {
+        bail!("{url} is larger than {max_bytes} bytes");
+    }
+    Ok(text)
 }
 
 /// Folder for downloaded setups (in the data folder, per user).

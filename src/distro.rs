@@ -54,6 +54,16 @@ pub struct EventPayload {
     pub valid_from: String,
     pub valid_until: String,
     pub enforced: BTreeMap<String, String>,
+    /// Where an event edition loads the current configuration from, at
+    /// every start and every few minutes (D44): a URL serving a signed
+    /// `LANcast.event`. That configuration replaces this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// When it was signed (Unix seconds, D44). A configuration loaded from
+    /// `source` must be newer than the one in force, so a replayed older
+    /// file cannot bring back looser settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issued: Option<u64>,
 }
 
 impl EventPayload {
@@ -83,7 +93,46 @@ pub fn decode_payload(signed: &SignedEvent) -> Result<EventPayload> {
         bail!("unsupported event configuration version {}", payload.v);
     }
     payload.enforced_values()?; // reject invalid values early
+    if let Some(source) = &payload.source {
+        check_source(source)?;
+    }
     Ok(payload)
+}
+
+/// Longest `source` URL accepted.
+const MAX_SOURCE_LEN: usize = 1024;
+
+/// A `source` URL (D44): `http://` or `https://` with a host, without
+/// spaces or control characters. Plain HTTP is allowed: the configuration
+/// it serves is signed.
+pub fn check_source(url: &str) -> Result<()> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| anyhow!("source must start with http:// or https://"))?;
+    if url.len() > MAX_SOURCE_LEN
+        || url.chars().any(|c| c.is_control() || c.is_whitespace())
+        || source_host(url).is_empty()
+        || rest.starts_with('/')
+    {
+        bail!("invalid source URL {url:?}");
+    }
+    Ok(())
+}
+
+/// The host (and port) of a `source` URL, for messages.
+pub fn source_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority.rsplit('@').next().unwrap_or_default()
+}
+
+/// When `signed` was signed (0 if unknown or without `issued`).
+pub fn issued(signed: &SignedEvent) -> u64 {
+    decode_payload(signed)
+        .ok()
+        .and_then(|p| p.issued)
+        .unwrap_or(0)
 }
 
 /// Verifies the signature with `public_key` (base64url) and decodes.
@@ -114,7 +163,7 @@ fn verify_bytes(signed: &SignedEvent, public_key: &str) -> Result<()> {
 }
 
 /// The compiled-in public key of an event edition.
-fn this_build_key() -> Result<&'static str> {
+pub fn this_build_key() -> Result<&'static str> {
     DISTRO_KEY
         .filter(|k| !k.is_empty())
         .ok_or_else(|| anyhow!("this LANcast is not an event edition"))
@@ -378,6 +427,8 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect(),
+            source: None,
+            issued: None,
         }
     }
 
@@ -402,6 +453,39 @@ mod tests {
         changed.enforced.insert("max".into(), "3840x2160".into());
         signed.payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&changed).unwrap());
         assert!(verify(&signed, &public_key(&secret)).is_err());
+    }
+
+    #[test]
+    fn source_and_issued_are_optional_and_signed() {
+        // Payloads from before D44 have neither field and stay valid.
+        let old = br#"{"v":1,"event":"X","event_id":"x","valid_from":"2026-01-01","valid_until":"2026-01-02","enforced":{}}"#;
+        let p: EventPayload = serde_json::from_slice(old).unwrap();
+        assert_eq!((p.source.as_deref(), p.issued), (None, None));
+        assert!(!serde_json::to_string(&p).unwrap().contains("source"));
+
+        let secret = generate_secret().unwrap();
+        let mut with = payload();
+        with.source = Some("http://10.0.0.5/lancast/LANcast.event".into());
+        with.issued = Some(1_790_000_000);
+        let signed = sign(&with, &secret).unwrap();
+        assert_eq!(verify(&signed, &public_key(&secret)).unwrap(), with);
+        assert_eq!(issued(&signed), 1_790_000_000);
+
+        with.source = Some("file:///C:/evil.event".into());
+        assert!(decode_payload(&sign(&with, &secret).unwrap()).is_err());
+    }
+
+    #[test]
+    fn source_urls() {
+        assert!(check_source("https://netgame.ch/lancast/current.event").is_ok());
+        assert!(check_source("http://10.0.0.5:8080/LANcast.event").is_ok());
+        assert!(check_source("ftp://x/y").is_err());
+        assert!(check_source("https://").is_err());
+        assert!(check_source("https:///path").is_err());
+        assert!(check_source("https://a b/c").is_err());
+        assert!(check_source(&format!("https://x/{}", "a".repeat(MAX_SOURCE_LEN))).is_err());
+        assert_eq!(source_host("https://netgame.ch/x?y"), "netgame.ch");
+        assert_eq!(source_host("http://u:p@10.0.0.5:8080/x"), "10.0.0.5:8080");
     }
 
     #[test]

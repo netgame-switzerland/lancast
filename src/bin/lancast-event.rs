@@ -44,6 +44,9 @@ struct EventSpec {
     event_id: String,
     valid_from: String,
     valid_until: String,
+    /// Where event editions load the current configuration from (D44).
+    #[serde(default)]
+    source: Option<String>,
     #[serde(default)]
     enforced: BTreeMap<String, toml::Value>,
     #[serde(default)]
@@ -134,6 +137,20 @@ fn sign(spec_path: &Path, secret: &Path, out: &Path) -> Result<()> {
         }
     }
 
+    let source = spec
+        .source
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    if let Some(source) = &source {
+        distro::check_source(source)?;
+    }
+    // Every signature gets a later time, so editions take a newly signed
+    // configuration from the source and never an older one (D44).
+    let issued = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("the system clock is before 1970")?
+        .as_secs();
+
     let payload = EventPayload {
         v: 1,
         event,
@@ -141,6 +158,8 @@ fn sign(spec_path: &Path, secret: &Path, out: &Path) -> Result<()> {
         valid_from: spec.valid_from,
         valid_until: spec.valid_until,
         enforced,
+        source,
+        issued: Some(issued),
     };
     let file = EventFile {
         signed: distro::sign(&payload, &secret)?,
@@ -159,6 +178,9 @@ fn sign(spec_path: &Path, secret: &Path, out: &Path) -> Result<()> {
         payload.valid_from,
         payload.valid_until
     );
+    if let Some(source) = &payload.source {
+        eprintln!("Upload it to {source}; event editions load it from there.");
+    }
     println!("{}", file.link());
     Ok(())
 }
@@ -173,6 +195,12 @@ fn verify(path: &Path, public_key: &str) -> Result<()> {
     );
     println!("enforced: {:?}", payload.enforced);
     println!("defaults: {:?}", file.defaults);
+    if let Some(source) = &payload.source {
+        println!("source: {source}");
+    }
+    if let Some(issued) = payload.issued {
+        println!("issued: {issued} (Unix time)");
+    }
     match payload.check_dates(&distro::today_local()) {
         Ok(()) => println!("valid today"),
         Err(err) => println!("not valid today: {err:#}"),

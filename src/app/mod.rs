@@ -3,6 +3,7 @@
 
 mod carousel;
 mod controller;
+mod event_source;
 mod meter;
 mod ui;
 mod updater;
@@ -162,7 +163,7 @@ pub fn run(link: Option<String>, restart_after: Option<u32>) -> Result<()> {
                 hwnd,
                 store,
                 config,
-                updater::Updater::new(cc.egui_ctx.clone()),
+                cc.egui_ctx.clone(),
             )))
         }),
     );
