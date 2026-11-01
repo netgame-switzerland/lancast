@@ -1491,6 +1491,23 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   "every minute"; Apply; a configuration signed afterwards was loaded one minute later, and the
   settings panel showed "(valid until 05.11.2026)" and the new limit.
 
+### D46. Collapsed settings; "Go live" button (2026-11-01)
+- **User:** the settings had grown overwhelming; collapse them, and make the start button centered,
+  bigger and called "Go live".
+- **Settings** (`settings_panel` in `app/ui.rs`): the framed panel uses egui's `CollapsingState`
+  with a custom header, so the event name, its validity and "Leave event" stay visible when
+  collapsed; the title is clickable too. Collapsed by default; the state is kept in `LANcast.toml`
+  (`settings_open`), since eframe runs without persistence and egui's memory is not saved.
+- **Go live:** "Send" became "Go live" (and "Go live with system audio" / "Go live without audio"
+  when game-only audio is unavailable, SPEC §3.1), 20 pt bold, at least 220×44, centered in the
+  panel; Stop uses the same button. Go live is filled green and Stop red, with white text
+  (fills darker than the status colors, for contrast); a disabled Go live stays grey, so it
+  doesn't look clickable. Texts that referred to the "Send" button were reworded.
+  "Sending …" in the status line and the tray's "Stop sending" are unchanged: they describe the
+  state, not the button.
+- **First hint:** "Select a window above to see its live preview." (empty preview area) is 20 pt
+  in the theme's strong text color (white in the dark theme) instead of small and weak.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

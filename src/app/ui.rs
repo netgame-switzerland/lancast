@@ -60,6 +60,10 @@ const SAVE_DELAY: Duration = Duration::from_millis(700);
 const EVENT_RECHECK: Duration = Duration::from_secs(60);
 const BLUE: Color32 = Color32::from_rgb(90, 170, 255);
 const GREEN: Color32 = Color32::from_rgb(60, 190, 80);
+/// Fills of the Go live and Stop buttons: darker than GREEN / RED, so
+/// white text stays readable (D46).
+const GO_LIVE_FILL: Color32 = Color32::from_rgb(30, 135, 60);
+const STOP_FILL: Color32 = Color32::from_rgb(190, 45, 40);
 /// Minimum height of the heading above the window carousel.
 const MIN_HEADER_HEIGHT: f32 = 20.0;
 /// A discovery server connection shows as missing only after this.
@@ -90,6 +94,8 @@ pub struct LancastApp {
     /// Closing (×) and minimizing hide the window to the tray (SPEC §3.2).
     to_tray: bool,
     always_on_top: bool,
+    /// The settings panel is expanded.
+    settings_open: bool,
     /// Discovery server setting as typed (checked when editing ends).
     discovery_server: String,
     ignore_system_discovery: bool,
@@ -177,6 +183,7 @@ impl LancastApp {
             sent_settings: None,
             to_tray: config.to_tray,
             always_on_top: config.always_on_top,
+            settings_open: config.settings_open,
             discovery_server: config.discovery_server.clone(),
             ignore_system_discovery: config.ignore_system_discovery,
             ndi_groups: config.ndi_groups.clone(),
@@ -291,7 +298,7 @@ impl LancastApp {
                 let event = link.event.as_deref().unwrap_or("the event");
                 let mut text = format!("Event configuration for {event} updated from {host}.");
                 if sending {
-                    text.push_str(" It applies at the next Send.");
+                    text.push_str(" It applies the next time you go live.");
                 }
                 self.send(Command::Notice(NoticeLevel::Info, text));
             }
@@ -407,6 +414,7 @@ impl LancastApp {
         }
         config.to_tray = self.to_tray;
         config.always_on_top = self.always_on_top;
+        config.settings_open = self.settings_open;
         config.fps_cap = self.settings.video.fps_cap;
         (config.max_width, config.max_height) = self.settings.video.max_size;
         config.show_border = self.settings.video.show_border;
@@ -502,7 +510,7 @@ impl LancastApp {
             instruction: format!("Apply settings for {event}?"),
             content: parts.join("\n\n"),
             footer: Some(
-                "Only settings are changed; nothing is sent until you click Send.".to_owned(),
+                "Only settings are changed; nothing is sent until you click Go live.".to_owned(),
             ),
             icon,
             buttons: vec!["Apply".to_owned(), "Cancel".to_owned()],
@@ -956,7 +964,13 @@ impl LancastApp {
         let available = ui.available_size();
         if state.selected.is_none() && state.sending.is_none() {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("Select a window above to see its live preview.").weak());
+                // Prominent: the first thing to do (white in the dark theme).
+                let color = ui.visuals().strong_text_color();
+                ui.label(
+                    RichText::new("Select a window above to see its live preview.")
+                        .size(20.0)
+                        .color(color),
+                );
             });
             return;
         }
@@ -1171,8 +1185,14 @@ impl LancastApp {
     }
 
     fn send_controls(&mut self, ui: &mut egui::Ui, state: &AppState) {
-        let big = |text: &str| {
-            egui::Button::new(RichText::new(text).size(16.0)).min_size(vec2(160.0, 34.0))
+        // Green to go live, red to stop; a disabled button stays grey.
+        let big = |text: &str, fill: Option<Color32>| {
+            let text = RichText::new(text).size(20.0).strong();
+            let button = match fill {
+                Some(fill) => egui::Button::new(text.color(Color32::WHITE)).fill(fill),
+                None => egui::Button::new(text),
+            };
+            button.min_size(vec2(220.0, 44.0))
         };
         if state.sending.is_none()
             && let Some(reason) = &self.send_block()
@@ -1180,9 +1200,19 @@ impl LancastApp {
             banner(ui, AMBER, &format!("Sending is disabled: {reason}"));
             ui.add_space(4.0);
         }
+        // Centered: one or two buttons, each at least the minimum width.
+        let buttons = match &state.audio_check {
+            AudioCheck::Unavailable(_) if state.sending.is_none() && state.selected.is_some() => {
+                2.0
+            }
+            _ => 1.0,
+        };
+        let spacing = ui.spacing().item_spacing.x;
+        let width = buttons * 220.0 + (buttons - 1.0) * spacing;
         ui.horizontal(|ui| {
+            ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
             if state.sending.is_some() {
-                if ui.add(big("Stop")).clicked() {
+                if ui.add(big("Stop", Some(STOP_FILL))).clicked() {
                     self.send(Command::Stop);
                 }
                 return;
@@ -1191,35 +1221,42 @@ impl LancastApp {
                 && !self.game_name.trim().is_empty()
                 && state.caps.wgc
                 && self.send_block().is_none();
+            let fill = ready.then_some(GO_LIVE_FILL);
             match &state.audio_check {
                 AudioCheck::Unavailable(_) if state.selected.is_some() => {
-                    // No plain "Send" that silently uses system audio (SPEC §3.1).
+                    // No plain "Go live" that silently uses system audio (SPEC §3.1).
                     if ui
-                        .add_enabled(ready, big("Send with system audio"))
+                        .add_enabled(ready, big("Go live with system audio", fill))
                         .clicked()
                     {
                         self.start(AudioChoice::System);
                     }
-                    if ui.add_enabled(ready, big("Send without audio")).clicked() {
+                    if ui
+                        .add_enabled(ready, big("Go live without audio", fill))
+                        .clicked()
+                    {
                         self.start(AudioChoice::None);
                     }
                 }
                 _ => {
-                    if ui.add_enabled(ready, big("Send")).clicked() {
+                    if ui.add_enabled(ready, big("Go live", fill)).clicked() {
                         self.start(AudioChoice::Game);
                     }
                 }
             }
-            if !state.caps.wgc {
+        });
+        if !state.caps.wgc {
+            ui.vertical_centered(|ui| {
                 ui.colored_label(
                     RED,
                     "Window capture is not supported on this Windows version.",
                 );
-            }
-        });
+            });
+        }
     }
 
-    /// The settings, grouped in a framed panel.
+    /// The settings, grouped in a framed panel that is collapsed by default;
+    /// the header (with the event) stays visible.
     fn settings_panel(&mut self, ui: &mut egui::Ui, state: &AppState) {
         let editable = state.sending.is_none();
         let caps = state.caps;
@@ -1228,8 +1265,21 @@ impl LancastApp {
             .inner_margin(10.0)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Settings").strong().size(14.0));
+                let id = ui.make_persistent_id("settings_open");
+                let mut title_clicked = false;
+                let mut header = egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(),
+                    id,
+                    self.settings_open,
+                )
+                .show_header(ui, |ui| {
+                    title_clicked = ui
+                        .add(
+                            egui::Label::new(RichText::new("Settings").strong().size(14.0))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked();
                     if let Some(event) = self.event.clone() {
                         let name = if event.name.is_empty() {
                             "unnamed"
@@ -1266,196 +1316,204 @@ impl LancastApp {
                         }
                     }
                 });
-                ui.add_space(4.0);
-                egui::Grid::new("settings")
-                    .num_columns(3)
-                    .spacing([18.0, 8.0])
-                    .show(ui, |ui| {
-                        group_label(ui, "Window");
-                        if ui
-                            .checkbox(&mut self.to_tray, "Close and minimize to tray")
-                            .on_hover_text(
-                                "× and minimize hide LANcast to the tray; sending continues.\n\
+                if title_clicked {
+                    header.toggle();
+                }
+                self.settings_open = header.is_open();
+                header.body_unindented(|ui| {
+                    ui.add_space(4.0);
+                    egui::Grid::new("settings")
+                        .num_columns(3)
+                        .spacing([18.0, 8.0])
+                        .show(ui, |ui| {
+                            group_label(ui, "Window");
+                            if ui
+                                .checkbox(&mut self.to_tray, "Close and minimize to tray")
+                                .on_hover_text(
+                                    "× and minimize hide LANcast to the tray; sending continues.\n\
                                  Quit from the tray icon's menu.\n\
                                  Needs the tray icon on the taskbar (Windows 11 hides new icons).",
-                            )
-                            .changed()
-                        {
-                            // Minimizing is detected by the tray thread
-                            // (eframe does not run the UI while minimized).
-                            self.tray.set_minimize_to_tray(self.to_tray);
-                        }
-                        if ui
-                            .checkbox(&mut self.always_on_top, "Always on top")
-                            .on_hover_text(
-                                "Keeps LANcast visible over your game to check the setup.\n\
-                                 Works with borderless windowed games, not exclusive fullscreen.",
-                            )
-                            .changed()
-                        {
-                            ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(
-                                if self.always_on_top {
-                                    WindowLevel::AlwaysOnTop
-                                } else {
-                                    WindowLevel::Normal
-                                },
-                            ));
-                        }
-                        ui.end_row();
-
-                        let placement = if self.to_tray {
-                            self.tray_placement()
-                        } else {
-                            IconPlacement::Shown
-                        };
-                        if placement == IconPlacement::Overflow {
-                            ui.label("");
-                            ui.label(RichText::new("Tray icon is under the ^ arrow").weak())
-                                .on_hover_text(
-                                    "Windows puts new tray icons into the overflow. To pin it \
-                                     to the taskbar: Settings > Personalization > Taskbar > \
-                                     Other system tray icons > LANcast.",
-                                );
-                            ui.end_row();
-                        }
-                        if placement == IconPlacement::Hidden {
-                            ui.label("");
-                            ui.label(
-                                RichText::new("Tray icon hidden by Windows: × quits").color(AMBER),
-                            )
-                            .on_hover_text(
-                                "The tray icon is in the overflow and the hidden icon menu \
-                                 (^) is turned off. Until the icon can be reached, × quits \
-                                 and minimize works normally.",
-                            );
-                            if ui
-                                .small_button("Show tray icon…")
-                                .on_hover_text(
-                                    "Opens the taskbar settings: under \
-                                     \"Other system tray icons\", turn on LANcast, \
-                                     or turn on \"Hidden icon menu\".",
                                 )
-                                .clicked()
+                                .changed()
                             {
-                                let _ = std::process::Command::new("explorer")
-                                    .arg("ms-settings:taskbar")
-                                    .spawn();
+                                // Minimizing is detected by the tray thread
+                                // (eframe does not run the UI while minimized).
+                                self.tray.set_minimize_to_tray(self.to_tray);
+                            }
+                            if ui
+                                .checkbox(&mut self.always_on_top, "Always on top")
+                                .on_hover_text(
+                                    "Keeps LANcast visible over your game to check the setup.\n\
+                                 Works with borderless windowed games, not exclusive fullscreen.",
+                                )
+                                .changed()
+                            {
+                                ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(
+                                    if self.always_on_top {
+                                        WindowLevel::AlwaysOnTop
+                                    } else {
+                                        WindowLevel::Normal
+                                    },
+                                ));
                             }
                             ui.end_row();
-                        }
 
-                        group_label(ui, "Capture");
-                        let enforced = self.enforced();
-                        enforced_checkbox(
-                            ui,
-                            editable && caps.border_control,
-                            &mut self.settings.video.show_border,
-                            enforced.show_border,
-                            "Show capture border",
-                            "Fixed while sending, or always shown on this Windows version.",
-                        );
-                        enforced_checkbox(
-                            ui,
-                            editable && caps.cursor_control,
-                            &mut self.settings.video.capture_cursor,
-                            enforced.capture_cursor,
-                            "Capture cursor",
-                            "Fixed while sending, or not supported on this Windows version.",
-                        );
-                        ui.end_row();
-
-                        group_label(ui, "Video");
-                        ui.add_enabled_ui(editable, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Max. frame rate");
-                                ui.add(
-                                    egui::DragValue::new(&mut self.settings.video.fps_cap)
-                                        .range(10..=enforced.max_fps.unwrap_or(120))
-                                        .suffix(" fps"),
+                            let placement = if self.to_tray {
+                                self.tray_placement()
+                            } else {
+                                IconPlacement::Shown
+                            };
+                            if placement == IconPlacement::Overflow {
+                                ui.label("");
+                                ui.label(RichText::new("Tray icon is under the ^ arrow").weak())
+                                    .on_hover_text(
+                                        "Windows puts new tray icons into the overflow. To pin it \
+                                     to the taskbar: Settings > Personalization > Taskbar > \
+                                     Other system tray icons > LANcast.",
+                                    );
+                                ui.end_row();
+                            }
+                            if placement == IconPlacement::Hidden {
+                                ui.label("");
+                                ui.label(
+                                    RichText::new("Tray icon hidden by Windows: × quits")
+                                        .color(AMBER),
+                                )
+                                .on_hover_text(
+                                    "The tray icon is in the overflow and the hidden icon menu \
+                                 (^) is turned off. Until the icon can be reached, × quits \
+                                 and minimize works normally.",
                                 );
-                                if let Some(fps) = enforced.max_fps {
-                                    ui.label(
-                                        RichText::new(format!("(event limit {fps})"))
-                                            .small()
-                                            .weak(),
-                                    );
+                                if ui
+                                    .small_button("Show tray icon…")
+                                    .on_hover_text(
+                                        "Opens the taskbar settings: under \
+                                     \"Other system tray icons\", turn on LANcast, \
+                                     or turn on \"Hidden icon menu\".",
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = std::process::Command::new("explorer")
+                                        .arg("ms-settings:taskbar")
+                                        .spawn();
                                 }
+                                ui.end_row();
+                            }
+
+                            group_label(ui, "Capture");
+                            let enforced = self.enforced();
+                            enforced_checkbox(
+                                ui,
+                                editable && caps.border_control,
+                                &mut self.settings.video.show_border,
+                                enforced.show_border,
+                                "Show capture border",
+                                "Fixed while sending, or always shown on this Windows version.",
+                            );
+                            enforced_checkbox(
+                                ui,
+                                editable && caps.cursor_control,
+                                &mut self.settings.video.capture_cursor,
+                                enforced.capture_cursor,
+                                "Capture cursor",
+                                "Fixed while sending, or not supported on this Windows version.",
+                            );
+                            ui.end_row();
+
+                            group_label(ui, "Video");
+                            ui.add_enabled_ui(editable, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Max. frame rate");
+                                    ui.add(
+                                        egui::DragValue::new(&mut self.settings.video.fps_cap)
+                                            .range(10..=enforced.max_fps.unwrap_or(120))
+                                            .suffix(" fps"),
+                                    );
+                                    if let Some(fps) = enforced.max_fps {
+                                        ui.label(
+                                            RichText::new(format!("(event limit {fps})"))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    }
+                                });
                             });
-                        });
-                        ui.add_enabled_ui(editable, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Max. resolution");
-                                let (w, h) = self.settings.video.max_size;
-                                egui::ComboBox::from_id_salt("max_size")
-                                    .selected_text(format!("{w}×{h}"))
-                                    .show_ui(ui, |ui| {
-                                        for size in self.allowed_sizes() {
+                            ui.add_enabled_ui(editable, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Max. resolution");
+                                    let (w, h) = self.settings.video.max_size;
+                                    egui::ComboBox::from_id_salt("max_size")
+                                        .selected_text(format!("{w}×{h}"))
+                                        .show_ui(ui, |ui| {
+                                            for size in self.allowed_sizes() {
+                                                ui.selectable_value(
+                                                    &mut self.settings.video.max_size,
+                                                    size,
+                                                    format!("{}×{}", size.0, size.1),
+                                                );
+                                            }
+                                        });
+                                    if let Some((w, h)) = enforced.max_size {
+                                        ui.label(
+                                            RichText::new(format!("(event limit {w}×{h})"))
+                                                .small()
+                                                .weak(),
+                                        );
+                                    }
+                                });
+                            });
+                            ui.end_row();
+
+                            group_label(ui, "Audio");
+                            let forced_gain = enforced.audio_gain_db;
+                            ui.add_enabled_ui(editable && forced_gain.is_none(), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Receiver level");
+                                    let mut gain =
+                                        forced_gain.unwrap_or(self.settings.audio_gain_db);
+                                    let unity = gain == 0.0;
+                                    egui::ComboBox::from_id_salt("audio_level")
+                                        .selected_text(if unity {
+                                            "Unity (OBS / DistroAV)"
+                                        } else {
+                                            "NDI standard +20 dB (Studio Monitor)"
+                                        })
+                                        .show_ui(ui, |ui| {
                                             ui.selectable_value(
-                                                &mut self.settings.video.max_size,
-                                                size,
-                                                format!("{}×{}", size.0, size.1),
+                                                &mut gain,
+                                                0.0,
+                                                "Unity (OBS / DistroAV)",
                                             );
-                                        }
-                                    });
-                                if let Some((w, h)) = enforced.max_size {
-                                    ui.label(
-                                        RichText::new(format!("(event limit {w}×{h})"))
-                                            .small()
-                                            .weak(),
-                                    );
-                                }
-                            });
-                        });
-                        ui.end_row();
-
-                        group_label(ui, "Audio");
-                        let forced_gain = enforced.audio_gain_db;
-                        ui.add_enabled_ui(editable && forced_gain.is_none(), |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Receiver level");
-                                let mut gain = forced_gain.unwrap_or(self.settings.audio_gain_db);
-                                let unity = gain == 0.0;
-                                egui::ComboBox::from_id_salt("audio_level")
-                                    .selected_text(if unity {
-                                        "Unity (OBS / DistroAV)"
+                                            ui.selectable_value(
+                                                &mut gain,
+                                                AUDIO_GAIN_STUDIO_MONITOR_DB,
+                                                "NDI standard +20 dB (Studio Monitor)",
+                                            );
+                                        });
+                                    if forced_gain.is_some() {
+                                        ui.label(
+                                            RichText::new("(set by the event)").small().color(BLUE),
+                                        );
                                     } else {
-                                        "NDI standard +20 dB (Studio Monitor)"
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut gain,
-                                            0.0,
-                                            "Unity (OBS / DistroAV)",
-                                        );
-                                        ui.selectable_value(
-                                            &mut gain,
-                                            AUDIO_GAIN_STUDIO_MONITOR_DB,
-                                            "NDI standard +20 dB (Studio Monitor)",
-                                        );
-                                    });
-                                if forced_gain.is_some() {
-                                    ui.label(
-                                        RichText::new("(set by the event)").small().color(BLUE),
-                                    );
-                                } else {
-                                    self.settings.audio_gain_db = gain;
-                                }
+                                        self.settings.audio_gain_db = gain;
+                                    }
+                                });
                             });
+                            ui.end_row();
+
+                            group_label(ui, "Network");
+                            self.network_settings(ui, state);
+                            ui.end_row();
+
+                            group_label(ui, "Links");
+                            self.link_settings(ui);
+                            ui.end_row();
+
+                            group_label(ui, "Updates");
+                            self.update_settings(ui);
+                            ui.end_row();
                         });
-                        ui.end_row();
-
-                        group_label(ui, "Network");
-                        self.network_settings(ui, state);
-                        ui.end_row();
-
-                        group_label(ui, "Links");
-                        self.link_settings(ui);
-                        ui.end_row();
-
-                        group_label(ui, "Updates");
-                        self.update_settings(ui);
-                        ui.end_row();
-                    });
+                });
             });
     }
 
@@ -1681,12 +1739,16 @@ impl LancastApp {
             {
                 self.ndi_groups = DEFAULT_GROUPS.to_owned();
             }
-            ui.label(RichText::new("Applies at the next Send.").small().weak())
-                .on_hover_text(
-                    "Comma-separated. Receivers list the stream only if they receive in one of \
+            ui.label(
+                RichText::new("Applies the next time you go live.")
+                    .small()
+                    .weak(),
+            )
+            .on_hover_text(
+                "Comma-separated. Receivers list the stream only if they receive in one of \
                      these groups (NDI Access Manager → Receive Groups). Public is NDI's default.\n\
                      Groups only sort sources; they don't restrict who can watch or send.",
-                );
+            );
         });
     }
 
@@ -1728,7 +1790,7 @@ impl LancastApp {
                 {
                     reachability(ui, network.own_reachable);
                 }
-                ui.label(RichText::new("Optional. Applies at the next Send.").small().weak())
+                ui.label(RichText::new("Optional. Applies the next time you go live.").small().weak())
                     .on_hover_text(
                         "Leave empty for automatic discovery (mDNS), which works when all PCs \
                          share one network.\nWith a discovery server, receivers must use the same server.",
@@ -1775,8 +1837,8 @@ impl LancastApp {
                 ui,
                 AMBER,
                 &format!(
-                    "The stream uses {used}. The new setting ({wanted}) applies at the next Send: \
-                     press Stop, then Send."
+                    "The stream uses {used}. The new setting ({wanted}) applies the next time you go live: \
+                     press Stop, then Go live."
                 ),
             );
             ui.add_space(4.0);

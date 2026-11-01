@@ -12,7 +12,7 @@ At a LAN party everybody wants to show their game on the projector: a tournament
 - **System audio** leaks everybody's Discord voice chat onto the PA.
 
 LANcast is the participant's side of a simpler setup:
-1. **Start one exe, pick the game, click "Send".** No configuration needed.
+1. **Start one exe, pick the game, click "Go live".** No configuration needed.
 2. Only **that window** is captured: no desktop, no notifications.
 3. Only **that game's audio** is sent: Discord, music and system sounds stay private.
 4. The stream appears on the LAN as `PC-NAME (Player - Game)`. The central PC (OBS with the DistroAV plugin, NDI Studio Monitor, …) picks it from a list and puts it on the projector.
@@ -23,7 +23,7 @@ LANcast is the participant's side of a simpler setup:
   - locked with a "LIVE" marker while casting
 - **Live preview and audio meter** (OBS-style peak/RMS) before and while sending.
 - **Game audio only** via WASAPI process loopback.
-  - If Windows can't do that, LANcast warns *before* sending and asks: "Send with system audio" or "Send without audio".
+  - If Windows can't do that, LANcast warns *before* sending and asks: "Go live with system audio" or "Go live without audio".
 - **Tray icon** with a red REC dot while casting. Optionally, close and minimize go to the tray, as long as the icon can be reached: on the taskbar or under the **^** arrow. If Windows hides it completely, × quits and minimize stays on the taskbar.
 - **Stream name `Hostname (User - Game)`:** the user name defaults to the Windows login and is editable.
 - **Network help:**

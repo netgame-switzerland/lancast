@@ -5,7 +5,7 @@ The product and the program are called **LANcast** (`LANcast.exe`, window and tr
 Findings, sources and the reasoning behind decisions are in `docs/DECISIONS.md` (referenced as D<n>).
 
 ## 1. Goal
-A participant launches a single exe, picks their game window and clicks "Send". An NDI® source then appears on the LAN, carrying the window image and **only the game's audio** (no Discord, no system sounds). No installation, no configuration, and no OBS on the participant's machine.
+A participant launches a single exe, picks their game window and clicks "Go live". An NDI® source then appears on the LAN, carrying the window image and **only the game's audio** (no Discord, no system sounds). No installation, no configuration, and no OBS on the participant's machine.
 
 The app shows a small live preview and an audio level meter, so the participant can see that picture and sound are actually being captured. It lives in the system tray while sending.
 
@@ -37,11 +37,11 @@ Before sending (window picker):
 │ NDI® is a registered trademark of Vizrt NDI AB. ndi.video │
 └────────────────────────────────────────────────────────┘
 ```
-Below the carousel, as soon as a window is selected, the **live preview** and the L/R audio meter appear. They are centered and scale with the window. At the bottom: source name, status, Send/Stop, and the **Settings** panel (Window / Capture / Video / Audio in a framed grid).
+Below the carousel, as soon as a window is selected, the **live preview** and the L/R audio meter appear. They are centered and scale with the window. At the bottom: source name, status, the centered **Go live**/Stop button, and the **Settings** panel (Window / Capture / Video / Audio / … in a framed grid), collapsed by default; its header and the event name stay visible, and the open/closed state is remembered (D46).
 
 - **Preview before sending.** Selecting a window starts a preview capture without NDI: 20 fps, plus game audio for the meter if game-only audio is available. Video is read back only while the preview is visible, and the preview image is made straight from the readback (D21).
 - **Preview quality.** The image is produced at the size it is displayed, in physical pixels (up to 1920×1080), with area averaging, and refreshes about 20 times per second.
-- **Switching to the session.** "Send" replaces the preview capture with the session; "Stop" returns to the preview. Changing the border or cursor option restarts the preview, so the effect is visible immediately.
+- **Switching to the session.** "Go live" replaces the preview capture with the session; "Stop" returns to the preview. Changing the border or cursor option restarts the preview, so the effect is visible immediately.
 - **While sending, the carousel is locked** (requirement 2026-10-17, D22):
   - no clicking, scrolling, dragging or arrows; the arrows are shown disabled
   - the cast window is scrolled into view and marked with a red frame and a **LIVE** badge
@@ -72,7 +72,7 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
    - "Your name" defaults to the Windows login name, is editable, and is saved globally (§4.6).
    - In an organizer or event edition, a personal event link can set the name instead; it is then fixed while that event is in force (D38).
    - "Game" is proposed from the process name without `.exe` (e.g. `war3`), is editable, and is remembered per process.
-4. **Send / Stop**: "Send" starts streaming and "Stop" ends it. If the target window closes, sending stops automatically and a notice appears (also as a tray notification).
+4. **Go live / Stop**: "Go live" starts streaming and "Stop" ends it. If the target window closes, sending stops automatically and a notice appears (also as a tray notification).
 5. **Preview (miniview)**: a live preview of what is sent.
    - About 320×180, letterboxed, refreshed at 10–15 fps. It is shown only while the window is visible.
    - When no frames arrive, it says "No picture: window minimized?" or "Please use borderless windowed mode" (§5.1).
@@ -81,17 +81,17 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
    - Each bar shows the RMS level, the peak level and a peak-hold marker.
    - Next to the meter, the audio mode is shown: "Game only" (process loopback) or "System audio – includes Discord etc." (fallback, §5.2). A dot marks whether non-silent audio is arriving.
    - **System-audio warning (requirement 2026-10-17).** The fallback must be impossible to miss, and the user must see it **before** switching to the game, because nobody reads the window or the log while playing.
-     1. **Pre-flight check on selection.** As soon as the user selects a window (not only on "Send"), lancast checks whether process loopback can be activated for that PID. The check activates and initializes the client, then releases it; this takes a few milliseconds (D7, D16).
+     1. **Pre-flight check on selection.** As soon as the user selects a window (not only on "Go live"), lancast checks whether process loopback can be activated for that PID. The check activates and initializes the client, then releases it; this takes a few milliseconds (D7, D16).
      2. **If it fails, show a prominent warning banner** (amber/red, icon, above the Send button):
         > ⚠ Game-only audio is not available on this system. lancast would send **all system audio** – everyone will hear your Discord, music and notifications.
 
-        The Send button is replaced by two explicit choices: **"Send with system audio"** and **"Send without audio"**. A plain "Send" that silently uses system audio is not allowed.
+        The Go live button is replaced by two explicit choices: **"Go live with system audio"** and **"Go live without audio"**. A plain "Go live" that silently uses system audio is not allowed.
      3. **While sending with system audio:**
         - The tray icon shows a distinct warning state (amber, not the normal green).
         - The tray tooltip says "sending SYSTEM audio".
         - A Windows notification appears when sending starts: "lancast is sending ALL system audio (incl. Discord)".
         - The main-window banner stays visible.
-     4. **Mid-session fallback:** if process loopback fails after "Send" despite a passing pre-flight check, lancast does **not** silently fall back. It sends without audio, shows the banner and a notification, and offers to switch to system audio.
+     4. **Mid-session fallback:** if process loopback fails after "Go live" despite a passing pre-flight check, lancast does **not** silently fall back. It sends without audio, shows the banner and a notification, and offers to switch to system audio.
      5. The choice is not remembered across sessions; the warning appears every time.
    - The meter is only an indicator; there is no volume control in v1.
 7. **Status line**: resolution, FPS actually sent, and the number of connected receivers (`connection_count`).
@@ -236,7 +236,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - The standard SDK has no API for this.
     - At startup, before any thread exists, LANcast sets `NDI_CONFIG_DIR` to `<data folder>\ndi\`.
     - Before each send it writes `ndi-config.v1.json` there: a copy of the system file with only `ndi.networks.discovery` adjusted. Without an override, the behaviour equals the system setting.
-  - NDI reads the file only when its DLL loads. The DLL is delay-loaded at "Send" and unloaded after each send, so the value takes effect at the next "Send". If unloading fails, the UI offers "Restart LANcast" (D41).
+  - NDI reads the file only when its DLL loads. The DLL is delay-loaded at "Go live" and unloaded after each send, so the value takes effect the next time the user goes live. If unloading fails, the UI offers "Restart LANcast" (D41).
   - While sending, the UI shows the discovery method in use: "automatic (mDNS)", or each server with "connected" / "NOT connected" (LANcast's own TCP connection to it, D41).
   - Caveat shown in the UI: with a discovery server set, the sender **stops announcing via mDNS**, so receivers must use the same server.
   - The server ships with NDI Tools / the NDI SDK (`NDI Discovery Service.exe`) and runs on the central machine or any server.

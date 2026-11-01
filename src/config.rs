@@ -26,6 +26,8 @@ pub struct Config {
     /// shows the tray icon, D29).
     pub to_tray: bool,
     pub always_on_top: bool,
+    /// The settings panel is expanded (collapsed by default).
+    pub settings_open: bool,
     pub fps_cap: u32,
     pub max_width: u32,
     pub max_height: u32,
@@ -108,6 +110,7 @@ impl Default for Config {
         Self {
             to_tray: false,
             always_on_top: false,
+            settings_open: false,
             fps_cap: 60,
             max_width: 1920,
             max_height: 1080,
