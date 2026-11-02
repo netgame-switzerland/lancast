@@ -1508,6 +1508,20 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **First hint:** "Select a window above to see its live preview." (empty preview area) is 20 pt
   in the theme's strong text color (white in the dark theme) instead of small and weak.
 
+### D47. Notice when a loaded configuration drops the personal name (2026-11-02)
+- **Case:** a configuration loaded from the `source` (D44) names another `event_id`, e.g. when the
+  organizers point last year's configuration address at next year's event. As designed (D38),
+  LANcast then drops the stored personal id and sends under the participant's own name. Until now
+  the only notice was "Event configuration for … updated from <host>.", so nobody noticed the name
+  was gone (came up with netgame-site #1497).
+- **Notice** (`loaded_notice` in `app/ui.rs`): when applying the loaded configuration removed a
+  personal id, the notice adds "Your name for <event> is not set yet, so LANcast uses "<own name>".
+  Open your personal link on the event website to set it." Info level, like the update notice; the
+  reason is also logged.
+- **No format change:** clicking the personal link for the new event restores the name, since a
+  link's id is kept when it matches the loaded event (D44). Links the user confirms in the dialog
+  and the bundled configuration are unchanged.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

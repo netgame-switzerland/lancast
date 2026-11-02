@@ -294,12 +294,19 @@ impl LancastApp {
                     self.take_repeated_link(&link);
                     return;
                 }
+                let had_user = self.config.event_user.is_some();
                 self.apply_link(&link);
-                let event = link.event.as_deref().unwrap_or("the event");
-                let mut text = format!("Event configuration for {event} updated from {host}.");
-                if sending {
-                    text.push_str(" It applies the next time you go live.");
+                // Another event_id drops the personal id (D38, D47).
+                let dropped_user = had_user && self.config.event_user.is_none();
+                if dropped_user {
+                    tracing::info!(event = ?link.event, "the loaded configuration is for another event; personal name dropped");
                 }
+                let text = loaded_notice(
+                    link.event.as_deref(),
+                    &host,
+                    sending,
+                    dropped_user.then(|| self.stream_user()),
+                );
                 self.send(Command::Notice(NoticeLevel::Info, text));
             }
             Err(err) => {
@@ -2091,6 +2098,29 @@ fn same_event_id(a: Option<&SignedEvent>, b: Option<&SignedEvent>) -> bool {
     a.is_some() && a == id(b)
 }
 
+/// The notice after a configuration was loaded from the `source` (D44).
+/// `fallback_user` is set when it dropped the personal name because it is for
+/// another event (D47): the name sent instead.
+fn loaded_notice(
+    event: Option<&str>,
+    host: &str,
+    sending: bool,
+    fallback_user: Option<&str>,
+) -> String {
+    let event = event.unwrap_or("the event");
+    let mut text = format!("Event configuration for {event} updated from {host}.");
+    if sending {
+        text.push_str(" It applies the next time you go live.");
+    }
+    if let Some(user) = fallback_user {
+        text.push_str(&format!(
+            " Your name for {event} is not set yet, so LANcast uses \"{user}\". \
+             Open your personal link on the event website to set it."
+        ));
+    }
+    text
+}
+
 /// Lowercase exe name, the key for remembered source names.
 fn process_key(window: &WindowInfo) -> Option<String> {
     window.process_name.as_ref().map(|name| name.to_lowercase())
@@ -2309,5 +2339,20 @@ mod tests {
         assert!(!same_event_id(Some(&a), Some(&c)));
         assert!(!same_event_id(None, Some(&a)));
         assert!(!same_event_id(None, None));
+    }
+
+    #[test]
+    fn loaded_notice_names_a_dropped_personal_name() {
+        assert_eq!(
+            loaded_notice(Some("netgame 2027"), "example.org", false, None),
+            "Event configuration for netgame 2027 updated from example.org."
+        );
+        let text = loaded_notice(Some("netgame 2027"), "example.org", true, Some("Alice"));
+        assert!(text.starts_with(
+            "Event configuration for netgame 2027 updated from example.org. \
+             It applies the next time you go live. \
+             Your name for netgame 2027 is not set yet, so LANcast uses \"Alice\"."
+        ));
+        assert!(text.ends_with("Open your personal link on the event website to set it."));
     }
 }
