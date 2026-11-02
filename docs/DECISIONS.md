@@ -1523,8 +1523,10 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **Rules** (`event_state::switch_event_user`, shared by GUI and CLI, D43): a personal link sets the
   name and ends the previous one; the same event keeps the id; another event moves a verified id
   to the previous name, and keeps an existing previous name if there is no id (two event switches
-  without a link). "Leave event" forgets it. The name field shows it with "(not confirmed)" and a
-  "Use my own name" button, for participants without a personal link for the new event.
+  without a link). The name field shows it with "(not confirmed)" and a "Use my own name" button,
+  for participants without a personal link for the new event; that button is the only way to drop
+  it by hand, since organizer and event editions have no "Leave event" (D28). `leave_event` (normal
+  edition only) clears it with the other event fields, which never holds one.
 - **Notice** (`loaded_notice` in `app/ui.rs`): when applying a loaded configuration dropped the id,
   it adds "Your name for <event> is not confirmed yet, so LANcast uses "Alice [NetGame 2026]".
   Open your personal link on the event website to confirm it."
