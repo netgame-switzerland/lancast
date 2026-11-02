@@ -468,20 +468,27 @@ impl Controller {
                 let reachable = ndi_config::check_reachable(servers)
                     .iter()
                     .all(|(_, ok)| *ok);
-                {
+                let shown = {
                     let mut state = self.state();
-                    if state.network.own_servers == servers {
+                    let shown = state.network.own_servers == servers;
+                    if shown {
                         state.network.own_reachable = Some(reachable);
                     }
-                }
+                    shown
+                };
                 if !reachable {
                     warn!(%servers, "not going live: the event's discovery server is not reachable");
-                    self.set_notice(
-                        NoticeLevel::Error,
-                        &format!(
-                            "Not live: the event's discovery server {servers} is not reachable."
-                        ),
-                    );
+                    // Normally the "Sending is disabled" banner shows it,
+                    // and it goes away once the server is back; a notice
+                    // would stay and contradict it.
+                    if !shown {
+                        self.set_notice(
+                            NoticeLevel::Error,
+                            &format!(
+                                "Not live: the event's discovery server {servers} is not reachable."
+                            ),
+                        );
+                    }
                     return;
                 }
             }

@@ -1565,9 +1565,11 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   because the last check said reachable, and the check at Go live came too late.
 - **At Go live** (`start_checked` in `app/controller.rs`): with servers set by the event
   (`Settings::required_servers`), the controller checks them before it starts the cast (at most
-  about 1.5 s per server) and does not start if they are not reachable ("Not live: the event's
-  discovery server … is not reachable."). Meanwhile, and while NDI starts, `AppState::going_live`
-  shows a disabled "Going live…" button.
+  about 1.5 s per server) and does not start if they are not reachable. The result updates the
+  server's status, so the "Sending is disabled" banner shows it and goes away by itself once the
+  server is back; a notice would stay and contradict the green "reachable" (seen in a test, the
+  server was restarted right before "Go live"). Meanwhile, and while NDI starts,
+  `AppState::going_live` shows a disabled "Going live…" button.
 - **While casting** (`Sending::reaching_nobody`): once NDI had its 5 s to connect and none of the
   discovery servers in use is connected, the cast reaches nobody. Then:
   - a red banner above Stop: "NOT LIVE: the discovery server … is not reachable.";
