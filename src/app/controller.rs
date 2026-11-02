@@ -162,6 +162,36 @@ impl Sending {
     }
 }
 
+/// Reachability of the discovery servers as NDI's connections show it while
+/// sending: reachable when all are connected (like the check), not
+/// reachable when the cast reaches nobody; `None` otherwise (still
+/// connecting, only some connected, or mDNS).
+fn live_reachability(discovery: &[(String, bool)], reaching_nobody: bool) -> Option<bool> {
+    if !discovery.is_empty() && discovery.iter().all(|(_, ok)| *ok) {
+        Some(true)
+    } else if reaching_nobody {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether two comma-separated server lists name the same servers.
+fn same_servers(a: &str, b: &str) -> bool {
+    let list = |s: &str| {
+        let mut list: Vec<String> = s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        list.sort();
+        list
+    };
+    let a = list(a);
+    !a.is_empty() && a == list(b)
+}
+
 /// See [`Sending::reaching_nobody`].
 pub fn reaching_nobody(discovery: &[(String, bool)], settling: bool) -> Option<String> {
     let none_connected = !discovery.is_empty() && discovery.iter().all(|(_, ok)| !ok);
@@ -665,6 +695,18 @@ impl Controller {
                 }
             }
             let nobody = state.sending.as_ref().and_then(Sending::reaching_nobody);
+            // While sending, NDI's own connection is the most current
+            // reachability of the servers in use; the settings show the same
+            // as the status line instead of waiting for the next check (D49).
+            let reachable = state
+                .sending
+                .as_ref()
+                .and_then(|s| live_reachability(&s.discovery, nobody.is_some()));
+            if let Some(reachable) = reachable
+                && same_servers(&state.network.own_servers, &servers)
+            {
+                state.network.own_reachable = Some(reachable);
+            }
             drop(state);
             if nobody.is_some() != self.reaching_nobody {
                 self.reaching_nobody = nobody.is_some();
@@ -949,4 +991,25 @@ fn with_source(mut pending: PendingLink, url: &str) -> PendingLink {
         }
     }
     pending
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ndi_connections_update_the_reachability() {
+        let server = |name: &str, ok| (name.to_owned(), ok);
+        assert_eq!(live_reachability(&[server("a", true)], false), Some(true));
+        assert_eq!(live_reachability(&[server("a", false)], true), Some(false));
+        // Still connecting, only some connected, or mDNS: unchanged.
+        assert_eq!(live_reachability(&[server("a", false)], false), None);
+        let some = [server("a", true), server("b", false)];
+        assert_eq!(live_reachability(&some, false), None);
+        assert_eq!(live_reachability(&[], false), None);
+
+        assert!(same_servers("10.0.0.5, 10.0.0.6", "10.0.0.6,10.0.0.5"));
+        assert!(!same_servers("10.0.0.5", "10.0.0.6"));
+        assert!(!same_servers("", ""));
+    }
 }

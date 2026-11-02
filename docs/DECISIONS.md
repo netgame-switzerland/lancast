@@ -1581,6 +1581,11 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   This applies to any discovery server in use, also one the user set: the stream reaches nobody
   either way. The cast is not stopped: NDI reconnects when the server is back, and the badge and
   banner follow.
+- **One state while live:** the status line shows NDI's own connections (every second), the
+  settings LANcast's check (every 15 s), so after a server restart they disagreed for up to 15 s
+  ("connected" next to "NOT reachable", seen in a test). While sending, NDI's connections now also
+  set the settings' reachability of the same servers (`live_reachability`): reachable when all are
+  connected, not reachable when the cast reaches nobody, else unchanged.
 - **Not blocked:** while the first check runs ("checking…"), mDNS, a server the user typed in (they
   can change it) and the one from NDI Access Manager ("Ignore for LANcast" exists, D14): these keep
   the red label only.
