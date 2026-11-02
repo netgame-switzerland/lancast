@@ -239,6 +239,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - NDI reads the file only when its DLL loads. The DLL is delay-loaded at "Go live" and unloaded after each send, so the value takes effect the next time the user goes live. If unloading fails, the UI offers "Restart LANcast" (D41).
   - While sending, the UI shows the discovery method in use: "automatic (mDNS)", or each server with "connected" / "NOT connected" (LANcast's own TCP connection to it, D41).
   - Caveat shown in the UI: with a discovery server set, the sender **stops announcing via mDNS**, so receivers must use the same server.
+  - If the **event** sets the discovery server and it is not reachable, "Go live" is disabled with a banner until a recheck finds it reachable (D49). A server the user set, or one from NDI Access Manager, only shows "NOT reachable".
   - The server ships with NDI Tools / the NDI SDK (`NDI Discovery Service.exe`) and runs on the central machine or any server.
 - Alternative without a server, configured on the receiver: "Extra IPs" in NDI Access Manager on the central machine. Documented in the README only.
 - **Stale system discovery-server check (D14).** At startup, lancast reads the system-wide `C:\ProgramData\NDI\ndi-config.v1.json` (written by NDI Access Manager). If `ndi.networks.discovery` is set:

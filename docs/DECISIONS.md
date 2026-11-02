@@ -1547,6 +1547,22 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   doesn't flicker; only a change is logged.
 - The label stays informational: NDI connects to the discovery server itself when sending.
 
+### D49. No "Go live" while the event's discovery server is not reachable (2026-11-02)
+- **User:** with a discovery server enforced by the event and not reachable, the participant
+  should see that going live won't work. With a discovery server, NDI stops announcing via mDNS,
+  so such a stream reaches nobody, while LANcast looks like it is sending. The check is the TCP
+  connect NDI itself needs (port 5959), so "not reachable" means NDI cannot register either.
+- **Block** (`unreachable_event_server` in `app/ui.rs`): when the event's discovery servers were
+  checked and found not reachable, `send_block` gives the reason, so "Go live" is disabled with
+  "Sending is disabled: the event's discovery server … is not reachable, so nobody would see your
+  stream. LANcast checks again every 15 seconds; ask the organizers if it stays like this." It
+  goes through `Settings::send_blocked`, so the tray's start entry and the controller refuse too
+  (as for D28/D44).
+- **Unblocks by itself:** D48 checks an unreachable server again every 15 s.
+- **Not blocked:** while the first check runs ("checking…"), mDNS, a server the user typed in (they
+  can change it) and the one from NDI Access Manager ("Ignore for LANcast" exists, D14): these keep
+  the red label only. A cast already running is not stopped.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

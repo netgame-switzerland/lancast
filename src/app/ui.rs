@@ -19,8 +19,8 @@ use eframe::egui::{
 use super::{
     carousel::Carousel,
     controller::{
-        AppState, AudioCheck, AudioChoice, Command, LinkSource, NoticeLevel, PendingLink, Sending,
-        Settings, SharedState,
+        AppState, AudioCheck, AudioChoice, Command, LinkSource, NetworkStatus, NoticeLevel,
+        PendingLink, Sending, Settings, SharedState,
     },
     event_source::SourceLoader,
     meter::Meter,
@@ -120,6 +120,8 @@ pub struct LancastApp {
     event: Option<ActiveEvent>,
     event_error: Option<String>,
     event_checked: Instant,
+    /// The event's discovery server, while it was found not reachable (D49).
+    event_server_down: Option<String>,
     /// Event edition: the verified user name of a personal link (D38).
     event_user: Option<String>,
     /// Event edition: loads the configuration from its `source` (D44).
@@ -201,6 +203,7 @@ impl LancastApp {
             event: None,
             event_error: None,
             event_checked: Instant::now(),
+            event_server_down: None,
             event_user: None,
             event_source,
             source_config: None,
@@ -335,6 +338,13 @@ impl LancastApp {
     fn send_block(&self) -> Option<String> {
         if let Some(error) = &self.event_error {
             return Some(error.clone());
+        }
+        if let Some(servers) = &self.event_server_down {
+            return Some(format!(
+                "the event's discovery server {servers} is not reachable, so nobody would see \
+                 your stream. LANcast checks again every 15 seconds; ask the organizers if it \
+                 stays like this."
+            ));
         }
         self.event_source
             .loading_first()
@@ -807,6 +817,8 @@ impl eframe::App for LancastApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        self.event_server_down =
+            unreachable_event_server(self.enforced().discovery.as_deref(), &state.network);
 
         // × goes to the tray if enabled and Windows shows the tray icon
         // (minimize is handled by the tray thread); otherwise × quits, after
@@ -2126,6 +2138,16 @@ fn minutes(interval: Duration) -> String {
     }
 }
 
+/// The event's discovery servers if the last check found them not reachable
+/// (D49). Sending through them would reach nobody: with a discovery server,
+/// NDI stops announcing via mDNS. Still checking, or another setting
+/// checked: `None`.
+fn unreachable_event_server(enforced: Option<&str>, network: &NetworkStatus) -> Option<String> {
+    let servers = enforced?.trim();
+    (!servers.is_empty() && network.own_servers == servers && network.own_reachable == Some(false))
+        .then(|| servers.to_owned())
+}
+
 /// The notice after a configuration was loaded from the `source` (D44).
 /// `fallback_user` is set when it dropped the personal name because it is for
 /// another event (D47): the name sent instead.
@@ -2367,6 +2389,37 @@ mod tests {
         assert!(!event_state::same_event_id(Some(&a), Some(&c)));
         assert!(!event_state::same_event_id(None, Some(&a)));
         assert!(!event_state::same_event_id(None, None));
+    }
+
+    #[test]
+    fn only_an_unreachable_event_server_blocks() {
+        let network = |servers: &str, reachable| NetworkStatus {
+            own_servers: servers.into(),
+            own_reachable: reachable,
+            ..NetworkStatus::default()
+        };
+        let down = network("10.0.0.5", Some(false));
+        assert_eq!(
+            unreachable_event_server(Some("10.0.0.5"), &down).as_deref(),
+            Some("10.0.0.5")
+        );
+        // Not set by the event, or mDNS.
+        assert_eq!(unreachable_event_server(None, &down), None);
+        assert_eq!(unreachable_event_server(Some(""), &network("", None)), None);
+        // Reachable, still checking, or the result is for other servers.
+        let event = Some("10.0.0.5");
+        assert_eq!(
+            unreachable_event_server(event, &network("10.0.0.5", Some(true))),
+            None
+        );
+        assert_eq!(
+            unreachable_event_server(event, &network("10.0.0.5", None)),
+            None
+        );
+        assert_eq!(
+            unreachable_event_server(event, &network("10.0.0.6", Some(false))),
+            None
+        );
     }
 
     #[test]
