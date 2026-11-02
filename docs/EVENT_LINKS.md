@@ -18,7 +18,7 @@ A link never starts sending and never changes the system-wide NDI configuration 
 
 ## Two sections: enforced and defaults
 Every setting in an event configuration is in one of two sections:
-- **Enforced:** fixed while the event is active. Participants see them disabled, marked *(set by the event)*. Limits (`max`, `fps`) cap the participant's choice, marked *(event limit …)*; the other keys replace it.
+- **Enforced:** fixed while the event is active. Participants see them disabled, marked *(set by the event)*. Limits (`max`, `fps`) cap the participant's choice, marked *(event limit …)*; the other keys replace it. The participant's own choice is kept, so raising a limit later gives it back at the next Go live.
 - **Defaults:** starting values, applied once when the event is applied. Participants can change them afterwards.
 
 In a `lancast://config` link (normal edition), `discovery`, `groups`, `max` and `fps` are enforced, and `level`, `border` and `cursor` are defaults. In the [event edition](#event-edition-lan-distro) the organizer chooses for every key.

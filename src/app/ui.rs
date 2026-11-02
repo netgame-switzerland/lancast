@@ -304,6 +304,7 @@ impl LancastApp {
                     return;
                 }
                 let had_user = self.config.event_user.is_some();
+                let changes = value_changes(&self.enforced(), &link.enforced);
                 self.apply_link(&link);
                 // Another event_id drops the personal id (D38, D47).
                 let dropped_user = had_user && self.config.event_user.is_none();
@@ -313,6 +314,7 @@ impl LancastApp {
                 let text = loaded_notice(
                     link.event.as_deref(),
                     &host,
+                    &changes,
                     sending,
                     dropped_user.then(|| self.stream_user()).as_deref(),
                 );
@@ -404,8 +406,9 @@ impl LancastApp {
     }
 
     /// The settings sent to the controller: the user's choices with the
-    /// event's enforced values on top. Limits were already applied to the
-    /// user's choices; the other enforced values replace them.
+    /// event's enforced values on top. Limits cap the user's choices, the
+    /// other enforced values replace them; the choices stay as they are
+    /// (D51).
     fn effective_settings(&self) -> Settings {
         let enforced = self.enforced();
         let mut settings = self.settings.clone();
@@ -703,17 +706,18 @@ impl LancastApp {
         }
     }
 
-    /// The resolutions offered: the presets within the event limit, plus the
-    /// limit itself if it is not a preset.
-    fn allowed_sizes(&self) -> Vec<(u32, u32)> {
-        let limit = self.enforced().max_size;
-        let fits = |(w, h): (u32, u32)| limit.is_none_or(|(mw, mh)| w <= mw && h <= mh);
-        let mut sizes: Vec<(u32, u32)> = MAX_SIZES.into_iter().filter(|&s| fits(s)).collect();
-        if let Some(limit) = limit
-            && !sizes.contains(&limit)
-        {
-            sizes.push(limit);
+    /// The resolutions offered: all presets, also those above an event limit
+    /// (the user's wish, D51), plus the limit and the current choice if they
+    /// are not presets. Smallest first.
+    fn size_choices(&self) -> Vec<(u32, u32)> {
+        let mut sizes = MAX_SIZES.to_vec();
+        let extra = [self.enforced().max_size, Some(self.settings.video.max_size)];
+        for size in extra.into_iter().flatten() {
+            if !sizes.contains(&size) {
+                sizes.push(size);
+            }
         }
+        sizes.sort_by_key(|&(w, h)| (u64::from(w) * u64::from(h), w));
         sizes
     }
 
@@ -870,15 +874,9 @@ impl eframe::App for LancastApp {
         if distro::is_distro() {
             self.poll_event_source(state.sending.is_some());
         }
-        // Event limits (D27, D28) cap what the user chose.
-        let enforced = self.enforced();
-        let video = &mut self.settings.video;
-        if let Some(max) = enforced.max_fps {
-            video.fps_cap = video.fps_cap.min(max);
-        }
-        if let Some((w, h)) = enforced.max_size {
-            video.max_size = (video.max_size.0.min(w), video.max_size.1.min(h));
-        }
+        // Event limits (D27, D28) cap what the user chose only where it is
+        // used (`effective_settings`); the choice itself is kept, so a raised
+        // limit gives it back (D51).
         self.settings.source_name =
             crate::config::source_name(&self.stream_user(), &self.game_name);
         self.sync_config(&ctx);
@@ -1502,28 +1500,30 @@ impl LancastApp {
                             ui.add_enabled_ui(editable, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Max. frame rate");
+                                    // The user's choice, also above the event
+                                    // limit; the note says what is sent (D51).
                                     ui.add(
                                         egui::DragValue::new(&mut self.settings.video.fps_cap)
-                                            .range(10..=enforced.max_fps.unwrap_or(120))
+                                            .range(10..=120)
                                             .suffix(" fps"),
                                     );
                                     if let Some(fps) = enforced.max_fps {
-                                        ui.label(
-                                            RichText::new(format!("(event limit {fps})"))
-                                                .small()
-                                                .weak(),
-                                        );
+                                        let capped = self.settings.video.fps_cap > fps;
+                                        let sent = format!("{fps} fps");
+                                        limit_note(ui, &fps.to_string(), capped.then_some(&*sent));
                                     }
                                 });
                             });
                             ui.add_enabled_ui(editable, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Max. resolution");
+                                    // As for the frame rate (D51).
                                     let (w, h) = self.settings.video.max_size;
+                                    let sizes = self.size_choices();
                                     egui::ComboBox::from_id_salt("max_size")
                                         .selected_text(format!("{w}×{h}"))
                                         .show_ui(ui, |ui| {
-                                            for size in self.allowed_sizes() {
+                                            for size in sizes {
                                                 ui.selectable_value(
                                                     &mut self.settings.video.max_size,
                                                     size,
@@ -1531,11 +1531,14 @@ impl LancastApp {
                                                 );
                                             }
                                         });
-                                    if let Some((w, h)) = enforced.max_size {
-                                        ui.label(
-                                            RichText::new(format!("(event limit {w}×{h})"))
-                                                .small()
-                                                .weak(),
+                                    if let Some((lw, lh)) = enforced.max_size {
+                                        let (w, h) = self.settings.video.max_size;
+                                        let (sw, sh) = (w.min(lw), h.min(lh));
+                                        let sent = format!("{sw}×{sh}");
+                                        limit_note(
+                                            ui,
+                                            &format!("{lw}×{lh}"),
+                                            ((sw, sh) != (w, h)).then_some(&*sent),
                                         );
                                     }
                                 });
@@ -1695,22 +1698,25 @@ impl LancastApp {
             );
             return;
         };
-        let host = distro::source_host(&source.url).to_owned();
         let interval = match source.refresh {
             Some(refresh) => format!("every {}", minutes(refresh)),
             None => "at every start".to_owned(),
         };
         let about = format!(
-            "{}\nLANcast loads the event configuration from there at every start \
+            "{}\nOpens it in the browser.\n\
+             LANcast loads the event configuration from there at every start \
              and {interval}, as set by the organizers. A newer one applies \
-             without asking.",
+             without asking; during a cast, at the next Go live.",
             source.url
         );
+        // The full address as a link (D50); a very long one is shortened,
+        // the hover text has all of it.
+        let shown = shorten(&source.url, 60);
         // One line each, like the discovery server and the NDI groups.
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.label("Configuration server");
-                ui.strong(host).on_hover_text(about);
+                ui.label("Provided configuration");
+                ui.hyperlink_to(shown, &source.url).on_hover_text(about);
                 let loading = self.event_source.is_loading();
                 if ui
                     .add_enabled(!loading, egui::Button::new("Check now").small())
@@ -1916,7 +1922,7 @@ impl LancastApp {
             )
             .on_hover_text(
                 "Comma-separated. Receivers list the stream only if they receive in one of \
-                     these groups (NDI Access Manager → Receive Groups). Public is NDI's default.\n\
+                     these groups (NDI Access Manager > Receive Groups). Public is NDI's default.\n\
                      Groups only sort sources; they don't restrict who can watch or send.",
             );
         });
@@ -2159,10 +2165,83 @@ fn group_label(ui: &mut egui::Ui, text: &str) {
     });
 }
 
+/// `text` cut to at most `max` characters, ending in "…" if it was longer.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut short: String = text.chars().take(max.saturating_sub(1)).collect();
+    short.push('…');
+    short
+}
+
+/// "(event limit 60)" next to a limited setting. When the user's choice is
+/// above it, `sent` is what LANcast sends instead: "(event limit 60: sends
+/// 60 fps)" in amber (D51).
+fn limit_note(ui: &mut egui::Ui, limit: &str, sent: Option<&str>) {
+    match sent {
+        None => {
+            ui.label(
+                RichText::new(format!("(event limit {limit})"))
+                    .small()
+                    .weak(),
+            );
+        }
+        Some(sent) => {
+            ui.label(
+                RichText::new(format!("(event limit {limit}: sends {sent})"))
+                    .small()
+                    .color(AMBER),
+            )
+            .on_hover_text(format!(
+                "Your choice is above the event's limit, so LANcast sends {sent}. \
+                 It keeps your choice and uses it if the event raises its limit."
+            ));
+        }
+    }
+}
+
 /// The values of an event link section, one bullet line each.
 fn value_lines(values: &EventValues) -> Vec<String> {
+    value_rows(values)
+        .into_iter()
+        .map(|(label, value)| format!("•  {label}: {value}"))
+        .collect()
+}
+
+/// What changed between two sets of enforced values, e.g. "Max. frame rate
+/// 60 fps (was 30 fps)" (D51). No arrows: egui's default font lacks "→".
+fn value_changes(old: &EventValues, new: &EventValues) -> Vec<String> {
+    let old = value_rows(old);
+    let new = value_rows(new);
+    let mut labels: Vec<&str> = old.iter().map(|(label, _)| *label).collect();
+    for (label, _) in &new {
+        if !labels.contains(label) {
+            labels.push(label);
+        }
+    }
+    let value = |rows: &[(&str, String)], label: &str| {
+        rows.iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, v)| v.clone())
+    };
+    labels
+        .into_iter()
+        .filter_map(|label| match (value(&old, label), value(&new, label)) {
+            (before, after) if before == after => None,
+            (Some(before), Some(after)) => Some(format!("{label} {after} (was {before})")),
+            (None, Some(after)) => Some(format!("{label} {after} (new)")),
+            (Some(before), None) => Some(format!("{label} no longer set (was {before})")),
+            (None, None) => None,
+        })
+        .collect()
+}
+
+/// Label and shown value of each value set in an event link section, in
+/// the order of the settings.
+fn value_rows(values: &EventValues) -> Vec<(&'static str, String)> {
     let on_off = |b: bool| if b { "on" } else { "off" };
-    let mut rows: Vec<(&str, String)> = Vec::new();
+    let mut rows: Vec<(&'static str, String)> = Vec::new();
     if let Some(servers) = &values.discovery {
         let text = if servers.is_empty() {
             "automatic (mDNS)".to_owned()
@@ -2194,9 +2273,7 @@ fn value_lines(values: &EventValues) -> Vec<String> {
     if let Some(cursor) = values.capture_cursor {
         rows.push(("Capture cursor", on_off(cursor).to_owned()));
     }
-    rows.into_iter()
-        .map(|(label, value)| format!("•  {label}: {value}"))
-        .collect()
+    rows
 }
 
 /// Whether an event link only repeats the event in force: the same event
@@ -2322,19 +2399,28 @@ fn time_left(duration: Duration) -> String {
     }
 }
 
-/// The notice after a configuration was loaded from the `source` (D44).
-/// `fallback_user` is set when it dropped the personal name because it is for
-/// another event (D47): the name sent instead.
+/// The notice after a configuration was loaded from the `source` (D44),
+/// with the enforced values that changed (`changes`, D51). `fallback_user`
+/// is set when it dropped the personal name because it is for another event
+/// (D47): the name sent instead.
 fn loaded_notice(
     event: Option<&str>,
     host: &str,
+    changes: &[String],
     sending: bool,
     fallback_user: Option<&str>,
 ) -> String {
     let event = event.unwrap_or("the event");
-    let mut text = format!("Event configuration for {event} updated from {host}.");
+    let mut text = format!("Event configuration for {event} updated from {host}");
+    if changes.is_empty() {
+        text.push('.');
+    } else {
+        text.push_str(&format!(": {}.", changes.join(", ")));
+    }
     if sending {
-        text.push_str(" It applies the next time you go live.");
+        text.push_str(
+            " Your cast keeps its settings; the new ones apply the next time you go live.",
+        );
     }
     if let Some(user) = fallback_user {
         text.push_str(&format!(
@@ -2621,20 +2707,65 @@ mod tests {
     #[test]
     fn loaded_notice_names_a_dropped_personal_name() {
         assert_eq!(
-            loaded_notice(Some("netgame 2027"), "example.org", false, None),
+            loaded_notice(Some("netgame 2027"), "example.org", &[], false, None),
             "Event configuration for netgame 2027 updated from example.org."
         );
         let text = loaded_notice(
             Some("netgame 2027"),
             "example.org",
+            &[],
             true,
             Some("Alice [netgame 2026]"),
         );
         assert!(text.starts_with(
             "Event configuration for netgame 2027 updated from example.org. \
-             It applies the next time you go live. \
+             Your cast keeps its settings; the new ones apply the next time you go live. \
              Your name for netgame 2027 is not confirmed yet, so LANcast uses \"Alice [netgame 2026]\"."
         ));
         assert!(text.ends_with("Open your personal link on the event website to confirm it."));
+    }
+
+    #[test]
+    fn shortens_long_addresses() {
+        assert_eq!(shorten("http://a/b", 60), "http://a/b");
+        assert_eq!(shorten("http://example.org/x", 10), "http://ex…");
+        assert_eq!(shorten("http://example.org/x", 10).chars().count(), 10);
+    }
+
+    #[test]
+    fn loaded_notice_names_the_changed_limits() {
+        let old = values(&[("fps", "30"), ("max", "1280x720"), ("border", "1")]);
+        let new = values(&[("fps", "60"), ("max", "1920x1080"), ("cursor", "0")]);
+        let changes = value_changes(&old, &new);
+        assert_eq!(
+            changes,
+            [
+                "Max. resolution 1920×1080 (was 1280×720)",
+                "Max. frame rate 60 fps (was 30 fps)",
+                "Show capture border no longer set (was on)",
+                "Capture cursor off (new)",
+            ]
+        );
+        assert!(value_changes(&old, &old).is_empty());
+        assert_eq!(
+            loaded_notice(Some("NetGame"), "example.org", &changes[1..2], true, None),
+            "Event configuration for NetGame updated from example.org: \
+             Max. frame rate 60 fps (was 30 fps). Your cast keeps its settings; the new ones apply the next time you go live."
+        );
+    }
+
+    /// egui's default font has no arrows; they show as a box (seen by the
+    /// user in a notice).
+    #[test]
+    fn ui_text_has_no_arrows() {
+        let source = include_str!("ui.rs");
+        let arrow = ['\u{2190}', '\u{2192}'];
+        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+        let found: Vec<&str> = code
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(arrow))
+            .collect();
+        assert!(found.is_empty(), "{found:#?}");
     }
 }

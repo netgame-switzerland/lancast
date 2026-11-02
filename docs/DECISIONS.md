@@ -1595,8 +1595,10 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   loaded, and load it on demand. Until now only the link dialog named the host and the log the
   loads; an unchanged result is silent (D44).
 - **Row "Event"** in the settings grid (organizer and event editions only, `event_source_settings`
-  in `app/ui.rs`), two lines like the discovery server and NDI groups rows: "Configuration
-  server **<host>**" (hover: the full URL and the interval) with a "Check now" button, and below
+  in `app/ui.rs`), two lines like the discovery server and NDI groups rows: "Provided
+  configuration <full URL>" as a link that opens it in the browser, to see quickly what is served (user; longer
+  than 60 characters it is cut with "…"; hover: the full URL and the interval), with a
+  "Check now" button, and below
   it, small, "Last checked 14:32: unchanged / updated / not reachable / rejected" (the last two
   amber, the reason on hover) "· next check in 4 minutes". Without a `source`: "Set by the event
   link; no configuration address." It lives in the settings body, not in the collapsed header,
@@ -1614,6 +1616,34 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   `GetDateFormatEx` call as D45 with a null date). Other platforms: `HH:MM UTC`, no date.
   Intervals use the dialog's wording ("every minute", `minutes`). Not stored: the row shows the
   loads of this run only.
+
+### D51. Event limits keep the participant's choice; the notice names what changed (2026-11-02)
+- **Seen by the user:** an event edition at the 30 fps limit loaded a configuration with
+  `fps = 60` while casting. The settings showed "30 fps (event limit 60)", and the notice only said
+  "… updated from <host>. It applies the next time you go live", so nothing explained why it stayed
+  at 30. Cause: the UI loop capped the user's own choice in place (`fps_cap.min(limit)`, the same
+  for `max`) every frame, and that capped value was saved. A limit lowered once destroyed the
+  choice, and raising it gave nothing back.
+- **Now:** the choice (`fps_cap`, `max_width`/`max_height` in `LANcast.toml`) is kept as the user
+  set it. The limit applies only where the value is used: `effective_settings` (via
+  `event_state::enforce`) for the cast. The fields edit the choice itself, also above the limit
+  (frame rate up to 120, every resolution preset; user: setting 120 just snapped back to 60
+  without a word, in a first version whose field range stopped at the limit). The note next to the
+  field says "(event limit 60)", and when the choice is above it, in amber, "(event limit 60:
+  sends 60 fps)", with a hover hint that the choice is kept and used if the limit is raised. A
+  raised limit therefore applies at the next Go live without anything to do. Choices already
+  capped by earlier versions stay as saved.
+- **Notice:** a loaded configuration names the enforced values that changed, with the labels of
+  the link dialog: "Event configuration for NetGame 2026 updated from localhost:4002: Max. frame
+  rate 60 fps (was 30 fps). Your cast keeps its settings; the new ones apply the next time you go
+  live." (`value_changes`; "(new)" and "no longer set (was …)" for values added or removed). No
+  arrows: egui's default font has no "→" and showed a box (seen by the user); a test keeps
+  arrows out of `app/ui.rs`. Without changed enforced values
+  (e.g. only defaults or the name) the notice is as before.
+- **Never during a cast (user: players are sensitive to performance changes):** as in D44, the
+  controller only stores new settings while a session runs (`Command::Settings`); a session gets
+  its settings when it starts, and the preview is not restarted while sending. The notice used to
+  say "It applies the next time you go live"; it now says that the cast keeps its settings.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
