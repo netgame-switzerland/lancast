@@ -1533,6 +1533,20 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **No format change:** the new event's personal link restores the name, since a link's id is kept
   when it matches the loaded event (D44).
 
+### D48. Discovery servers are checked again (2026-11-02)
+- **User:** a discovery server started after LANcast stayed "NOT reachable". The check ran only at
+  startup, when an event link or configuration was applied, and when the user left the discovery
+  field; with the server set by the event the field is locked, so only a restart helped. This
+  happens at events too, whenever participants start LANcast before the server is up.
+- **Recheck** (`recheck_discovery` in `app/controller.rs`): a server found not reachable is checked
+  again every 15 s, both LANcast's own (or the event's) and the one from NDI Access Manager. A
+  check takes at most about 1.5 s per server (TCP connect), so rechecks never overlap. Reachable
+  servers are not polled.
+- **Go live** checks all of them again, so the label shows the state as of going live.
+- **Display and log:** a recheck keeps the last result shown instead of "checking…", so the label
+  doesn't flicker; only a change is logged.
+- The label stays informational: NDI connects to the discovery server itself when sending.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

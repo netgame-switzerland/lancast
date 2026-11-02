@@ -242,7 +242,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
   - The server ships with NDI Tools / the NDI SDK (`NDI Discovery Service.exe`) and runs on the central machine or any server.
 - Alternative without a server, configured on the receiver: "Extra IPs" in NDI Access Manager on the central machine. Documented in the README only.
 - **Stale system discovery-server check (D14).** At startup, lancast reads the system-wide `C:\ProgramData\NDI\ndi-config.v1.json` (written by NDI Access Manager). If `ndi.networks.discovery` is set:
-  1. Test each listed server with a TCP connect to `ip:port` (default 5959, timeout ~1 s, in the background so the UI is not blocked).
+  1. Test each listed server with a TCP connect to `ip:port` (default 5959, timeout ~1 s, in the background so the UI is not blocked). An unreachable server is tested again every 15 s, and all are tested again at "Go live"; the same applies to LANcast's own or the event's discovery server (D48).
   2. **Unreachable:** show a warning: "A discovery server (10.0.18.19) is configured in NDI Access Manager but cannot be reached. Your source will be invisible to receivers using mDNS."
      - Offer **"Ignore for lancast"**. It writes lancast's own `ndi-config.v1.json` (§5.4) with the discovery server cleared, so the sender uses mDNS again, and sets `NDI_CONFIG_DIR` to it.
      - The system file is **never** modified.

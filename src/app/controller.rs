@@ -26,6 +26,9 @@ use crate::{
 };
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
+/// How often a discovery server that was not reachable is checked again, so
+/// one started after LANcast turns "reachable" on its own (D48).
+const DISCOVERY_RECHECK: Duration = Duration::from_secs(15);
 
 /// Result of the process-loopback pre-flight check (SPEC §3.1 item 6).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,6 +199,9 @@ pub struct Controller {
     session: Option<Session>,
     preview: Option<Preview>,
     last_status: Instant,
+    /// When the discovery servers were last checked (D48).
+    own_checked: Instant,
+    system_checked: Instant,
 }
 
 impl Controller {
@@ -208,13 +214,15 @@ impl Controller {
             session: None,
             preview: None,
             last_status: Instant::now(),
+            own_checked: Instant::now(),
+            system_checked: Instant::now(),
         }
     }
 
     /// Runs until `Quit`; stops the session cleanly before returning.
     pub fn run(mut self, commands: Receiver<Command>) {
         self.publish_tray();
-        self.check_system_discovery();
+        self.check_system_discovery(false);
         let mut restart = false;
         loop {
             select! {
@@ -230,6 +238,7 @@ impl Controller {
             }
             self.poll_session();
             self.poll_preview();
+            self.recheck_discovery(false);
         }
         if let Some(session) = self.session.take() {
             session.stop();
@@ -275,7 +284,7 @@ impl Controller {
             }
             Command::Stop => self.stop("stopped by the user", NoticeLevel::Info),
             Command::SwitchToSystemAudio => self.switch_to_system_audio(),
-            Command::CheckDiscovery(servers) => self.check_own_discovery(servers),
+            Command::CheckDiscovery(servers) => self.check_own_discovery(servers, false),
             Command::OpenLink(url) => match self.check_link(&url) {
                 Ok(pending) => {
                     info!(link = ?pending.link, verified = pending.verified, "event link received");
@@ -390,6 +399,8 @@ impl Controller {
         if self.session.is_some() {
             return;
         }
+        // Show the servers' state as of going live (D48).
+        self.recheck_discovery(true);
         let (Some(window), Some(settings)) = (self.state().selected.clone(), self.settings.clone())
         else {
             return;
@@ -638,32 +649,69 @@ impl Controller {
         }
     }
 
+    /// Checks the discovery servers again (D48): those found not reachable
+    /// every [`DISCOVERY_RECHECK`], all of them with `now` (going live). The
+    /// last result stays shown meanwhile.
+    fn recheck_discovery(&mut self, now: bool) {
+        let (own_servers, own_down, system_down) = {
+            let network = &self.state().network;
+            (
+                network.own_servers.clone(),
+                network.own_reachable == Some(false),
+                network.system_reachable == Some(false),
+            )
+        };
+        if !own_servers.is_empty()
+            && (now || own_down && self.own_checked.elapsed() >= DISCOVERY_RECHECK)
+        {
+            self.check_own_discovery(own_servers, true);
+        }
+        if now || system_down && self.system_checked.elapsed() >= DISCOVERY_RECHECK {
+            self.check_system_discovery(true);
+        }
+    }
+
     /// Checks the discovery server from NDI Access Manager in the background.
-    fn check_system_discovery(&self) {
+    /// A `recheck` (D48) logs only a change.
+    fn check_system_discovery(&mut self, recheck: bool) {
+        self.system_checked = Instant::now();
         let servers = ndi_config::system_discovery();
         self.state().network.system_servers = servers.clone();
         let Some(servers) = servers else { return };
-        info!(%servers, "NDI Access Manager sets a discovery server; checking it");
+        if !recheck {
+            info!(%servers, "NDI Access Manager sets a discovery server; checking it");
+        }
         let (state, wake) = (self.state.clone(), self.wake.clone());
         std::thread::spawn(move || {
             let reachable = ndi_config::check_reachable(&servers)
                 .iter()
                 .all(|(_, ok)| *ok);
-            if !reachable {
-                warn!(%servers, "the configured NDI discovery server is not reachable");
+            let mut state = lock(&state);
+            let before = state.network.system_reachable.replace(reachable);
+            drop(state);
+            if before != Some(reachable) {
+                if reachable {
+                    info!(%servers, "the configured NDI discovery server is reachable");
+                } else {
+                    warn!(%servers, "the configured NDI discovery server is not reachable");
+                }
             }
-            lock(&state).network.system_reachable = Some(reachable);
             wake();
         });
     }
 
-    /// Checks LANcast's own discovery server setting in the background.
-    fn check_own_discovery(&self, servers: String) {
+    /// Checks LANcast's own (or the event's) discovery server setting in the
+    /// background. A first check shows "checking…"; a `recheck` (D48) keeps
+    /// the last result until the new one is in.
+    fn check_own_discovery(&mut self, servers: String, recheck: bool) {
+        self.own_checked = Instant::now();
         let servers = servers.trim().to_owned();
         {
             let mut state = self.state();
             state.network.own_servers = servers.clone();
-            state.network.own_reachable = None;
+            if !recheck {
+                state.network.own_reachable = None;
+            }
         }
         if servers.is_empty() {
             return;
@@ -675,10 +723,14 @@ impl Controller {
                 .all(|(_, ok)| *ok);
             let mut state = lock(&state);
             // Ignore results for a setting the user has changed meanwhile.
-            if state.network.own_servers == servers {
-                state.network.own_reachable = Some(reachable);
+            if state.network.own_servers != servers {
+                return;
             }
+            let before = state.network.own_reachable.replace(reachable);
             drop(state);
+            if before != Some(reachable) {
+                info!(%servers, reachable, "discovery server checked");
+            }
             wake();
         });
     }
