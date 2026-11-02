@@ -58,6 +58,7 @@ pub fn run(link: Option<String>, restart_after: Option<u32>) -> Result<()> {
         audio_check: AudioCheck::Idle,
         preview: None,
         sending: None,
+        going_live: false,
         notice: None,
     }));
     let (commands_tx, commands_rx) = crossbeam_channel::unbounded();

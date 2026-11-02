@@ -39,6 +39,38 @@ const SETTLE_RATE: f32 = 9.0;
 const LOCKED_OPACITY: u8 = 70;
 const LIVE_RED: Color32 = Color32::from_rgb(225, 45, 40);
 
+/// What the badge on the cast window says (D49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveBadge {
+    /// Receivers can find the stream.
+    Live,
+    /// Just started; NDI is still connecting to the discovery server.
+    Connecting,
+    /// Sending, but no discovery server is connected: nobody finds it.
+    NotLive,
+}
+
+impl LiveBadge {
+    /// Badge text, badge fill, text color and the tile's border color.
+    fn style(self) -> (&'static str, Color32, Color32, Color32) {
+        match self {
+            Self::Live => ("LIVE", LIVE_RED, Color32::WHITE, LIVE_RED),
+            Self::Connecting => (
+                "LIVE",
+                Color32::from_gray(105),
+                Color32::WHITE,
+                Color32::from_gray(140),
+            ),
+            Self::NotLive => (
+                "NOT LIVE",
+                Color32::from_gray(55),
+                Color32::from_rgb(255, 120, 110),
+                Color32::from_gray(140),
+            ),
+        }
+    }
+}
+
 pub struct Carousel {
     /// Alt-Tab-like order: most recently active first, kept stable.
     windows: Vec<WindowInfo>,
@@ -128,15 +160,16 @@ impl Carousel {
         }
     }
 
-    /// Draws the carousel; returns a window the user clicked. With `locked`
+    /// Draws the carousel; returns a window the user clicked. With `cast`
     /// (while casting) it ignores all input, dims the other windows and marks
-    /// the selected one as LIVE.
+    /// the selected one with the badge.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         selected: Option<isize>,
-        locked: bool,
+        cast: Option<LiveBadge>,
     ) -> Option<WindowInfo> {
+        let locked = cast.is_some();
         if self
             .last_refresh
             .is_none_or(|t| t.elapsed() >= REFRESH_INTERVAL)
@@ -316,8 +349,9 @@ impl Carousel {
             let dimmed = locked && !is_selected;
             let hovered =
                 !locked && !response.dragged() && ui.rect_contains_pointer(tile.intersect(inner));
-            let (fill, stroke) = if live {
-                (LIVE_RED.gamma_multiply(0.18), Stroke::new(2.5, LIVE_RED))
+            let badge = cast.filter(|_| live).map(LiveBadge::style);
+            let (fill, stroke) = if let Some((_, _, _, border)) = badge {
+                (border.gamma_multiply(0.18), Stroke::new(2.5, border))
             } else if is_selected {
                 (
                     ui.visuals().selection.bg_fill.gamma_multiply(0.35),
@@ -388,20 +422,20 @@ impl Carousel {
                 text_left += 22.0;
             }
             let mut text_right = tile.right() - 8.0;
-            if live {
-                // "LIVE" badge on the cast window.
-                let badge = Rect::from_min_size(
-                    pos2(tile.right() - 8.0 - 40.0, text_top + 2.0),
-                    vec2(40.0, 17.0),
-                );
-                painter.rect_filled(badge, 3.0, LIVE_RED);
-                painter.text(
-                    badge.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "LIVE",
+            if let Some((text, badge_fill, text_color, _)) = badge {
+                // "LIVE" / "NOT LIVE" badge on the cast window (D49).
+                let galley = painter.layout_no_wrap(
+                    text.to_owned(),
                     egui::FontId::proportional(11.0),
-                    Color32::WHITE,
+                    text_color,
                 );
+                let width = (galley.size().x + 14.0).max(40.0);
+                let badge = Rect::from_min_size(
+                    pos2(tile.right() - 8.0 - width, text_top + 2.0),
+                    vec2(width, 17.0),
+                );
+                painter.rect_filled(badge, 3.0, badge_fill);
+                painter.galley(badge.center() - galley.size() / 2.0, galley, text_color);
                 text_right = badge.left() - 6.0;
             }
             let (title_color, sub_color) = if dimmed {

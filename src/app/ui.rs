@@ -17,7 +17,7 @@ use eframe::egui::{
 };
 
 use super::{
-    carousel::Carousel,
+    carousel::{Carousel, LiveBadge},
     controller::{
         AppState, AudioCheck, AudioChoice, Command, LinkSource, NetworkStatus, NoticeLevel,
         PendingLink, Sending, Settings, SharedState,
@@ -66,8 +66,6 @@ const GO_LIVE_FILL: Color32 = Color32::from_rgb(30, 135, 60);
 const STOP_FILL: Color32 = Color32::from_rgb(190, 45, 40);
 /// Minimum height of the heading above the window carousel.
 const MIN_HEADER_HEIGHT: f32 = 20.0;
-/// A discovery server connection shows as missing only after this.
-const DISCOVERY_SETTLE: Duration = Duration::from_secs(5);
 
 /// What an open native dialog asks (D42).
 enum DialogKind {
@@ -181,6 +179,7 @@ impl LancastApp {
                 discovery: Discovery::System,
                 groups: config.ndi_groups.clone(),
                 send_blocked: None,
+                required_servers: None,
             },
             sent_settings: None,
             to_tray: config.to_tray,
@@ -341,9 +340,7 @@ impl LancastApp {
         }
         if let Some(servers) = &self.event_server_down {
             return Some(format!(
-                "the event's discovery server {servers} is not reachable, so nobody would see \
-                 your stream. LANcast checks again every 15 seconds; ask the organizers if it \
-                 stays like this."
+                "the event's discovery server {servers} is not reachable. LANcast checks again every 15 seconds."
             ));
         }
         self.event_source
@@ -406,6 +403,7 @@ impl LancastApp {
         settings.discovery = self.discovery();
         settings.groups = self.groups();
         settings.send_blocked = self.send_block();
+        settings.required_servers = self.enforced().discovery.filter(|s| !s.trim().is_empty());
         settings
     }
 
@@ -978,8 +976,8 @@ impl eframe::App for LancastApp {
             self.header_height = self.header_height.max(header.response.rect.height());
             ui.add_space(4.0);
             let selected = state.selected.as_ref().map(|w| w.hwnd);
-            let locked = state.sending.is_some();
-            if let Some(window) = self.carousel.show(ui, selected, locked) {
+            let badge = state.sending.as_ref().map(live_badge);
+            if let Some(window) = self.carousel.show(ui, selected, badge) {
                 self.select(window, &state);
             }
             ui.add_space(8.0);
@@ -1252,9 +1250,18 @@ impl LancastApp {
             button.min_size(vec2(220.0, 44.0))
         };
         if state.sending.is_none()
+            && !state.going_live
             && let Some(reason) = &self.send_block()
         {
             banner(ui, AMBER, &format!("Sending is disabled: {reason}"));
+            ui.add_space(4.0);
+        }
+        if let Some(servers) = state.sending.as_ref().and_then(Sending::reaching_nobody) {
+            banner(
+                ui,
+                RED,
+                &format!("NOT LIVE: the discovery server {servers} is not reachable."),
+            );
             ui.add_space(4.0);
         }
         // Centered: one or two buttons, each at least the minimum width.
@@ -1272,6 +1279,10 @@ impl LancastApp {
                 if ui.add(big("Stop", Some(STOP_FILL))).clicked() {
                     self.send(Command::Stop);
                 }
+                return;
+            }
+            if state.going_live {
+                ui.add_enabled(false, big("Going live…", None));
                 return;
             }
             let ready = state.selected.is_some()
@@ -2012,8 +2023,7 @@ fn discovery_status(ui: &mut egui::Ui, sending: &Sending) {
             .on_hover_text("Automatic discovery: receivers on the same network find the stream.");
         return;
     }
-    // NDI connects within a moment of the start.
-    let settling = sending.started.elapsed() < DISCOVERY_SETTLE;
+    let settling = sending.settling();
     for (server, connected) in &sending.discovery {
         ui.label(format!("· discovery server {server}"));
         match (connected, settling) {
@@ -2135,6 +2145,18 @@ fn minutes(interval: Duration) -> String {
         60 => "hour".to_owned(),
         m if m % 60 == 0 => format!("{} hours", m / 60),
         m => format!("{m} minutes"),
+    }
+}
+
+/// The badge on the cast window (D49).
+fn live_badge(sending: &Sending) -> LiveBadge {
+    let connected = sending.discovery.iter().any(|(_, ok)| *ok);
+    if sending.reaching_nobody().is_some() {
+        LiveBadge::NotLive
+    } else if sending.discovery.is_empty() || connected {
+        LiveBadge::Live
+    } else {
+        LiveBadge::Connecting
     }
 }
 
@@ -2389,6 +2411,28 @@ mod tests {
         assert!(!event_state::same_event_id(Some(&a), Some(&c)));
         assert!(!event_state::same_event_id(None, Some(&a)));
         assert!(!event_state::same_event_id(None, None));
+    }
+
+    #[test]
+    fn nobody_is_reached_only_without_any_connected_server() {
+        use super::super::controller::reaching_nobody;
+        let server = |name: &str, ok| (name.to_owned(), ok);
+        // mDNS: no servers, always reached.
+        assert_eq!(reaching_nobody(&[], false), None);
+        // Just started: NDI may still be connecting.
+        assert_eq!(reaching_nobody(&[server("10.0.0.5", false)], true), None);
+        assert_eq!(
+            reaching_nobody(&[server("10.0.0.5", false)], false).as_deref(),
+            Some("10.0.0.5")
+        );
+        // One of two connected is enough.
+        let two = [server("10.0.0.5", false), server("10.0.0.6", true)];
+        assert_eq!(reaching_nobody(&two, false), None);
+        let none = [server("10.0.0.5", false), server("10.0.0.6", false)];
+        assert_eq!(
+            reaching_nobody(&none, false).as_deref(),
+            Some("10.0.0.5, 10.0.0.6")
+        );
     }
 
     #[test]

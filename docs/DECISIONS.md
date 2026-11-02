@@ -1547,21 +1547,41 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   doesn't flicker; only a change is logged.
 - The label stays informational: NDI connects to the discovery server itself when sending.
 
-### D49. No "Go live" while the event's discovery server is not reachable (2026-11-02)
+### D49. Not live without the discovery server (2026-11-02)
 - **User:** with a discovery server enforced by the event and not reachable, the participant
-  should see that going live won't work. With a discovery server, NDI stops announcing via mDNS,
-  so such a stream reaches nobody, while LANcast looks like it is sending. The check is the TCP
-  connect NDI itself needs (port 5959), so "not reachable" means NDI cannot register either.
+  should see that going live won't work, and while casting, that they are not live. With a
+  discovery server, NDI stops announcing via mDNS, so such a stream reaches nobody, while LANcast
+  looks like it is sending. The check is the TCP connect NDI itself needs (port 5959), so "not
+  reachable" means NDI cannot register either.
 - **Block** (`unreachable_event_server` in `app/ui.rs`): when the event's discovery servers were
   checked and found not reachable, `send_block` gives the reason, so "Go live" is disabled with
-  "Sending is disabled: the event's discovery server … is not reachable, so nobody would see your
-  stream. LANcast checks again every 15 seconds; ask the organizers if it stays like this." It
-  goes through `Settings::send_blocked`, so the tray's start entry and the controller refuse too
-  (as for D28/D44).
-- **Unblocks by itself:** D48 checks an unreachable server again every 15 s.
+  "Sending is disabled: the event's discovery server … is not reachable. LANcast checks again
+  every 15 seconds." (user: keep it short). It goes through `Settings::send_blocked`, so the
+  tray's start entry and the controller refuse too (as for D28/D44).
+- **Checked every 15 s:** LANcast's own or the event's servers are checked every 15 s whether or
+  not they were reachable (D48 rechecked only unreachable ones), so a server that goes away
+  blocks "Go live" within 15 s; the one from NDI Access Manager still only while unreachable.
+  First seen in a test: the server was stopped after LANcast started, "Go live" was still allowed
+  because the last check said reachable, and the check at Go live came too late.
+- **At Go live** (`start_checked` in `app/controller.rs`): with servers set by the event
+  (`Settings::required_servers`), the controller checks them before it starts the cast (at most
+  about 1.5 s per server) and does not start if they are not reachable ("Not live: the event's
+  discovery server … is not reachable."). Meanwhile, and while NDI starts, `AppState::going_live`
+  shows a disabled "Going live…" button.
+- **While casting** (`Sending::reaching_nobody`): once NDI had its 5 s to connect and none of the
+  discovery servers in use is connected, the cast reaches nobody. Then:
+  - a red banner above Stop: "NOT LIVE: the discovery server … is not reachable.";
+  - the badge on the cast window says "NOT LIVE" (dark grey, light red text, grey border); during
+    the first seconds while NDI connects it is a grey "LIVE", connected a red "LIVE"
+    (`LiveBadge` in `app/carousel.rs`);
+  - the tray shows the error icon with "LANcast – NOT live: discovery server … not reachable" and
+    notifies once ("LANcast is NOT live"); the log records when it is live again.
+  This applies to any discovery server in use, also one the user set: the stream reaches nobody
+  either way. The cast is not stopped: NDI reconnects when the server is back, and the badge and
+  banner follow.
 - **Not blocked:** while the first check runs ("checking…"), mDNS, a server the user typed in (they
   can change it) and the one from NDI Access Manager ("Ignore for LANcast" exists, D14): these keep
-  the red label only. A cast already running is not stopped.
+  the red label only.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

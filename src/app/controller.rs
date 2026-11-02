@@ -26,9 +26,12 @@ use crate::{
 };
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
-/// How often a discovery server that was not reachable is checked again, so
-/// one started after LANcast turns "reachable" on its own (D48).
+/// How often the discovery servers are checked again (D48, D49): LANcast's
+/// own or the event's always, the one from NDI Access Manager while it is
+/// not reachable.
 const DISCOVERY_RECHECK: Duration = Duration::from_secs(15);
+/// NDI connects to the discovery servers within a moment of the start.
+pub const DISCOVERY_SETTLE: Duration = Duration::from_secs(5);
 
 /// Result of the process-loopback pre-flight check (SPEC §3.1 item 6).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +63,9 @@ pub struct Settings {
     /// Why sending is not allowed (event edition without a valid event
     /// configuration, D28); `None` = allowed.
     pub send_blocked: Option<String>,
+    /// The event's discovery servers (D49): checked right before going
+    /// live; if they are not reachable, the cast does not start.
+    pub required_servers: Option<String>,
 }
 
 /// An event link waiting for confirmation.
@@ -142,6 +148,32 @@ pub struct Sending {
     pub discovery: Vec<(String, bool)>,
 }
 
+impl Sending {
+    /// NDI may still be connecting to the discovery servers.
+    pub fn settling(&self) -> bool {
+        self.started.elapsed() < DISCOVERY_SETTLE
+    }
+
+    /// The discovery servers, if none of them is connected once settled:
+    /// with a discovery server NDI does not announce via mDNS, so the stream
+    /// reaches nobody (D49).
+    pub fn reaching_nobody(&self) -> Option<String> {
+        reaching_nobody(&self.discovery, self.settling())
+    }
+}
+
+/// See [`Sending::reaching_nobody`].
+pub fn reaching_nobody(discovery: &[(String, bool)], settling: bool) -> Option<String> {
+    let none_connected = !discovery.is_empty() && discovery.iter().all(|(_, ok)| !ok);
+    (none_connected && !settling).then(|| {
+        discovery
+            .iter()
+            .map(|(server, _)| server.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub network: NetworkStatus,
@@ -153,6 +185,9 @@ pub struct AppState {
     /// Live preview of the selected window before sending.
     pub preview: Option<PreviewView>,
     pub sending: Option<Sending>,
+    /// Between "Go live" and the start of the cast: checking the event's
+    /// discovery server and starting NDI (D49).
+    pub going_live: bool,
     pub notice: Option<Notice>,
 }
 
@@ -199,6 +234,8 @@ pub struct Controller {
     session: Option<Session>,
     preview: Option<Preview>,
     last_status: Instant,
+    /// The cast reached nobody at the last status update (D49).
+    reaching_nobody: bool,
     /// When the discovery servers were last checked (D48).
     own_checked: Instant,
     system_checked: Instant,
@@ -214,6 +251,7 @@ impl Controller {
             session: None,
             preview: None,
             last_status: Instant::now(),
+            reaching_nobody: false,
             own_checked: Instant::now(),
             system_checked: Instant::now(),
         }
@@ -238,7 +276,7 @@ impl Controller {
             }
             self.poll_session();
             self.poll_preview();
-            self.recheck_discovery(false);
+            self.recheck_discovery();
         }
         if let Some(session) = self.session.take() {
             session.stop();
@@ -399,8 +437,6 @@ impl Controller {
         if self.session.is_some() {
             return;
         }
-        // Show the servers' state as of going live (D48).
-        self.recheck_discovery(true);
         let (Some(window), Some(settings)) = (self.state().selected.clone(), self.settings.clone())
         else {
             return;
@@ -408,6 +444,53 @@ impl Controller {
         if let Some(reason) = &settings.send_blocked {
             self.set_notice(NoticeLevel::Error, reason);
             return;
+        }
+        // "Going live..." until the cast runs or fails (D49).
+        self.state().going_live = true;
+        (self.wake)();
+        self.start_checked(window, settings, choice);
+        self.state().going_live = false;
+        self.publish_tray();
+    }
+
+    /// Checks the discovery servers as of going live (D48); the event's
+    /// must be reachable (D49). Then starts the cast.
+    fn start_checked(&mut self, window: WindowInfo, settings: Settings, choice: AudioChoice) {
+        self.check_system_discovery(true);
+        let required = settings
+            .required_servers
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match required {
+            Some(servers) => {
+                self.own_checked = Instant::now();
+                let reachable = ndi_config::check_reachable(servers)
+                    .iter()
+                    .all(|(_, ok)| *ok);
+                {
+                    let mut state = self.state();
+                    if state.network.own_servers == servers {
+                        state.network.own_reachable = Some(reachable);
+                    }
+                }
+                if !reachable {
+                    warn!(%servers, "not going live: the event's discovery server is not reachable");
+                    self.set_notice(
+                        NoticeLevel::Error,
+                        &format!(
+                            "Not live: the event's discovery server {servers} is not reachable."
+                        ),
+                    );
+                    return;
+                }
+            }
+            None => {
+                let own = self.state().network.own_servers.clone();
+                if !own.is_empty() {
+                    self.check_own_discovery(own, true);
+                }
+            }
         }
         let caps = self.state().caps;
         let audio = match choice {
@@ -469,6 +552,7 @@ impl Controller {
                 drop(state);
                 self.session = Some(session);
                 self.last_status = Instant::now();
+                self.reaching_nobody = false;
             }
             Err(err) => {
                 warn!("failed to start sending: {err:#}");
@@ -480,7 +564,6 @@ impl Controller {
                 self.start_preview();
             }
         }
-        self.publish_tray();
     }
 
     fn stop(&mut self, reason: &str, level: NoticeLevel) {
@@ -574,7 +657,22 @@ impl Controller {
                     sending.discovery = discovery;
                 }
             }
+            let nobody = state.sending.as_ref().and_then(Sending::reaching_nobody);
             drop(state);
+            if nobody.is_some() != self.reaching_nobody {
+                self.reaching_nobody = nobody.is_some();
+                match &nobody {
+                    Some(servers) => {
+                        warn!(%servers, "not live: no discovery server connected");
+                        self.tray.notify(
+                            "LANcast is NOT live",
+                            &format!("The discovery server {servers} is not reachable."),
+                            true,
+                        );
+                    }
+                    None => info!("live again: a discovery server is connected"),
+                }
+            }
             self.publish_tray();
             changed = true;
         }
@@ -649,24 +747,22 @@ impl Controller {
         }
     }
 
-    /// Checks the discovery servers again (D48): those found not reachable
-    /// every [`DISCOVERY_RECHECK`], all of them with `now` (going live). The
-    /// last result stays shown meanwhile.
-    fn recheck_discovery(&mut self, now: bool) {
-        let (own_servers, own_down, system_down) = {
+    /// Checks the discovery servers again every [`DISCOVERY_RECHECK`]:
+    /// LANcast's own or the event's always, so a server that goes away
+    /// blocks "Go live" (D49); the one from NDI Access Manager while it is
+    /// not reachable (D48). The last result stays shown meanwhile.
+    fn recheck_discovery(&mut self) {
+        let (own_servers, system_down) = {
             let network = &self.state().network;
             (
                 network.own_servers.clone(),
-                network.own_reachable == Some(false),
                 network.system_reachable == Some(false),
             )
         };
-        if !own_servers.is_empty()
-            && (now || own_down && self.own_checked.elapsed() >= DISCOVERY_RECHECK)
-        {
+        if !own_servers.is_empty() && self.own_checked.elapsed() >= DISCOVERY_RECHECK {
             self.check_own_discovery(own_servers, true);
         }
-        if now || system_down && self.system_checked.elapsed() >= DISCOVERY_RECHECK {
+        if system_down && self.system_checked.elapsed() >= DISCOVERY_RECHECK {
             self.check_system_discovery(true);
         }
     }
@@ -738,6 +834,13 @@ impl Controller {
     fn publish_tray(&self) {
         let state = self.state();
         let (tray_state, tooltip) = match &state.sending {
+            Some(s) if s.reaching_nobody().is_some() => (
+                TrayState::Error,
+                format!(
+                    "LANcast – NOT live: discovery server {} not reachable",
+                    s.reaching_nobody().unwrap_or_default()
+                ),
+            ),
             Some(s) => {
                 let audio = match s.audio_mode {
                     Some(AudioMode::SystemLoopback) => " – SYSTEM audio",
