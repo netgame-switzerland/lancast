@@ -48,6 +48,11 @@ impl SourceLoader {
             .map(crate::distro::source_host)
     }
 
+    /// Whether a load is running, e.g. for a disabled "Check now" (D50).
+    pub fn is_loading(&self) -> bool {
+        self.loading.is_some()
+    }
+
     /// Whether the next load is due: the first one, or the scheduled one.
     pub fn due(&self) -> bool {
         self.loading.is_none()

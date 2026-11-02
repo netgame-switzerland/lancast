@@ -130,6 +130,8 @@ pub struct LancastApp {
     /// The last problem with the `source` that was shown, so a refresh
     /// that fails the same way does not show it again.
     source_problem: Option<String>,
+    /// The last load from the `source`, for the settings (D50).
+    source_check: Option<SourceCheck>,
     /// Where Windows shows the tray icon (D29), and when last checked.
     tray_placement: IconPlacement,
     tray_checked: Option<Instant>,
@@ -207,6 +209,7 @@ impl LancastApp {
             event_source,
             source_config: None,
             source_problem: None,
+            source_check: None,
             tray_placement: IconPlacement::Shown,
             tray_checked: None,
             confirm_quit: false,
@@ -273,6 +276,8 @@ impl LancastApp {
             Err(err) => {
                 // Offline (e.g. at home before the event) is normal.
                 tracing::info!(%url, "cannot load the event configuration: {err:#}");
+                self.source_check =
+                    Some(SourceCheck::new(SourceOutcome::Failed(format!("{err:#}"))));
                 self.source_problem(
                     NoticeLevel::Info,
                     format!(
@@ -286,11 +291,13 @@ impl LancastApp {
         match event_state::fetched_link_for_this_build(&file, stored.as_ref()) {
             Ok(None) => {
                 tracing::info!(%url, "the event configuration is unchanged");
+                self.source_check = Some(SourceCheck::new(SourceOutcome::Unchanged));
                 self.source_problem = None;
             }
             Ok(Some(link)) => {
                 self.source_problem = None;
                 tracing::info!(%url, event = ?link.event, "event configuration loaded");
+                self.source_check = Some(SourceCheck::new(SourceOutcome::Updated));
                 if self.repeats_current_event(&link) {
                     // Only the dates or the source changed (D36).
                     self.take_repeated_link(&link);
@@ -313,6 +320,9 @@ impl LancastApp {
             }
             Err(err) => {
                 tracing::warn!(%url, "event configuration rejected: {err:#}");
+                self.source_check = Some(SourceCheck::new(SourceOutcome::Rejected(format!(
+                    "{err:#}"
+                ))));
                 self.source_problem(
                     NoticeLevel::Warning,
                     format!(
@@ -1577,6 +1587,12 @@ impl LancastApp {
                             self.link_settings(ui);
                             ui.end_row();
 
+                            if distro::is_distro() {
+                                group_label(ui, "Event");
+                                self.event_source_settings(ui);
+                                ui.end_row();
+                            }
+
                             group_label(ui, "Updates");
                             self.update_settings(ui);
                             ui.end_row();
@@ -1666,6 +1682,92 @@ impl LancastApp {
             });
         });
         ui.add_space(6.0);
+    }
+
+    /// Where the event configuration comes from, the last load and its
+    /// result, the next one, and "Check now" (D50).
+    fn event_source_settings(&mut self, ui: &mut egui::Ui) {
+        let Some(source) = self.source_config.clone() else {
+            ui.label(
+                RichText::new("Set by the event link; no configuration address.")
+                    .small()
+                    .weak(),
+            );
+            return;
+        };
+        let host = distro::source_host(&source.url).to_owned();
+        let interval = match source.refresh {
+            Some(refresh) => format!("every {}", minutes(refresh)),
+            None => "at every start".to_owned(),
+        };
+        let about = format!(
+            "{}\nLANcast loads the event configuration from there at every start \
+             and {interval}, as set by the organizers. A newer one applies \
+             without asking.",
+            source.url
+        );
+        // One line each, like the discovery server and the NDI groups.
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Configuration server");
+                ui.strong(host).on_hover_text(about);
+                let loading = self.event_source.is_loading();
+                if ui
+                    .add_enabled(!loading, egui::Button::new("Check now").small())
+                    .on_hover_text("Loads the event configuration from there now.")
+                    .clicked()
+                {
+                    tracing::info!(url = %source.url, "loading the event configuration (Check now)");
+                    self.event_source.start(source.url.clone(), source.refresh);
+                }
+            });
+            ui.horizontal(|ui| {
+                if self.event_source.is_loading() {
+                    ui.label(RichText::new("Checking…").small().weak());
+                    return;
+                }
+                if let Some(check) = &self.source_check {
+                    let at = check.when();
+                    let kept = "The saved configuration stays in force.";
+                    let (text, color, hint) = match &check.outcome {
+                        SourceOutcome::Unchanged => {
+                            (format!("Last checked {at}: unchanged"), None, None)
+                        }
+                        SourceOutcome::Updated => {
+                            (format!("Last checked {at}: updated"), Some(BLUE), None)
+                        }
+                        SourceOutcome::Failed(err) => (
+                            format!("Last checked {at}: not reachable"),
+                            Some(AMBER),
+                            Some(format!("{err}\n{kept}")),
+                        ),
+                        SourceOutcome::Rejected(err) => (
+                            format!("Last checked {at}: rejected"),
+                            Some(AMBER),
+                            Some(format!("{err}\n{kept}")),
+                        ),
+                    };
+                    let mut text = RichText::new(text).small();
+                    text = match color {
+                        Some(color) => text.color(color),
+                        None => text.weak(),
+                    };
+                    let label = ui.label(text);
+                    if let Some(hint) = hint {
+                        label.on_hover_text(hint);
+                    }
+                }
+                if let Some(next) = self.event_source.next() {
+                    let left = time_left(next.saturating_duration_since(Instant::now()));
+                    let text = if self.source_check.is_some() {
+                        format!("· next check in {left}")
+                    } else {
+                        format!("Next check in {left}")
+                    };
+                    ui.label(RichText::new(text).small().weak());
+                }
+            });
+        });
     }
 
     /// The startup check setting, "Check now" and the last result (D37).
@@ -2168,6 +2270,56 @@ fn unreachable_event_server(enforced: Option<&str>, network: &NetworkStatus) -> 
     let servers = enforced?.trim();
     (!servers.is_empty() && network.own_servers == servers && network.own_reachable == Some(false))
         .then(|| servers.to_owned())
+}
+
+/// The last load from the event's `source` (D50).
+struct SourceCheck {
+    /// Local time in the user's format, with the date if it was not
+    /// today when shown (see [`SourceCheck::when`]).
+    time: String,
+    /// Local date in the user's short date format (D45).
+    date: String,
+    outcome: SourceOutcome,
+}
+
+impl SourceCheck {
+    fn new(outcome: SourceOutcome) -> Self {
+        Self {
+            time: crate::locale::time_now(),
+            date: crate::locale::today(),
+            outcome,
+        }
+    }
+
+    /// "14:32", or "01.11.2026 14:32" on a later day.
+    fn when(&self) -> String {
+        if self.date == crate::locale::today() {
+            self.time.clone()
+        } else {
+            format!("{} {}", self.date, self.time)
+        }
+    }
+}
+
+enum SourceOutcome {
+    Unchanged,
+    /// Applied, including changes of only the dates or the source.
+    Updated,
+    /// Not loaded (offline, HTTP error), with the reason.
+    Failed(String),
+    /// Loaded but not accepted (signature, older, expired), with the reason.
+    Rejected(String),
+}
+
+/// "1 minute", "5 minutes" until the next load; part of a minute counts as
+/// a whole one. Intervals use [`minutes`].
+fn time_left(duration: Duration) -> String {
+    let minutes = duration.as_secs().div_ceil(60).max(1);
+    if minutes == 1 {
+        "1 minute".to_owned()
+    } else {
+        format!("{minutes} minutes")
+    }
 }
 
 /// The notice after a configuration was loaded from the `source` (D44).

@@ -1590,6 +1590,31 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   can change it) and the one from NDI Access Manager ("Ignore for LANcast" exists, D14): these keep
   the red label only.
 
+### D50. The configuration address in the settings, with "Check now" (2026-11-02)
+- **User:** see in the settings which configuration address is in use and when it was last
+  loaded, and load it on demand. Until now only the link dialog named the host and the log the
+  loads; an unchanged result is silent (D44).
+- **Row "Event"** in the settings grid (organizer and event editions only, `event_source_settings`
+  in `app/ui.rs`), two lines like the discovery server and NDI groups rows: "Configuration
+  server **<host>**" (hover: the full URL and the interval) with a "Check now" button, and below
+  it, small, "Last checked 14:32: unchanged / updated / not reachable / rejected" (the last two
+  amber, the reason on hover) "· next check in 4 minutes". Without a `source`: "Set by the event
+  link; no configuration address." It lives in the settings body, not in the collapsed header,
+  which is full already (D46). A first version on one wrapping line broke up in the narrow grid
+  column (seen by the user).
+- **Check now** starts the same load as the timer (`SourceLoader::start`), so the result goes
+  through the same checks and is applied the same way (D44), and the next timed load counts from
+  then. Disabled while a load runs ("Checking…"). Repeated problems still give no new notice; the
+  row shows them.
+- **Time** in the user's format, like the dates (D45): `locale::time_now` uses `GetTimeFormatEx`
+  with `LOCALE_NAME_USER_DEFAULT` (null), `TIME_NOSECONDS`, a null time (= the current local time)
+  and a null format (= the locale's), available since Vista; 0 means failure
+  (https://learn.microsoft.com/windows/win32/api/datetimeapi/nf-datetimeapi-gettimeformatex).
+  When the check was on an earlier day, the short date comes first (`locale::today`, the same
+  `GetDateFormatEx` call as D45 with a null date). Other platforms: `HH:MM UTC`, no date.
+  Intervals use the dialog's wording ("every minute", `minutes`). Not stored: the row shows the
+  loads of this run only.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
