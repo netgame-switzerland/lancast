@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 use crate::{
     capture::video::VideoOptions,
-    config::Config,
+    config::{Config, PreviousUser},
     distro::{self, EventFile, SignedEvent},
     event_link::{self, EventLink, EventValues},
 };
@@ -161,6 +161,66 @@ pub fn source_url(config: &Config) -> Option<String> {
     EventState::from_config(config).source.map(|s| s.url)
 }
 
+/// Whether two signed event configurations are for the same `event_id`.
+pub fn same_event_id(a: Option<&SignedEvent>, b: Option<&SignedEvent>) -> bool {
+    let id = |s: Option<&SignedEvent>| {
+        s.and_then(|s| distro::decode_payload(s).ok())
+            .map(|p| p.event_id)
+    };
+    let a = id(a);
+    a.is_some() && a == id(b)
+}
+
+/// Event edition: sets the personal id for the configuration `signed` that
+/// replaces the one in force, before it is stored (D38, D47).
+/// - A personal id (`user`) sets the name and ends an earlier event's name.
+/// - Without one, the stored id stays if `signed` is the same event.
+/// - Otherwise the stored id is dropped, but its name is kept as
+///   `event_user_previous`, marked with the event it was confirmed for.
+pub fn switch_event_user(
+    config: &mut Config,
+    signed: Option<&SignedEvent>,
+    user: Option<&SignedEvent>,
+) {
+    switch_event_user_with_key(config, distro::this_build_key().ok(), signed, user);
+}
+
+fn switch_event_user_with_key(
+    config: &mut Config,
+    public_key: Option<&str>,
+    signed: Option<&SignedEvent>,
+    user: Option<&SignedEvent>,
+) {
+    if let Some(user) = user {
+        config.event_user = Some(user.clone());
+        config.event_user_previous = None;
+        return;
+    }
+    if same_event_id(config.event_signed.as_ref(), signed) {
+        return;
+    }
+    let Some(user) = config.event_user.take() else {
+        return;
+    };
+    let previous = public_key.and_then(|key| {
+        let event = distro::verify(config.event_signed.as_ref()?, key).ok()?;
+        let name = distro::verify_user(&user, key, &event.event_id).ok()?.user;
+        let label = if event.event.trim().is_empty() {
+            event.event_id
+        } else {
+            event.event.trim().to_owned()
+        };
+        Some(PreviousUser { name, event: label })
+    });
+    if previous.is_some() {
+        info!(
+            ?previous,
+            "the new configuration is for another event; keeping the personal name as unconfirmed"
+        );
+        config.event_user_previous = previous;
+    }
+}
+
 /// Longest configuration file accepted from a `source`.
 const MAX_SOURCE_BYTES: u64 = 64 * 1024;
 /// A `source` that does not answer within this does not delay sending any
@@ -290,6 +350,74 @@ mod tests {
         assert_eq!(changes.len(), 3);
         // Within the limits nothing changes.
         assert!(enforce(&enforced, &mut video, &mut gain).is_empty());
+    }
+
+    fn event(secret: &[u8; 32], name: &str, id: &str) -> SignedEvent {
+        let payload = distro::EventPayload {
+            v: 1,
+            event: name.into(),
+            event_id: id.into(),
+            valid_from: "2026-11-01".into(),
+            valid_until: "2026-11-05".into(),
+            enforced: Default::default(),
+            source: None,
+            issued: None,
+            refresh_minutes: None,
+        };
+        distro::sign(&payload, secret).unwrap()
+    }
+
+    fn user(secret: &[u8; 32], id: &str, name: &str) -> SignedEvent {
+        let payload = distro::UserPayload {
+            v: 1,
+            event_id: id.into(),
+            user: name.into(),
+        };
+        distro::sign_user(&payload, secret).unwrap()
+    }
+
+    #[test]
+    fn another_event_keeps_the_personal_name_as_previous() {
+        let secret = distro::generate_secret().unwrap();
+        let key = distro::public_key(&secret);
+        let key = Some(key.as_str());
+        let mut config = Config {
+            event_signed: Some(event(&secret, "NetGame 2026", "netgame-2026")),
+            event_user: Some(user(&secret, "netgame-2026", "Alice")),
+            ..Config::default()
+        };
+        // The same event (e.g. re-signed with new dates): the id stays.
+        let same = event(&secret, "NetGame 2026", "netgame-2026");
+        switch_event_user_with_key(&mut config, key, Some(&same), None);
+        assert!(config.event_user.is_some());
+        assert_eq!(config.event_user_previous, None);
+
+        // Another event: the id goes, the name stays, marked.
+        let next = event(&secret, "NetGame 2027", "netgame-2027");
+        switch_event_user_with_key(&mut config, key, Some(&next), None);
+        assert_eq!(config.event_user, None);
+        let previous = config.event_user_previous.clone().unwrap();
+        assert_eq!(previous.marked(), "Alice [NetGame 2026]");
+
+        // Yet another event without a personal link keeps it.
+        config.event_signed = Some(next);
+        let later = event(&secret, "", "netgame-2028");
+        switch_event_user_with_key(&mut config, key, Some(&later), None);
+        assert_eq!(config.event_user_previous, Some(previous));
+
+        // The new event's personal link replaces it.
+        let alice = user(&secret, "netgame-2028", "Alice B.");
+        switch_event_user_with_key(&mut config, key, Some(&later), Some(&alice));
+        assert_eq!(config.event_user, Some(alice));
+        assert_eq!(config.event_user_previous, None);
+
+        // Without a name for the event, its id marks the name.
+        config.event_signed = Some(later);
+        switch_event_user_with_key(&mut config, key, Some(&same), None);
+        assert_eq!(
+            config.event_user_previous.unwrap().marked(),
+            "Alice B. [netgame-2028]"
+        );
     }
 
     fn file(secret: &[u8; 32], until: &str, issued: Option<u64>) -> EventFile {

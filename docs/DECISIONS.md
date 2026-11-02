@@ -1508,19 +1508,28 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **First hint:** "Select a window above to see its live preview." (empty preview area) is 20 pt
   in the theme's strong text color (white in the dark theme) instead of small and weak.
 
-### D47. Notice when a loaded configuration drops the personal name (2026-11-02)
+### D47. A dropped personal name stays, marked with its event (2026-11-02)
 - **Case:** a configuration loaded from the `source` (D44) names another `event_id`, e.g. when the
-  organizers point last year's configuration address at next year's event. As designed (D38),
-  LANcast then drops the stored personal id and sends under the participant's own name. Until now
-  the only notice was "Event configuration for … updated from <host>.", so nobody noticed the name
-  was gone (came up with netgame-site #1497).
-- **Notice** (`loaded_notice` in `app/ui.rs`): when applying the loaded configuration removed a
-  personal id, the notice adds "Your name for <event> is not set yet, so LANcast uses "<own name>".
-  Open your personal link on the event website to set it." Info level, like the update notice; the
-  reason is also logged.
-- **No format change:** clicking the personal link for the new event restores the name, since a
-  link's id is kept when it matches the loaded event (D44). Links the user confirms in the dialog
-  and the bundled configuration are unchanged.
+  organizers point last year's configuration address at next year's event. The personal id (D38)
+  belongs to its event, so it is dropped. Until now LANcast then silently sent under the
+  participant's own name; the only notice was "Event configuration for … updated from <host>."
+  (came up with netgame-site #1497).
+- **Previous name** (user: keep who it was last time, but it must be confirmed again, the name may
+  have changed): the name moves to `event_user_previous` in `LANcast.toml`, with the event it was
+  confirmed for, and is used marked with that event: `PC (Alice [NetGame 2026] - war3)`. The label
+  is the signed event name, else its `event_id`; no new field in the configuration or the link.
+  User's choice among "unconfirmed", "?" and the event; the event says the most to the organizers.
+  Brackets avoid parentheses nested in NDI's `PC (…)`.
+- **Rules** (`event_state::switch_event_user`, shared by GUI and CLI, D43): a personal link sets the
+  name and ends the previous one; the same event keeps the id; another event moves a verified id
+  to the previous name, and keeps an existing previous name if there is no id (two event switches
+  without a link). "Leave event" forgets it. The name field shows it with "(not confirmed)" and a
+  "Use my own name" button, for participants without a personal link for the new event.
+- **Notice** (`loaded_notice` in `app/ui.rs`): when applying a loaded configuration dropped the id,
+  it adds "Your name for <event> is not confirmed yet, so LANcast uses "Alice [NetGame 2026]".
+  Open your personal link on the event website to confirm it."
+- **No format change:** the new event's personal link restores the name, since a link's id is kept
+  when it matches the loaded event (D44).
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

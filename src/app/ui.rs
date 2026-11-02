@@ -305,7 +305,7 @@ impl LancastApp {
                     link.event.as_deref(),
                     &host,
                     sending,
-                    dropped_user.then(|| self.stream_user()),
+                    dropped_user.then(|| self.stream_user()).as_deref(),
                 );
                 self.send(Command::Notice(NoticeLevel::Info, text));
             }
@@ -366,9 +366,24 @@ impl LancastApp {
     }
 
     /// The user part of the stream name: the personal event link's, else
-    /// the user's own.
-    fn stream_user(&self) -> &str {
-        self.event_user.as_deref().unwrap_or(&self.user_name)
+    /// an earlier event's marked with that event (D47), else the user's own.
+    fn stream_user(&self) -> String {
+        if let Some(user) = &self.event_user {
+            return user.clone();
+        }
+        match self.previous_user() {
+            Some(previous) => previous.marked(),
+            None => self.user_name.clone(),
+        }
+    }
+
+    /// Event edition: the personal name of an earlier event, used until the
+    /// new event's personal link arrives (D47).
+    fn previous_user(&self) -> Option<&crate::config::PreviousUser> {
+        self.config
+            .event_user_previous
+            .as_ref()
+            .filter(|_| distro::is_distro() && self.event_user.is_none())
     }
 
     /// The settings sent to the controller: the user's choices with the
@@ -616,6 +631,7 @@ impl LancastApp {
         }
         if new_user {
             self.config.event_user = link.user.clone();
+            self.config.event_user_previous = None;
         }
         if new_signed || new_user {
             self.changed_at = Some(Instant::now());
@@ -628,13 +644,11 @@ impl LancastApp {
     fn apply_link(&mut self, link: &EventLink) {
         self.config.event_name = link.event.clone().unwrap_or_default();
         if distro::is_distro() {
-            // A personal id sets the user name; a link without one keeps the
-            // stored id if it is still the same event (D38).
-            if link.user.is_some() {
-                self.config.event_user = link.user.clone();
-            } else if !same_event_id(self.config.event_signed.as_ref(), link.signed.as_ref()) {
-                self.config.event_user = None;
-            }
+            event_state::switch_event_user(
+                &mut self.config,
+                link.signed.as_ref(),
+                link.user.as_ref(),
+            );
             self.config.event_signed = link.signed.clone();
             self.config.event_enforced.clear();
         } else {
@@ -691,6 +705,7 @@ impl LancastApp {
         self.config.event_enforced.clear();
         self.config.event_signed = None;
         self.config.event_user = None;
+        self.config.event_user_previous = None;
         self.changed_at = Some(Instant::now());
         self.refresh_event();
     }
@@ -844,7 +859,8 @@ impl eframe::App for LancastApp {
         if let Some((w, h)) = enforced.max_size {
             video.max_size = (video.max_size.0.min(w), video.max_size.1.min(h));
         }
-        self.settings.source_name = crate::config::source_name(self.stream_user(), &self.game_name);
+        self.settings.source_name =
+            crate::config::source_name(&self.stream_user(), &self.game_name);
         self.sync_config(&ctx);
         let settings = self.effective_settings();
         if self.sent_settings.as_ref() != Some(&settings) {
@@ -1069,6 +1085,28 @@ impl LancastApp {
                         "Set by your personal event link; fixed while the event is active.",
                     );
                     ui.label(RichText::new("(set by the event)").small().color(BLUE));
+                } else if let Some(previous) = self.previous_user() {
+                    let event = self.config.event_name.clone();
+                    let event = if event.is_empty() {
+                        "this event".to_owned()
+                    } else {
+                        event
+                    };
+                    ui.label(RichText::new(previous.marked()).strong())
+                        .on_hover_text(format!(
+                            "Your name from {}, not confirmed for {event} yet. Open your personal \
+                         link on the event website to confirm it.",
+                            previous.event
+                        ));
+                    ui.label(RichText::new("(not confirmed)").small().color(AMBER));
+                    if ui
+                        .small_button("Use my own name")
+                        .on_hover_text("Forget the name from the earlier event.")
+                        .clicked()
+                    {
+                        self.config.event_user_previous = None;
+                        self.changed_at = Some(Instant::now());
+                    }
                 } else {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.user_name)
@@ -2088,16 +2126,6 @@ fn minutes(interval: Duration) -> String {
     }
 }
 
-/// Whether two signed event configurations are for the same `event_id`.
-fn same_event_id(a: Option<&SignedEvent>, b: Option<&SignedEvent>) -> bool {
-    let id = |s: Option<&SignedEvent>| {
-        s.and_then(|s| distro::decode_payload(s).ok())
-            .map(|p| p.event_id)
-    };
-    let a = id(a);
-    a.is_some() && a == id(b)
-}
-
 /// The notice after a configuration was loaded from the `source` (D44).
 /// `fallback_user` is set when it dropped the personal name because it is for
 /// another event (D47): the name sent instead.
@@ -2114,8 +2142,8 @@ fn loaded_notice(
     }
     if let Some(user) = fallback_user {
         text.push_str(&format!(
-            " Your name for {event} is not set yet, so LANcast uses \"{user}\". \
-             Open your personal link on the event website to set it."
+            " Your name for {event} is not confirmed yet, so LANcast uses \"{user}\". \
+             Open your personal link on the event website to confirm it."
         ));
     }
     text
@@ -2335,10 +2363,10 @@ mod tests {
         let a = signed("netgame-2026", "2026-11-05", &[("fps", "60")], &secret);
         let b = signed("netgame-2026", "2026-11-06", &[("fps", "30")], &secret);
         let c = signed("netgame-2027", "2026-11-05", &[("fps", "60")], &secret);
-        assert!(same_event_id(Some(&a), Some(&b)));
-        assert!(!same_event_id(Some(&a), Some(&c)));
-        assert!(!same_event_id(None, Some(&a)));
-        assert!(!same_event_id(None, None));
+        assert!(event_state::same_event_id(Some(&a), Some(&b)));
+        assert!(!event_state::same_event_id(Some(&a), Some(&c)));
+        assert!(!event_state::same_event_id(None, Some(&a)));
+        assert!(!event_state::same_event_id(None, None));
     }
 
     #[test]
@@ -2347,12 +2375,17 @@ mod tests {
             loaded_notice(Some("netgame 2027"), "example.org", false, None),
             "Event configuration for netgame 2027 updated from example.org."
         );
-        let text = loaded_notice(Some("netgame 2027"), "example.org", true, Some("Alice"));
+        let text = loaded_notice(
+            Some("netgame 2027"),
+            "example.org",
+            true,
+            Some("Alice [netgame 2026]"),
+        );
         assert!(text.starts_with(
             "Event configuration for netgame 2027 updated from example.org. \
              It applies the next time you go live. \
-             Your name for netgame 2027 is not set yet, so LANcast uses \"Alice\"."
+             Your name for netgame 2027 is not confirmed yet, so LANcast uses \"Alice [netgame 2026]\"."
         ));
-        assert!(text.ends_with("Open your personal link on the event website to set it."));
+        assert!(text.ends_with("Open your personal link on the event website to confirm it."));
     }
 }

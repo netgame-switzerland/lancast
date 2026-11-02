@@ -135,10 +135,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Applies the event in force like the GUI does (D43): enforced values
-/// overrule the options, with a warning for each, and an event edition
-/// refuses to send without a valid event. Returns the personal user name
-/// for the stream name (D38).
 /// Event edition: loads the current configuration from the `source` of the
 /// one in force (D44), as the GUI does at startup, but without saving it.
 /// Problems keep the configuration in force.
@@ -153,15 +149,8 @@ fn load_from_source(config: &mut crate::config::Config) {
     match loaded {
         Ok(Some(link)) => {
             info!(event = ?link.event, "event configuration loaded");
-            let event_id = |signed: Option<&crate::distro::SignedEvent>| {
-                signed
-                    .and_then(|s| crate::distro::decode_payload(s).ok())
-                    .map(|p| p.event_id)
-            };
-            // The personal name belongs to its event (D38).
-            if event_id(config.event_signed.as_ref()) != event_id(link.signed.as_ref()) {
-                config.event_user = None;
-            }
+            // The personal name belongs to its event (D38, D47).
+            event_state::switch_event_user(config, link.signed.as_ref(), None);
             config.event_name = link.event.clone().unwrap_or_default();
             config.event_signed = link.signed;
         }
@@ -170,6 +159,10 @@ fn load_from_source(config: &mut crate::config::Config) {
     }
 }
 
+/// Applies the event in force like the GUI does (D43): enforced values
+/// overrule the options, with a warning for each, and an event edition
+/// refuses to send without a valid event. Returns the personal user name
+/// for the stream name (D38, D47).
 fn obey_event(args: &mut Args) -> Result<Option<String>> {
     let (_store, mut config) = ConfigStore::load();
     // The GUI applies a new bundled event file at its next start.
@@ -218,10 +211,18 @@ fn obey_event(args: &mut Args) -> Result<Option<String>> {
             args.discovery = discovery;
         }
     }
-    if let Some(user) = &state.user {
+    // An earlier event's name, marked with that event, until the new
+    // event's personal link arrives (D47).
+    let user = state.user.clone().or_else(|| {
+        config
+            .event_user_previous
+            .as_ref()
+            .map(|previous| previous.marked())
+    });
+    if let Some(user) = &user {
         overruled(&format!("your name in the stream name is {user:?}"));
     }
-    Ok(state.user.clone())
+    Ok(user)
 }
 
 fn discovery_text(discovery: &Discovery) -> String {

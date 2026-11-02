@@ -67,6 +67,12 @@ pub struct Config {
     /// replaces `user_name` while its event is in force.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_user: Option<crate::distro::SignedEvent>,
+    /// Event edition: the personal name of an earlier event, kept when a
+    /// configuration for another event dropped its id (D47). It is used,
+    /// marked with that event, until a personal link for the new event
+    /// arrives or the user chooses their own name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_user_previous: Option<PreviousUser>,
     /// Signature of the bundled `LANcast.event` applied last, so an updated
     /// file is picked up once but does not override a later event link.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -92,6 +98,21 @@ pub fn source_name(user: &str, game: &str) -> String {
         ("", game) => game.to_owned(),
         (user, "") => user.to_owned(),
         (user, game) => format!("{user} - {game}"),
+    }
+}
+
+/// A personal name from an earlier event (D47).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviousUser {
+    pub name: String,
+    /// The event it was confirmed for, as shown: its name, else its id.
+    pub event: String,
+}
+
+impl PreviousUser {
+    /// The user part of the stream name, e.g. `Alice [NetGame 2026]`.
+    pub fn marked(&self) -> String {
+        format!("{} [{}]", self.name, self.event)
     }
 }
 
@@ -130,6 +151,7 @@ impl Default for Config {
             event_enforced: BTreeMap::new(),
             event_signed: None,
             event_user: None,
+            event_user_previous: None,
             event_bundled: String::new(),
             source_names: BTreeMap::new(),
             check_updates: true,
