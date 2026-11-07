@@ -101,6 +101,7 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
    - These options can change only while not sending. Changing them restarts the capture session.
    - **Close and minimize to tray**: default **off** (opt-in). When on, both × and minimize hide LANcast to the tray, but only while the tray icon can be reached (on the taskbar, or in the overflow with the ^ arrow turned on); otherwise LANcast behaves as if the option were off, and Settings says so and offers to open the taskbar settings (D29). When off, × quits and minimize behaves normally; while sending, × asks "Stop sending and quit LANcast?" first. There is no separate Quit button; quit with ×, or from the tray menu in tray mode.
    - **Always on top**: default off. Keeps LANcast above the game to check the setup. Works with borderless windowed games only.
+   - **Theme**: System default (follows the Windows app theme), Light or Dark; default System default. Applies at once (D52).
 9. **Advanced** (collapsed by default): discovery server (§5.4), FPS cap, max resolution. These are stored in the config.
 10. Footer or About: "NDI® is a registered trademark of Vizrt NDI AB" with a link to https://ndi.video/ (D5).
 

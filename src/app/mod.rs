@@ -148,7 +148,7 @@ pub fn run(link: Option<String>, restart_after: Option<u32>) -> Result<()> {
         options,
         Box::new(move |cc| {
             let _ = egui_ctx.set(cc.egui_ctx.clone());
-            theme::install(&cc.egui_ctx);
+            theme::install(&cc.egui_ctx, config.theme);
             let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
                 Ok(RawWindowHandle::Win32(handle)) => Some(handle.hwnd.get()),
                 _ => {

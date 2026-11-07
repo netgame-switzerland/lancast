@@ -5,7 +5,9 @@
 //! a mid gray. The light colors have at least 4.5:1 contrast to the panel
 //! background (WCAG AA for normal text); the dark ones are unchanged.
 
-use eframe::egui::{self, Color32, Theme};
+use eframe::egui::{self, Color32, Theme, ThemePreference};
+
+use crate::config::ThemeChoice;
 
 /// Status colors for text, borders and icons in the current theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,8 +42,18 @@ impl Palette {
     }
 }
 
-/// Darker text and links for egui's light theme; the dark theme stays as is.
-pub fn install(ctx: &egui::Context) {
+/// The theme the user chose; `System` follows the Windows app theme.
+pub fn apply(ctx: &egui::Context, choice: ThemeChoice) {
+    ctx.set_theme(match choice {
+        ThemeChoice::System => ThemePreference::System,
+        ThemeChoice::Light => ThemePreference::Light,
+        ThemeChoice::Dark => ThemePreference::Dark,
+    });
+}
+
+/// Darker text and links for egui's light theme (the dark theme stays as
+/// is), and the chosen theme.
+pub fn install(ctx: &egui::Context, choice: ThemeChoice) {
     let mut visuals = egui::Visuals::light();
     let text = Color32::from_gray(30);
     visuals.widgets.noninteractive.fg_stroke.color = text;
@@ -52,6 +64,7 @@ pub fn install(ctx: &egui::Context) {
     visuals.warn_fg_color = LIGHT.amber;
     visuals.error_fg_color = LIGHT.red;
     ctx.set_visuals_of(Theme::Light, visuals);
+    apply(ctx, choice);
 }
 
 #[cfg(test)]

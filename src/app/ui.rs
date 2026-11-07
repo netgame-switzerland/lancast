@@ -24,7 +24,7 @@ use super::{
     },
     event_source::SourceLoader,
     meter::Meter,
-    theme::Palette,
+    theme::{self, Palette},
     updater::{UpdateStatus, Updater},
 };
 use crate::{
@@ -32,7 +32,7 @@ use crate::{
         audio::{AudioLevels, AudioMode},
         video::{PreviewSlot, VideoOptions},
     },
-    config::{Config, ConfigStore},
+    config::{Config, ConfigStore, ThemeChoice},
     dialog::{Dialog, Icon},
     distro::{self, EventFile, SignedEvent},
     event_link::{self, EventLink, EventValues},
@@ -89,6 +89,7 @@ pub struct LancastApp {
     /// Closing (×) and minimizing hide the window to the tray (SPEC §3.2).
     to_tray: bool,
     always_on_top: bool,
+    theme: ThemeChoice,
     /// The settings panel is expanded.
     settings_open: bool,
     /// Discovery server setting as typed (checked when editing ends).
@@ -183,6 +184,7 @@ impl LancastApp {
             sent_settings: None,
             to_tray: config.to_tray,
             always_on_top: config.always_on_top,
+            theme: config.theme,
             settings_open: config.settings_open,
             discovery_server: config.discovery_server.clone(),
             ignore_system_discovery: config.ignore_system_discovery,
@@ -454,6 +456,7 @@ impl LancastApp {
         }
         config.to_tray = self.to_tray;
         config.always_on_top = self.always_on_top;
+        config.theme = self.theme;
         config.settings_open = self.settings_open;
         config.fps_cap = self.settings.video.fps_cap;
         (config.max_width, config.max_height) = self.settings.video.max_size;
@@ -1486,6 +1489,23 @@ impl LancastApp {
                                 }
                                 ui.end_row();
                             }
+
+                            ui.label("");
+                            ui.horizontal(|ui| {
+                                ui.label("Theme");
+                                let before = self.theme;
+                                for (choice, text) in [
+                                    (ThemeChoice::System, "System default"),
+                                    (ThemeChoice::Light, "Light"),
+                                    (ThemeChoice::Dark, "Dark"),
+                                ] {
+                                    ui.selectable_value(&mut self.theme, choice, text);
+                                }
+                                if self.theme != before {
+                                    theme::apply(ui.ctx(), self.theme);
+                                }
+                            });
+                            ui.end_row();
 
                             group_label(ui, "Capture");
                             let enforced = self.enforced();

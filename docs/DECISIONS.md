@@ -1662,6 +1662,12 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   fades dimmed icons instead of darkening them.
 - **Unchanged:** the preview box and its message stay dark in both themes (it shows video), as do
   the Go live / Stop fills with white text and the meter colors.
+- **Theme setting (user):** "Theme: System default / Light / Dark" in the Window row of the
+  settings, `theme = "system" | "light" | "dark"` in `LANcast.toml` (default `system`). It maps to
+  egui's `ThemePreference` (`theme::apply`) and applies at once, also while casting (it only
+  changes LANcast's own window). An unknown value reads as `system` (`#[serde(other)]`) instead of
+  making the whole file invalid. Checked with a portable copy at `theme = "light"`: text, the
+  carousel and the settings are readable.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

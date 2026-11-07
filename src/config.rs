@@ -26,6 +26,8 @@ pub struct Config {
     /// shows the tray icon, D29).
     pub to_tray: bool,
     pub always_on_top: bool,
+    /// Light, dark, or the Windows app theme (D52).
+    pub theme: ThemeChoice,
     /// The settings panel is expanded (collapsed by default).
     pub settings_open: bool,
     pub fps_cap: u32,
@@ -90,6 +92,19 @@ pub struct Config {
     pub skipped_update: String,
 }
 
+/// The color theme of the window (D52).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    Light,
+    Dark,
+    /// Follow the Windows app theme; also for unknown values in the file
+    /// (`other` must be the last variant).
+    #[default]
+    #[serde(other)]
+    System,
+}
+
 /// The NDI source name for `user` and `game`: `User - Game` (D26). NDI
 /// prepends the computer name, giving `HOST (User - Game)`. Either part may
 /// be empty.
@@ -131,6 +146,7 @@ impl Default for Config {
         Self {
             to_tray: false,
             always_on_top: false,
+            theme: ThemeChoice::System,
             settings_open: false,
             fps_cap: 60,
             max_width: 1920,
@@ -295,6 +311,40 @@ mod tests {
         assert!(config.check_updates);
         assert_eq!((config.max_width, config.max_height), (1920, 1080));
         assert_eq!(config.ndi_groups, crate::ndi_out::DEFAULT_GROUPS);
+    }
+
+    #[test]
+    fn theme_reads_known_and_unknown_values() {
+        let theme = |text: &str| toml::from_str::<Config>(text).unwrap().theme;
+        assert_eq!(theme(""), ThemeChoice::System);
+        assert_eq!(
+            theme(
+                "theme = \"light\"
+"
+            ),
+            ThemeChoice::Light
+        );
+        assert_eq!(
+            theme(
+                "theme = \"dark\"
+"
+            ),
+            ThemeChoice::Dark
+        );
+        // An unknown value does not invalidate the whole file.
+        assert_eq!(
+            theme(
+                "theme = \"purple\"
+"
+            ),
+            ThemeChoice::System
+        );
+        let written = toml::to_string(&Config {
+            theme: ThemeChoice::Dark,
+            ..Config::default()
+        })
+        .unwrap();
+        assert!(written.contains("theme = \"dark\""));
     }
 
     #[test]
