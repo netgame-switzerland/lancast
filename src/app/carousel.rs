@@ -223,8 +223,20 @@ impl Carousel {
         if let Some(index) = shown
             && count > 1
         {
-            ui.label(RichText::new(format!("{} of {count}", index + 1)).weak())
-                .on_hover_text("Down / Up: next / previous match");
+            // Right to left: shows as "2 of 5 ^ v [field]".
+            if step_button(ui, false)
+                .on_hover_text("Next match (Down key)")
+                .clicked()
+            {
+                self.step_match(1);
+            }
+            if step_button(ui, true)
+                .on_hover_text("Previous match (Up key)")
+                .clicked()
+            {
+                self.step_match(-1);
+            }
+            ui.label(RichText::new(format!("{} of {count}", index + 1)).weak());
         }
         let mut picked = None;
         if !locked {
@@ -551,7 +563,7 @@ impl Carousel {
                 painter.rect_stroke(
                     tile,
                     6.0,
-                    Stroke::new(3.0, Palette::of(ui).amber),
+                    Stroke::new(3.0, Palette::of(ui).teal),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -712,6 +724,28 @@ fn matches(window: &WindowInfo, query: &str) -> bool {
 /// A gray for the dark or the light theme.
 fn gray(dark: bool, on_dark: u8, on_light: u8) -> Color32 {
     Color32::from_gray(if dark { on_dark } else { on_light })
+}
+
+/// A small button with a triangle pointing up or down, drawn because egui's
+/// default font has no arrows (D51).
+fn step_button(ui: &mut egui::Ui, up: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+    let visuals = ui.style().interact(&response);
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 4.0, visuals.weak_bg_fill);
+    }
+    let c = rect.center();
+    let (tip, base) = if up { (-4.0, 3.0) } else { (4.0, -3.0) };
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            pos2(c.x, c.y + tip),
+            pos2(c.x + 5.0, c.y + base),
+            pos2(c.x - 5.0, c.y + base),
+        ],
+        visuals.fg_stroke.color,
+        Stroke::NONE,
+    ));
+    response
 }
 
 fn uv() -> Rect {

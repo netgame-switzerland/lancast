@@ -1681,7 +1681,8 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **Match:** every whitespace-separated word occurs in the title or the exe name, ignoring case;
   the first such window in carousel order (most recently used first) wins. When the search
   changes, the carousel scrolls the shortest way until the match is visible (`scroll_into_view`,
-  as when casting starts) and outlines the tile in amber. Without a match the search text turns
+  as when casting starts) and outlines the tile in teal (`Palette::teal`; amber at first, which
+  the user found ugly; `#007373` in the light theme for 4.5:1). Without a match the search text turns
   red. Enter selects the match like a click; Esc clears the search.
 - **Several matches (user: how to go through them):** Down / Up in the field step to the next /
   previous match, wrapping around, and scroll it into view; "2 of 5" next to the field shows
@@ -1690,7 +1691,16 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   The match shown is kept by window handle (`current_match`), so the 2 s refresh does not move it;
   if it closes or no longer matches, the first match is shown. A new search starts at the first
   match. No arrow glyphs in the counter: egui's default font has none (D51); the test for that
-  now covers `carousel.rs` and all four arrows.
+  now covers `carousel.rs` and all four arrows. So that people find the keys (user), small up /
+  down buttons with drawn triangles (`step_button`) sit between the counter and the field and do
+  the same as the keys.
+- **Enter, then Tab, focuses Go live (user).** egui moves the focus on Tab itself: with nothing
+  focused (the field lost it on Enter) it gives it to the first focusable widget of the frame.
+  After Enter picked a window (`tab_to_go_live`), the next Tab is taken in `focus_go_live` and
+  the (first) Go live button requests the focus after egui's choice, so Enter or Space there goes
+  live. Focusing anything else first cancels it. The Go live and Stop fills hide egui's focus
+  look, so a focused one gets a teal ring (`focus_ring`). Not tried with real keys here (keys
+  cannot be sent to a test window, see below).
 - **While casting** the field is disabled and cleared: the selection is locked (D22).
 - **Checked** with a portable copy: the search "notepad" scrolled a Notepad window from outside
   the four visible tiles into view and outlined it. Keys could not be sent to the test window

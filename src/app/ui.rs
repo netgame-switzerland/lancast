@@ -103,6 +103,9 @@ pub struct LancastApp {
     changed_at: Option<Instant>,
     /// Process key of the selected window, for remembering game names.
     selected_process: Option<String>,
+    /// A window was picked with Enter in the search: the next Tab focuses
+    /// Go live (D53).
+    tab_to_go_live: bool,
     /// Select the window cast last once it is open (D54); ends with the
     /// first selection, automatic or by the user.
     restore_last_cast: bool,
@@ -201,6 +204,7 @@ impl LancastApp {
             changed_at: None,
             selected_process: None,
             restore_last_cast,
+            tab_to_go_live: false,
             meter: Meter::default(),
             preview: None,
             preview_aspect: 16.0 / 9.0,
@@ -789,6 +793,23 @@ impl LancastApp {
         self.send(Command::Start(choice));
     }
 
+    /// After a window was picked with Enter in the search, Tab focuses the
+    /// (first) Go live button, so Enter or Space then goes live (D53).
+    fn focus_go_live(&mut self, ui: &mut egui::Ui, button: &egui::Response) {
+        if self.tab_to_go_live && button.enabled() {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)) {
+                // After egui's own Tab handling gave the focus to the first
+                // widget of the frame.
+                button.request_focus();
+                self.tab_to_go_live = false;
+            } else if ui.ctx().memory(|m| m.focused().is_some()) {
+                // The user went elsewhere (e.g. back into a field).
+                self.tab_to_go_live = false;
+            }
+        }
+        focus_ring(ui, button);
+    }
+
     /// After a start: selects the window cast last as soon as it is open,
     /// unless something is selected already (D54).
     fn restore_last_cast(&mut self, state: &AppState) {
@@ -1017,6 +1038,7 @@ impl eframe::App for LancastApp {
             self.header_height = self.header_height.max(header.response.rect.height());
             if let Some(window) = header.inner {
                 self.select(window, &state);
+                self.tab_to_go_live = true;
             }
             ui.add_space(4.0);
             let selected = state.selected.as_ref().map(|w| w.hwnd);
@@ -1350,21 +1372,21 @@ impl LancastApp {
             match &state.audio_check {
                 AudioCheck::Unavailable(_) if state.selected.is_some() => {
                     // No plain "Go live" that silently uses system audio (SPEC §3.1).
-                    if ui
-                        .add_enabled(ready, big("Go live with system audio", fill))
-                        .clicked()
-                    {
+                    let button = ui.add_enabled(ready, big("Go live with system audio", fill));
+                    self.focus_go_live(ui, &button);
+                    if button.clicked() {
                         self.start(AudioChoice::System, state);
                     }
-                    if ui
-                        .add_enabled(ready, big("Go live without audio", fill))
-                        .clicked()
-                    {
+                    let button = ui.add_enabled(ready, big("Go live without audio", fill));
+                    focus_ring(ui, &button);
+                    if button.clicked() {
                         self.start(AudioChoice::None, state);
                     }
                 }
                 _ => {
-                    if ui.add_enabled(ready, big("Go live", fill)).clicked() {
+                    let button = ui.add_enabled(ready, big("Go live", fill));
+                    self.focus_go_live(ui, &button);
+                    if button.clicked() {
                         self.start(AudioChoice::Game, state);
                     }
                 }
@@ -2522,6 +2544,19 @@ fn loaded_notice(
 /// Lowercase exe name, the key for remembered source names.
 fn process_key(window: &WindowInfo) -> Option<String> {
     window.process_name.as_ref().map(|name| name.to_lowercase())
+}
+
+/// A visible ring around a focused button; the colored fills of Go live and
+/// Stop hide egui's own focus look.
+fn focus_ring(ui: &egui::Ui, button: &egui::Response) {
+    if button.has_focus() {
+        ui.painter().rect_stroke(
+            button.rect.expand(3.0),
+            6.0,
+            egui::Stroke::new(2.0, Palette::of(ui).teal),
+            egui::StrokeKind::Outside,
+        );
+    }
 }
 
 fn banner(ui: &mut egui::Ui, color: Color32, text: &str) {

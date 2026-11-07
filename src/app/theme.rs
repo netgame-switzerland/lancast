@@ -16,6 +16,8 @@ pub struct Palette {
     pub red: Color32,
     pub blue: Color32,
     pub green: Color32,
+    /// The search match and keyboard focus (D53).
+    pub teal: Color32,
 }
 
 const DARK: Palette = Palette {
@@ -23,6 +25,7 @@ const DARK: Palette = Palette {
     red: Color32::from_rgb(215, 60, 50),
     blue: Color32::from_rgb(90, 170, 255),
     green: Color32::from_rgb(60, 190, 80),
+    teal: Color32::from_rgb(40, 200, 190),
 };
 
 const LIGHT: Palette = Palette {
@@ -30,6 +33,7 @@ const LIGHT: Palette = Palette {
     red: Color32::from_rgb(185, 30, 25),
     blue: Color32::from_rgb(0, 95, 200),
     green: Color32::from_rgb(20, 125, 50),
+    teal: Color32::from_rgb(0, 115, 115),
 };
 
 impl Palette {
@@ -92,7 +96,7 @@ mod tests {
     #[test]
     fn light_palette_is_readable() {
         let panel = egui::Visuals::light().panel_fill;
-        for color in [LIGHT.amber, LIGHT.red, LIGHT.blue, LIGHT.green] {
+        for color in [LIGHT.amber, LIGHT.red, LIGHT.blue, LIGHT.green, LIGHT.teal] {
             let ratio = contrast(color, panel);
             assert!(ratio >= 4.5, "{color:?} on {panel:?}: {ratio:.2}");
         }
