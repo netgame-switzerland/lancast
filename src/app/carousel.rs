@@ -13,6 +13,7 @@ use eframe::egui::{
     self, Color32, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, pos2, vec2,
 };
 
+use super::theme::Palette;
 use crate::{
     exe_icon,
     win_thumbnail::Thumbnails,
@@ -89,6 +90,9 @@ pub struct Carousel {
     was_locked: bool,
     icons: HashMap<String, Option<TextureHandle>>,
     thumbnails: Option<Thumbnails>,
+    /// Search text (D53). The first matching window is scrolled into view
+    /// and outlined; all windows stay in the carousel. Cleared while casting.
+    query: String,
 }
 
 impl Carousel {
@@ -105,7 +109,95 @@ impl Carousel {
             was_locked: false,
             icons: HashMap::new(),
             thumbnails: destination.map(Thumbnails::new),
+            query: String::new(),
         }
+    }
+
+    /// The first window (most recently used first) that the search matches;
+    /// `None` without a search.
+    fn search_match(&self) -> Option<&WindowInfo> {
+        if self.query.trim().is_empty() {
+            return None;
+        }
+        self.windows.iter().find(|w| matches(w, &self.query))
+    }
+
+    /// The search field (D53). Typing while no other field has the keyboard
+    /// starts a new search in it, and the carousel scrolls to the first
+    /// matching window. Enter picks that window, Esc clears the search.
+    /// Returns the picked window. Disabled and empty while casting.
+    pub fn search_field(&mut self, ui: &mut egui::Ui, locked: bool) -> Option<WindowInfo> {
+        let id = egui::Id::unique("window_search");
+        let before = self.query.clone();
+        if locked {
+            self.query.clear();
+        } else {
+            self.type_to_search(ui.ctx(), id);
+        }
+        let no_match = !self.query.trim().is_empty() && self.search_match().is_none();
+        let mut field = egui::TextEdit::singleline(&mut self.query)
+            .id(id)
+            .hint_text("Search: just type")
+            .desired_width(220.0);
+        if no_match {
+            field = field.text_color(Palette::of(ui).red);
+        }
+        let response = ui.add_enabled(!locked, field).on_hover_text(
+            "Type anywhere to jump to the first window whose title or program \
+             contains the words. Enter picks it, Esc clears the search.",
+        );
+        let mut picked = None;
+        if !locked {
+            let (enter, escape) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if escape {
+                self.query.clear();
+                response.surrender_focus();
+            } else if enter && response.lost_focus() {
+                picked = self.search_match().cloned();
+            }
+        }
+        if self.query != before
+            && let Some(hwnd) = self.search_match().map(|w| w.hwnd)
+        {
+            self.scroll_into_view(Some(hwnd));
+        }
+        picked
+    }
+
+    /// Text typed while no widget has the keyboard replaces the search and
+    /// focuses the field, with the cursor at the end.
+    fn type_to_search(&mut self, ctx: &egui::Context, id: egui::Id) {
+        if ctx.memory(|m| m.focused().is_some()) {
+            return;
+        }
+        let typed = ctx.input_mut(|i| {
+            let mut typed = String::new();
+            i.events.retain(|event| match event {
+                egui::Event::Text(text) => {
+                    typed.push_str(text);
+                    false
+                }
+                _ => true,
+            });
+            typed
+        });
+        let typed = typed.trim_start();
+        if typed.is_empty() {
+            return;
+        }
+        self.query = typed.to_owned();
+        ctx.memory_mut(|m| m.request_focus(id));
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        let end = egui::text::CCursor::new(self.query.chars().count());
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(end)));
+        state.store(ctx, id);
     }
 
     /// Removes all thumbnails (while hidden).
@@ -337,6 +429,7 @@ impl Carousel {
         };
         let painter = ui.painter_at(inner);
         let mut shown = Vec::new();
+        let found = self.search_match().map(|w| w.hwnd).filter(|_| !locked);
 
         for (index, center_x) in slots {
             let tile = tile_at(center_x);
@@ -372,6 +465,14 @@ impl Carousel {
                 )
             };
             painter.rect(tile, 6.0, fill, stroke, egui::StrokeKind::Inside);
+            if found == Some(window.hwnd) {
+                painter.rect_stroke(
+                    tile,
+                    6.0,
+                    Stroke::new(3.0, Palette::of(ui).amber),
+                    egui::StrokeKind::Inside,
+                );
+            }
 
             let thumb_area = Rect::from_min_max(
                 tile.min + vec2(8.0, 8.0),
@@ -511,6 +612,21 @@ fn arrow(ui: &mut egui::Ui, rect: Rect, text: &str, enabled: bool) -> bool {
     .inner
 }
 
+/// Whether every word of `query` occurs in the window title or the exe name,
+/// ignoring case. An empty query matches every window.
+fn matches(window: &WindowInfo, query: &str) -> bool {
+    let haystack = format!(
+        "{} {}",
+        window.title,
+        window.process_name.as_deref().unwrap_or_default()
+    )
+    .to_lowercase();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| haystack.contains(word))
+}
+
 /// A gray for the dark or the light theme.
 fn gray(dark: bool, on_dark: u8, on_light: u8) -> Color32 {
     Color32::from_gray(if dark { on_dark } else { on_light })
@@ -545,4 +661,55 @@ fn elide(painter: &egui::Painter, text: &str, size: f32, width: f32) -> String {
         }
     }
     chars[..lo].iter().collect::<String>() + "…"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(hwnd: isize, title: &str, exe: Option<&str>) -> WindowInfo {
+        WindowInfo {
+            hwnd,
+            pid: 1,
+            title: title.to_owned(),
+            process_name: exe.map(str::to_owned),
+            process_path: None,
+            class_name: String::new(),
+            width: 800,
+            height: 600,
+            minimized: false,
+        }
+    }
+
+    #[test]
+    fn search_matches_all_words_in_title_or_exe() {
+        let w = window(1, "Rocket League (64-bit, DX11)", Some("RocketLeague.exe"));
+        assert!(matches(&w, "rocket"));
+        assert!(matches(&w, "LEAGUE dx11"));
+        assert!(matches(&w, "rocketleague.exe"));
+        assert!(!matches(&w, "rocket chrome"));
+        assert!(!matches(&window(2, "Untitled", None), "notepad"));
+    }
+
+    #[test]
+    fn search_finds_the_most_recent_match_and_scrolls_to_it() {
+        let mut carousel = Carousel::new(None);
+        carousel.windows = (1..=8)
+            .map(|i| window(i, &format!("Window {i}"), Some("app.exe")))
+            .collect();
+        carousel.windows[6].title = "Counter-Strike 2".to_owned();
+        carousel.windows[7].title = "CS2 wiki - Chrome".to_owned();
+        assert!(carousel.search_match().is_none());
+        carousel.query = "cs2".to_owned();
+        assert_eq!(carousel.search_match().unwrap().hwnd, 8);
+        carousel.query = "nothing".to_owned();
+        assert!(carousel.search_match().is_none());
+        carousel.query = "counter".to_owned();
+        let hwnd = carousel.search_match().unwrap().hwnd;
+        assert_eq!(hwnd, 7);
+        carousel.scroll_into_view(Some(hwnd));
+        let left = carousel.snap.unwrap() as i64;
+        let offset = (6 - left).rem_euclid(8);
+        assert!(offset < VISIBLE as i64, "index 6 visible from {left}");
+    }
 }

@@ -980,8 +980,15 @@ impl eframe::App for LancastApp {
                             .size(15.0),
                     );
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.carousel.search_field(ui, state.sending.is_some())
+                })
+                .inner
             });
             self.header_height = self.header_height.max(header.response.rect.height());
+            if let Some(window) = header.inner {
+                self.select(window, &state);
+            }
             ui.add_space(4.0);
             let selected = state.selected.as_ref().map(|w| w.hwnd);
             let badge = state.sending.as_ref().map(live_badge);

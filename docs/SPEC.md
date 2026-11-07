@@ -57,6 +57,7 @@ Below the carousel, as soon as a window is selected, the **live preview** and th
      - afterwards it eases onto the nearest tile
      - the arrows move by one tile
    - **Order:** like Alt-Tab, i.e. Z-order, most recently active first; LANcast's own window is excluded.
+   - **Search** (D53): a field right of the heading. Typing anywhere in LANcast (when no other text field has the cursor) starts a search there. The carousel scrolls to the first window, in carousel order, whose title or exe name contains all typed words, ignoring case, and outlines it; all windows stay in the carousel. Enter selects it, Esc clears the search. Disabled while casting.
    - **Refresh:** every 2 s. Known windows keep their place, new windows are inserted at the front, and the centered window stays centered.
    - **Thumbnails:** DWM thumbnails (`DwmRegisterThumbnail`, the Alt-Tab mechanism). They are composited by Windows, cost no CPU and send nothing to the game process (anti-cheat safe).
    - **Icons:** read from the exe file (`SHGetFileInfo`).

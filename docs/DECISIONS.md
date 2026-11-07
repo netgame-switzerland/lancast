@@ -1669,6 +1669,26 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   making the whole file invalid. Checked with a portable copy at `theme = "light"`: text, the
   carousel and the settings are readable.
 
+### D53. Search in the carousel: type to jump to a window (2026-11-07)
+- **User:** a quick way to find a window in the carousel: a search field, and typing starts the
+  search. Search, not filter (user, after a first version that hid the windows that did not
+  match): the carousel scrolls to the first match and keeps all windows.
+- **Field** right of "Choose the window to cast" (`Carousel::search_field`), hint "Search: just
+  type". Typed text (`egui::Event::Text`) while no widget has the keyboard
+  (`Memory::focused() == None`) is taken out of the input, replaces the search (a new search, not
+  appended to an old one) and focuses the field with the cursor at the end, so the next keys go
+  there as usual. Text fields such as the name keep their own typing.
+- **Match:** every whitespace-separated word occurs in the title or the exe name, ignoring case;
+  the first such window in carousel order (most recently used first) wins. When the search
+  changes, the carousel scrolls the shortest way until the match is visible (`scroll_into_view`,
+  as when casting starts) and outlines the tile in amber. Without a match the search text turns
+  red. Enter selects the match like a click; Esc clears the search.
+- **While casting** the field is disabled and cleared: the selection is locked (D22).
+- **Checked** with a portable copy: the search "notepad" scrolled a Notepad window from outside
+  the four visible tiles into view and outlined it. Keys could not be sent to the test window
+  (Windows blocked bringing it to the front; posted `WM_CHAR` messages are ignored by winit), so
+  the test set the search text through a temporary hook; typing itself was not tried.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
