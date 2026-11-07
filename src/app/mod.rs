@@ -5,6 +5,7 @@ mod carousel;
 mod controller;
 mod event_source;
 mod meter;
+mod theme;
 mod ui;
 mod updater;
 
@@ -147,6 +148,7 @@ pub fn run(link: Option<String>, restart_after: Option<u32>) -> Result<()> {
         options,
         Box::new(move |cc| {
             let _ = egui_ctx.set(cc.egui_ctx.clone());
+            theme::install(&cc.egui_ctx);
             let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
                 Ok(RawWindowHandle::Win32(handle)) => Some(handle.hwnd.get()),
                 _ => {

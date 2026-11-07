@@ -24,6 +24,7 @@ use super::{
     },
     event_source::SourceLoader,
     meter::Meter,
+    theme::Palette,
     updater::{UpdateStatus, Updater},
 };
 use crate::{
@@ -45,8 +46,6 @@ use crate::{
 };
 
 const MAX_SIZES: [(u32, u32); 4] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440)];
-const AMBER: Color32 = Color32::from_rgb(235, 160, 0);
-const RED: Color32 = Color32::from_rgb(215, 60, 50);
 /// Width reserved for the meter next to the preview.
 const METER_WIDTH: f32 = 58.0;
 const MIN_PREVIEW_HEIGHT: f32 = 90.0;
@@ -58,9 +57,7 @@ const ASPECT_TOLERANCE: f32 = 0.02;
 const SAVE_DELAY: Duration = Duration::from_millis(700);
 /// An event edition re-checks the validity dates this often.
 const EVENT_RECHECK: Duration = Duration::from_secs(60);
-const BLUE: Color32 = Color32::from_rgb(90, 170, 255);
-const GREEN: Color32 = Color32::from_rgb(60, 190, 80);
-/// Fills of the Go live and Stop buttons: darker than GREEN / RED, so
+/// Fills of the Go live and Stop buttons: darker than the dark theme's green / red, so
 /// white text stays readable (D46).
 const GO_LIVE_FILL: Color32 = Color32::from_rgb(30, 135, 60);
 const STOP_FILL: Color32 = Color32::from_rgb(190, 45, 40);
@@ -964,14 +961,14 @@ impl eframe::App for LancastApp {
             let header = ui.horizontal(|ui| {
                 ui.set_min_height(self.header_height);
                 if state.sending.is_some() {
-                    lock_icon(ui, AMBER);
+                    lock_icon(ui, Palette::of(ui).amber);
                     ui.label(
                         RichText::new(
                             "Window selection is locked while casting – press Stop to choose another window",
                         )
                         .strong()
                         .size(15.0)
-                        .color(AMBER),
+                        .color(Palette::of(ui).amber),
                     );
                 } else {
                     ui.label(
@@ -1102,7 +1099,11 @@ impl LancastApp {
                     ui.label(RichText::new(user).strong()).on_hover_text(
                         "Set by your personal event link; fixed while the event is active.",
                     );
-                    ui.label(RichText::new("(set by the event)").small().color(BLUE));
+                    ui.label(
+                        RichText::new("(set by the event)")
+                            .small()
+                            .color(Palette::of(ui).blue),
+                    );
                 } else if let Some(previous) = self.previous_user() {
                     let event = self.config.event_name.clone();
                     let event = if event.is_empty() {
@@ -1116,7 +1117,11 @@ impl LancastApp {
                          link on the event website to confirm it.",
                             previous.event
                         ));
-                    ui.label(RichText::new("(not confirmed)").small().color(AMBER));
+                    ui.label(
+                        RichText::new("(not confirmed)")
+                            .small()
+                            .color(Palette::of(ui).amber),
+                    );
                     if ui
                         .small_button("Use my own name")
                         .on_hover_text("Forget the name from the earlier event.")
@@ -1152,13 +1157,13 @@ impl LancastApp {
                 match (sending.audio_mode, &sending.audio_error) {
                     (Some(AudioMode::SystemLoopback), _) => banner(
                         ui,
-                        AMBER,
+                        Palette::of(ui).amber,
                         "WARNING: Sending ALL system audio – everyone hears your Discord, music and notifications.",
                     ),
                     (None, Some(error)) => {
                         banner(
                             ui,
-                            RED,
+                            Palette::of(ui).red,
                             &format!(
                                 "WARNING: Game audio failed – sending WITHOUT audio.\n{error}"
                             ),
@@ -1212,7 +1217,7 @@ impl LancastApp {
                 (Some(_), AudioCheck::Unavailable(reason)) => {
                     banner(
                         ui,
-                        AMBER,
+                        Palette::of(ui).amber,
                         "WARNING: Game-only audio is not available on this system.\nLANcast would send ALL system audio – everyone will hear your Discord, music and notifications.",
                     );
                     ui.label(RichText::new(reason).small().weak());
@@ -1229,8 +1234,8 @@ impl LancastApp {
             Some(notice) => {
                 let color = match notice.level {
                     NoticeLevel::Info => ui.visuals().text_color(),
-                    NoticeLevel::Warning => AMBER,
-                    NoticeLevel::Error => RED,
+                    NoticeLevel::Warning => Palette::of(ui).amber,
+                    NoticeLevel::Error => Palette::of(ui).red,
                 };
                 status_line(ui, |ui| {
                     ui.colored_label(color, &notice.text);
@@ -1261,13 +1266,17 @@ impl LancastApp {
             && !state.going_live
             && let Some(reason) = &self.send_block()
         {
-            banner(ui, AMBER, &format!("Sending is disabled: {reason}"));
+            banner(
+                ui,
+                Palette::of(ui).amber,
+                &format!("Sending is disabled: {reason}"),
+            );
             ui.add_space(4.0);
         }
         if let Some(servers) = state.sending.as_ref().and_then(Sending::reaching_nobody) {
             banner(
                 ui,
-                RED,
+                Palette::of(ui).red,
                 &format!("NOT LIVE: the discovery server {servers} is not reachable."),
             );
             ui.add_space(4.0);
@@ -1324,7 +1333,7 @@ impl LancastApp {
         if !state.caps.wgc {
             ui.vertical_centered(|ui| {
                 ui.colored_label(
-                    RED,
+                    Palette::of(ui).red,
                     "Window capture is not supported on this Windows version.",
                 );
             });
@@ -1362,7 +1371,9 @@ impl LancastApp {
                         } else {
                             &event.name
                         };
-                        ui.label(RichText::new(format!("–  Event: {name}")).color(BLUE));
+                        ui.label(
+                            RichText::new(format!("–  Event: {name}")).color(Palette::of(ui).blue),
+                        );
                         if let Some((_, until)) = &event.valid {
                             ui.label(
                                 RichText::new(format!(
@@ -1453,7 +1464,7 @@ impl LancastApp {
                                 ui.label("");
                                 ui.label(
                                     RichText::new("Tray icon hidden by Windows: × quits")
-                                        .color(AMBER),
+                                        .color(Palette::of(ui).amber),
                                 )
                                 .on_hover_text(
                                     "The tray icon is in the overflow and the hidden icon menu \
@@ -1573,7 +1584,9 @@ impl LancastApp {
                                         });
                                     if forced_gain.is_some() {
                                         ui.label(
-                                            RichText::new("(set by the event)").small().color(BLUE),
+                                            RichText::new("(set by the event)")
+                                                .small()
+                                                .color(Palette::of(ui).blue),
                                         );
                                     } else {
                                         self.settings.audio_gain_db = gain;
@@ -1613,7 +1626,7 @@ impl LancastApp {
             UpdateStatus::Downloading(update) => {
                 banner(
                     ui,
-                    BLUE,
+                    Palette::of(ui).blue,
                     &format!("Downloading LANcast {} …", update.version),
                 );
                 ui.add_space(6.0);
@@ -1626,7 +1639,11 @@ impl LancastApp {
         {
             return;
         }
-        let color = if error.is_some() { AMBER } else { BLUE };
+        let color = if error.is_some() {
+            Palette::of(ui).amber
+        } else {
+            Palette::of(ui).blue
+        };
         banner_frame(ui, color, |ui| {
             let text = match &error {
                 Some(error) => format!("The update to LANcast {} failed: {error}", update.version),
@@ -1740,16 +1757,16 @@ impl LancastApp {
                             (format!("Last checked {at}: unchanged"), None, None)
                         }
                         SourceOutcome::Updated => {
-                            (format!("Last checked {at}: updated"), Some(BLUE), None)
+                            (format!("Last checked {at}: updated"), Some(Palette::of(ui).blue), None)
                         }
                         SourceOutcome::Failed(err) => (
                             format!("Last checked {at}: not reachable"),
-                            Some(AMBER),
+                            Some(Palette::of(ui).amber),
                             Some(format!("{err}\n{kept}")),
                         ),
                         SourceOutcome::Rejected(err) => (
                             format!("Last checked {at}: rejected"),
-                            Some(AMBER),
+                            Some(Palette::of(ui).amber),
                             Some(format!("{err}\n{kept}")),
                         ),
                     };
@@ -1819,13 +1836,15 @@ impl LancastApp {
                 }
                 UpdateStatus::Available(update) | UpdateStatus::Downloading(update) => (
                     format!("LANcast {} is available.", update.version),
-                    Some(BLUE),
+                    Some(Palette::of(ui).blue),
                     None,
                 ),
                 UpdateStatus::Installing => ("Starting the setup…".to_owned(), None, None),
-                UpdateStatus::InstallFailed(_, error) => {
-                    ("The update failed.".to_owned(), Some(AMBER), Some(error))
-                }
+                UpdateStatus::InstallFailed(_, error) => (
+                    "The update failed.".to_owned(),
+                    Some(Palette::of(ui).amber),
+                    Some(error),
+                ),
             };
             let text = RichText::new(text).small();
             let text = match color {
@@ -1892,7 +1911,11 @@ impl LancastApp {
             ui.label("NDI groups");
             if let Some(groups) = self.enforced().groups {
                 ui.strong(groups_text(&groups));
-                ui.label(RichText::new("(set by the event)").small().color(BLUE));
+                ui.label(
+                    RichText::new("(set by the event)")
+                        .small()
+                        .color(Palette::of(ui).blue),
+                );
                 return;
             }
             let response = ui.add(
@@ -1904,7 +1927,7 @@ impl LancastApp {
                 Ok(groups) if response.lost_focus() => self.ndi_groups = groups,
                 Ok(_) => {}
                 Err(err) => {
-                    ui.colored_label(RED, format!("{err}"));
+                    ui.colored_label(Palette::of(ui).red, format!("{err}"));
                 }
             }
             if self.ndi_groups != DEFAULT_GROUPS
@@ -1942,7 +1965,11 @@ impl LancastApp {
                         reachability(ui, state.network.own_reachable);
                     }
                 }
-                ui.label(RichText::new("(set by the event)").small().color(BLUE));
+                ui.label(
+                    RichText::new("(set by the event)")
+                        .small()
+                        .color(Palette::of(ui).blue),
+                );
             });
             return;
         }
@@ -2011,7 +2038,7 @@ impl LancastApp {
         if state.sending.is_some() {
             banner(
                 ui,
-                AMBER,
+                Palette::of(ui).amber,
                 &format!(
                     "The stream uses {used}. The new setting ({wanted}) applies the next time you go live: \
                      press Stop, then Go live."
@@ -2022,7 +2049,7 @@ impl LancastApp {
         }
         banner(
             ui,
-            AMBER,
+            Palette::of(ui).amber,
             &format!(
                 "NDI still uses {used} and could not be reset. Restart LANcast to use {wanted}."
             ),
@@ -2048,7 +2075,7 @@ impl LancastApp {
         }
         banner(
             ui,
-            AMBER,
+            Palette::of(ui).amber,
             &format!(
                 "WARNING: NDI Access Manager sets the discovery server {system}, which is not \
                  reachable. Receivers will not find your stream."
@@ -2086,7 +2113,11 @@ fn enforced_checkbox(
             disabled_hint
         });
         if forced.is_some() {
-            ui.label(RichText::new("(set by the event)").small().color(BLUE));
+            ui.label(
+                RichText::new("(set by the event)")
+                    .small()
+                    .color(Palette::of(ui).blue),
+            );
         }
     });
     if forced.is_none() {
@@ -2135,10 +2166,10 @@ fn discovery_status(ui: &mut egui::Ui, sending: &Sending) {
     for (server, connected) in &sending.discovery {
         ui.label(format!("· discovery server {server}"));
         match (connected, settling) {
-            (true, _) => ui.colored_label(GREEN, "connected"),
+            (true, _) => ui.colored_label(Palette::of(ui).green, "connected"),
             (false, true) => ui.weak("connecting…"),
             (false, false) => ui
-                .colored_label(RED, "NOT connected")
+                .colored_label(Palette::of(ui).red, "NOT connected")
                 .on_hover_text("Receivers using this server will not find your stream."),
         };
     }
@@ -2146,8 +2177,8 @@ fn discovery_status(ui: &mut egui::Ui, sending: &Sending) {
 
 fn reachability(ui: &mut egui::Ui, reachable: Option<bool>) {
     match reachable {
-        Some(true) => ui.colored_label(GREEN, "reachable"),
-        Some(false) => ui.colored_label(RED, "NOT reachable"),
+        Some(true) => ui.colored_label(Palette::of(ui).green, "reachable"),
+        Some(false) => ui.colored_label(Palette::of(ui).red, "NOT reachable"),
         None => ui.weak("checking…"),
     };
 }
@@ -2191,7 +2222,7 @@ fn limit_note(ui: &mut egui::Ui, limit: &str, sent: Option<&str>) {
             ui.label(
                 RichText::new(format!("(event limit {limit}: sends {sent})"))
                     .small()
-                    .color(AMBER),
+                    .color(Palette::of(ui).amber),
             )
             .on_hover_text(format!(
                 "Your choice is above the event's limit, so LANcast sends {sent}. \
@@ -2458,7 +2489,7 @@ fn banner_frame(ui: &mut egui::Ui, color: Color32, add_contents: impl FnOnce(&mu
 fn activity_dot(ui: &mut egui::Ui, active: bool) {
     let (rect, response) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
     let color = if active {
-        Color32::from_rgb(60, 190, 80)
+        Palette::of(ui).green
     } else {
         Color32::from_gray(90)
     };

@@ -350,6 +350,7 @@ impl Carousel {
             let hovered =
                 !locked && !response.dragged() && ui.rect_contains_pointer(tile.intersect(inner));
             let badge = cast.filter(|_| live).map(LiveBadge::style);
+            let dark = ui.visuals().dark_mode;
             let (fill, stroke) = if let Some((_, _, _, border)) = badge {
                 (border.gamma_multiply(0.18), Stroke::new(2.5, border))
             } else if is_selected {
@@ -363,14 +364,11 @@ impl Carousel {
                     Stroke::new(1.0, Color32::from_gray(110)),
                 )
             } else if dimmed {
-                (
-                    Color32::from_gray(22),
-                    Stroke::new(1.0, Color32::from_gray(40)),
-                )
+                (gray(dark, 22, 228), Stroke::new(1.0, gray(dark, 40, 210)))
             } else {
                 (
                     ui.visuals().faint_bg_color,
-                    Stroke::new(1.0, Color32::from_gray(60)),
+                    Stroke::new(1.0, gray(dark, 60, 180)),
                 )
             };
             painter.rect(tile, 6.0, fill, stroke, egui::StrokeKind::Inside);
@@ -405,7 +403,12 @@ impl Carousel {
                     .clone()
             });
             let tint = if dimmed {
-                Color32::from_gray(90)
+                // Darkens the icon on the dark theme, fades it on the light one.
+                if dark {
+                    Color32::from_gray(90)
+                } else {
+                    Color32::from_white_alpha(110)
+                }
             } else {
                 Color32::WHITE
             };
@@ -439,7 +442,7 @@ impl Carousel {
                 text_right = badge.left() - 6.0;
             }
             let (title_color, sub_color) = if dimmed {
-                (Color32::from_gray(95), Color32::from_gray(70))
+                (gray(dark, 95, 120), gray(dark, 70, 140))
             } else {
                 (
                     ui.visuals().strong_text_color(),
@@ -506,6 +509,11 @@ fn arrow(ui: &mut egui::Ui, rect: Rect, text: &str, enabled: bool) -> bool {
             .clicked()
     })
     .inner
+}
+
+/// A gray for the dark or the light theme.
+fn gray(dark: bool, on_dark: u8, on_light: u8) -> Color32 {
+    Color32::from_gray(if dark { on_dark } else { on_light })
 }
 
 fn uv() -> Rect {

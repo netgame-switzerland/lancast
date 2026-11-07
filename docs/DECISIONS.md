@@ -1645,6 +1645,24 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   its settings when it starts, and the preview is not restarted while sending. The notice used to
   say "It applies the next time you go live"; it now says that the cast keeps its settings.
 
+### D52. A readable light theme (2026-11-07)
+- **Seen by the user** on a machine with the Windows light app theme: text hard to read, poor
+  contrast. egui follows the system theme, but the status colors (amber, red, blue, green) were
+  constants chosen for the dark theme, e.g. amber `#EBA000` on the light panel (gray 248) is about
+  2:1. egui's light text is gray 80, and weak text is that at 60 % alpha (about 2.5:1). The
+  carousel drew the dimmed tiles while casting in fixed dark grays (fill 22, title 95), so they
+  were dark blocks with unreadable titles on the light background.
+- **Now:** `app/theme.rs`. `Palette::of(ui)` gives the status colors of the current theme; the
+  dark ones are unchanged, the light ones are darker (amber `#A05A00`, red `#B91E19`, blue
+  `#005FC8`, green `#147D32`), each at least 4.5:1 on the light panel (WCAG AA for normal text,
+  https://www.w3.org/TR/WCAG21/#contrast-minimum; checked by a test). `theme::install` sets the
+  light visuals once at start (`Context::set_visuals_of(Theme::Light, …)`, so following the
+  system theme keeps working): text gray 30, weak text gray 95 (about 6:1), links, warnings and
+  errors in the light palette. The carousel picks light grays for dimmed and normal tiles and
+  fades dimmed icons instead of darkening them.
+- **Unchanged:** the preview box and its message stay dark in both themes (it shows video), as do
+  the Go live / Stop fills with white text and the meter colors.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.
