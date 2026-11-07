@@ -2846,14 +2846,15 @@ mod tests {
     /// user in a notice).
     #[test]
     fn ui_text_has_no_arrows() {
-        let source = include_str!("ui.rs");
-        let arrow = ['\u{2190}', '\u{2192}'];
-        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
-        let found: Vec<&str> = code
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .filter(|line| line.contains(arrow))
-            .collect();
-        assert!(found.is_empty(), "{found:#?}");
+        let arrow = ['\u{2190}', '\u{2191}', '\u{2192}', '\u{2193}'];
+        for source in [include_str!("ui.rs"), include_str!("carousel.rs")] {
+            let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+            let found: Vec<&str> = code
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(arrow))
+                .collect();
+            assert!(found.is_empty(), "{found:#?}");
+        }
     }
 }

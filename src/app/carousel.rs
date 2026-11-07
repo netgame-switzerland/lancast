@@ -94,6 +94,9 @@ pub struct Carousel {
     /// Search text (D53). The first matching window is scrolled into view
     /// and outlined; all windows stay in the carousel. Cleared while casting.
     query: String,
+    /// The match shown (outlined), chosen with the arrow keys; the first
+    /// match when it no longer matches.
+    current_match: Option<isize>,
 }
 
 impl Carousel {
@@ -111,6 +114,7 @@ impl Carousel {
             icons: HashMap::new(),
             thumbnails: destination.map(Thumbnails::new),
             query: String::new(),
+            current_match: None,
         }
     }
 
@@ -134,19 +138,50 @@ impl Carousel {
         Some(window)
     }
 
-    /// The first window (most recently used first) that the search matches;
-    /// `None` without a search.
-    fn search_match(&self) -> Option<&WindowInfo> {
+    /// All windows the search matches, in carousel order (most recently used
+    /// first); empty without a search.
+    fn search_matches(&self) -> Vec<&WindowInfo> {
         if self.query.trim().is_empty() {
-            return None;
+            return Vec::new();
         }
-        self.windows.iter().find(|w| matches(w, &self.query))
+        self.windows
+            .iter()
+            .filter(|w| matches(w, &self.query))
+            .collect()
+    }
+
+    /// The match shown and its index among all matches.
+    fn search_match_at(&self) -> Option<(usize, &WindowInfo)> {
+        let found = self.search_matches();
+        let index = found
+            .iter()
+            .position(|w| Some(w.hwnd) == self.current_match)
+            .unwrap_or(0);
+        found.get(index).map(|&w| (index, w))
+    }
+
+    /// The match shown (outlined); `None` without a match.
+    fn search_match(&self) -> Option<&WindowInfo> {
+        self.search_match_at().map(|(_, w)| w)
+    }
+
+    /// Shows the next (`step` 1) or previous (-1) match, wrapping around.
+    fn step_match(&mut self, step: i64) {
+        let found = self.search_matches();
+        if found.is_empty() {
+            return;
+        }
+        let index = self.search_match_at().map_or(0, |(i, _)| i) as i64;
+        let next = found[(index + step).rem_euclid(found.len() as i64) as usize].hwnd;
+        self.current_match = Some(next);
+        self.scroll_into_view(Some(next));
     }
 
     /// The search field (D53). Typing while no other field has the keyboard
     /// starts a new search in it, and the carousel scrolls to the first
-    /// matching window. Enter picks that window, Esc clears the search.
-    /// Returns the picked window. Disabled and empty while casting.
+    /// matching window. Down / Up go to the next / previous match, Enter
+    /// picks the one shown, Esc clears the search. Returns the picked window.
+    /// Disabled and empty while casting.
     pub fn search_field(&mut self, ui: &mut egui::Ui, locked: bool) -> Option<WindowInfo> {
         let id = egui::Id::unique("window_search");
         let before = self.query.clone();
@@ -154,8 +189,25 @@ impl Carousel {
             self.query.clear();
         } else {
             self.type_to_search(ui.ctx(), id);
+            // Before the field, which would otherwise move its cursor.
+            if ui.ctx().memory(|m| m.has_focus(id)) {
+                let (down, up) = ui.input_mut(|i| {
+                    (
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                    )
+                });
+                if down {
+                    self.step_match(1);
+                }
+                if up {
+                    self.step_match(-1);
+                }
+            }
         }
-        let no_match = !self.query.trim().is_empty() && self.search_match().is_none();
+        let count = self.search_matches().len();
+        let shown = self.search_match_at().map(|(i, _)| i);
+        let no_match = !self.query.trim().is_empty() && count == 0;
         let mut field = egui::TextEdit::singleline(&mut self.query)
             .id(id)
             .hint_text("Search: just type")
@@ -165,8 +217,15 @@ impl Carousel {
         }
         let response = ui.add_enabled(!locked, field).on_hover_text(
             "Type anywhere to jump to the first window whose title or program \
-             contains the words. Enter picks it, Esc clears the search.",
+             contains the words. Down / Up go to the next / previous match, \
+             Enter picks it, Esc clears the search.",
         );
+        if let Some(index) = shown
+            && count > 1
+        {
+            ui.label(RichText::new(format!("{} of {count}", index + 1)).weak())
+                .on_hover_text("Down / Up: next / previous match");
+        }
         let mut picked = None;
         if !locked {
             let (enter, escape) = ui.input(|i| {
@@ -182,10 +241,12 @@ impl Carousel {
                 picked = self.search_match().cloned();
             }
         }
-        if self.query != before
-            && let Some(hwnd) = self.search_match().map(|w| w.hwnd)
-        {
-            self.scroll_into_view(Some(hwnd));
+        if self.query != before {
+            // A new search starts at its first match.
+            self.current_match = self.search_matches().first().map(|w| w.hwnd);
+            if let Some(hwnd) = self.current_match {
+                self.scroll_into_view(Some(hwnd));
+            }
         }
         picked
     }
@@ -751,5 +812,29 @@ mod tests {
         let left = carousel.snap.unwrap() as i64;
         let offset = (6 - left).rem_euclid(8);
         assert!(offset < VISIBLE as i64, "index 6 visible from {left}");
+    }
+
+    #[test]
+    fn arrow_keys_step_through_matches_and_wrap() {
+        let mut carousel = Carousel::new(None);
+        carousel.windows = vec![
+            window(1, "Chrome - news", Some("chrome.exe")),
+            window(2, "Notes", Some("notepad.exe")),
+            window(3, "Chrome - mail", Some("chrome.exe")),
+            window(4, "Chrome - wiki", Some("chrome.exe")),
+        ];
+        carousel.query = "chrome".to_owned();
+        let shown = |c: &Carousel| c.search_match_at().map(|(i, w)| (i, w.hwnd));
+        assert_eq!(shown(&carousel), Some((0, 1)));
+        carousel.step_match(1);
+        assert_eq!(shown(&carousel), Some((1, 3)));
+        carousel.step_match(1);
+        carousel.step_match(1);
+        assert_eq!(shown(&carousel), Some((0, 1)), "wraps to the first");
+        carousel.step_match(-1);
+        assert_eq!(shown(&carousel), Some((2, 4)), "wraps to the last");
+        // The shown window closes: back to the first match.
+        carousel.windows.retain(|w| w.hwnd != 4);
+        assert_eq!(shown(&carousel), Some((0, 1)));
     }
 }

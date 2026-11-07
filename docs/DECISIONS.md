@@ -1683,6 +1683,14 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   changes, the carousel scrolls the shortest way until the match is visible (`scroll_into_view`,
   as when casting starts) and outlines the tile in amber. Without a match the search text turns
   red. Enter selects the match like a click; Esc clears the search.
+- **Several matches (user: how to go through them):** Down / Up in the field step to the next /
+  previous match, wrapping around, and scroll it into view; "2 of 5" next to the field shows
+  where you are (only with more than one match). The keys are taken out of the input before the
+  field is drawn, as a single-line field would otherwise move its cursor to the start or end.
+  The match shown is kept by window handle (`current_match`), so the 2 s refresh does not move it;
+  if it closes or no longer matches, the first match is shown. A new search starts at the first
+  match. No arrow glyphs in the counter: egui's default font has none (D51); the test for that
+  now covers `carousel.rs` and all four arrows.
 - **While casting** the field is disabled and cleared: the selection is locked (D22).
 - **Checked** with a portable copy: the search "notepad" scrolled a Notepad window from outside
   the four visible tiles into view and outlined it. Keys could not be sent to the test window
