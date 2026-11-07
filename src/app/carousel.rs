@@ -563,7 +563,7 @@ impl Carousel {
                 painter.rect_stroke(
                     tile,
                     6.0,
-                    Stroke::new(3.0, Palette::of(ui).teal),
+                    Stroke::new(3.0, Palette::of(ui).accent),
                     egui::StrokeKind::Inside,
                 );
             }

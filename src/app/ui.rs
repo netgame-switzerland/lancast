@@ -106,6 +106,8 @@ pub struct LancastApp {
     /// A window was picked with Enter in the search: the next Tab focuses
     /// Go live (D53).
     tab_to_go_live: bool,
+    /// Going live: the Stop button takes the focus once it appears.
+    focus_stop: bool,
     /// Select the window cast last once it is open (D54); ends with the
     /// first selection, automatic or by the user.
     restore_last_cast: bool,
@@ -205,6 +207,7 @@ impl LancastApp {
             selected_process: None,
             restore_last_cast,
             tab_to_go_live: false,
+            focus_stop: false,
             meter: Meter::default(),
             preview: None,
             preview_aspect: 16.0 / 9.0,
@@ -790,6 +793,7 @@ impl LancastApp {
             });
             self.store.save(&self.config);
         }
+        self.focus_stop = true;
         self.send(Command::Start(choice));
     }
 
@@ -1355,7 +1359,14 @@ impl LancastApp {
         ui.horizontal(|ui| {
             ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
             if state.sending.is_some() {
-                if ui.add(big("Stop", Some(STOP_FILL))).clicked() {
+                let button = ui.add(big("Stop", Some(STOP_FILL)));
+                if self.focus_stop {
+                    // After going live the focus stays on the main button.
+                    button.request_focus();
+                    self.focus_stop = false;
+                }
+                focus_ring(ui, &button);
+                if button.clicked() {
                     self.send(Command::Stop);
                 }
                 return;
@@ -2553,7 +2564,7 @@ fn focus_ring(ui: &egui::Ui, button: &egui::Response) {
         ui.painter().rect_stroke(
             button.rect.expand(3.0),
             6.0,
-            egui::Stroke::new(2.0, Palette::of(ui).teal),
+            egui::Stroke::new(2.0, Palette::of(ui).accent),
             egui::StrokeKind::Outside,
         );
     }

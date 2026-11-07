@@ -1681,8 +1681,8 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **Match:** every whitespace-separated word occurs in the title or the exe name, ignoring case;
   the first such window in carousel order (most recently used first) wins. When the search
   changes, the carousel scrolls the shortest way until the match is visible (`scroll_into_view`,
-  as when casting starts) and outlines the tile in teal (`Palette::teal`; amber at first, which
-  the user found ugly; `#007373` in the light theme for 4.5:1). Without a match the search text turns
+  as when casting starts) and outlines the tile in the Windows accent color (`Palette::accent`;
+  first amber, then teal, neither liked by the user, who suggested the Windows blue). Without a match the search text turns
   red. Enter selects the match like a click; Esc clears the search.
 - **Several matches (user: how to go through them):** Down / Up in the field step to the next /
   previous match, wrapping around, and scroll it into view; "2 of 5" next to the field shows
@@ -1699,8 +1699,26 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   After Enter picked a window (`tab_to_go_live`), the next Tab is taken in `focus_go_live` and
   the (first) Go live button requests the focus after egui's choice, so Enter or Space there goes
   live. Focusing anything else first cancels it. The Go live and Stop fills hide egui's focus
-  look, so a focused one gets a teal ring (`focus_ring`). Not tried with real keys here (keys
-  cannot be sent to a test window, see below).
+  look, so a focused one gets a ring in the accent color (`focus_ring`). Not tried with real keys
+  here (keys cannot be sent to a test window, see below).
+- **After going live the focus is on Stop (user).** The Go live button disappears when clicked, and
+  egui drops the focus of a widget that is gone; `start` sets `focus_stop`, and the Stop button
+  requests the focus once when it appears, with the ring. Enter or Space then stops, so the user
+  can go live and stop from the keyboard.
+- **Accent color:** `UISettings::GetColorValue` with `UIColorType::Accent` and the shades
+  `AccentDark3` … `AccentLight3` (WinRT, Windows 10 1507 / 10.0.10240.0, UniversalApiContract v1;
+  https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uicolortype,
+  https://learn.microsoft.com/uwp/api/windows.ui.viewmanagement.uisettings.getcolorvalue; the
+  pages name no restriction for desktop apps). windows-rs features `UI` and `UI_ViewManagement`,
+  no new crate. Microsoft's color page only says the shades are "optimized for contrast in both
+  light and dark modes" and names no shade per theme
+  (https://learn.microsoft.com/windows/apps/design/style/color), so `pick_accent` takes the accent
+  itself if it has 3:1 contrast to the panel (WCAG 2.1 1.4.11, non-text contrast), else the first
+  darker (light theme) or lighter (dark theme) shade that does. The Windows default `#0078D4`
+  passes in both themes (about 4.3:1 light, 3.8:1 dark) and is the fallback if the call fails
+  (logged). Read once at the first use; a changed accent applies at the next start
+  (`ColorValuesChanged` exists, but its page does not say it covers the accent). Checked: the
+  test copy outlined the match in `#0078D4`, the user's accent (`HKCU\...\DWM\AccentColor`).
 - **While casting** the field is disabled and cleared: the selection is locked (D22).
 - **Checked** with a portable copy: the search "notepad" scrolled a Notepad window from outside
   the four visible tiles into view and outlined it. Keys could not be sent to the test window
