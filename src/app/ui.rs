@@ -32,7 +32,7 @@ use crate::{
         audio::{AudioLevels, AudioMode},
         video::{PreviewSlot, VideoOptions},
     },
-    config::{Config, ConfigStore, ThemeChoice},
+    config::{Config, ConfigStore, LastCast, ThemeChoice},
     dialog::{Dialog, Icon},
     distro::{self, EventFile, SignedEvent},
     event_link::{self, EventLink, EventValues},
@@ -103,6 +103,9 @@ pub struct LancastApp {
     changed_at: Option<Instant>,
     /// Process key of the selected window, for remembering game names.
     selected_process: Option<String>,
+    /// Select the window cast last once it is open (D54); ends with the
+    /// first selection, automatic or by the user.
+    restore_last_cast: bool,
     /// Parts of the stream name `User - Game` (D26).
     user_name: String,
     game_name: String,
@@ -160,6 +163,7 @@ impl LancastApp {
     ) -> Self {
         let updater = Updater::new(ctx.clone());
         let event_source = SourceLoader::new(ctx);
+        let restore_last_cast = config.last_cast.is_some();
         let mut app = Self {
             state,
             commands,
@@ -196,6 +200,7 @@ impl LancastApp {
             store,
             changed_at: None,
             selected_process: None,
+            restore_last_cast,
             meter: Meter::default(),
             preview: None,
             preview_aspect: 16.0 / 9.0,
@@ -753,6 +758,7 @@ impl LancastApp {
     }
 
     fn select(&mut self, window: WindowInfo, state: &AppState) {
+        self.restore_last_cast = false;
         // Clicking the selected window again deselects it.
         if state.sending.is_none() && state.selected.as_ref().map(|w| w.hwnd) == Some(window.hwnd) {
             self.selected_process = None;
@@ -768,14 +774,37 @@ impl LancastApp {
         self.send(Command::Select(window));
     }
 
-    /// Starts sending and remembers the game name for this game.
-    fn start(&mut self, choice: AudioChoice) {
+    /// Starts sending and remembers the game name for this game, and the
+    /// window for the next start (D54).
+    fn start(&mut self, choice: AudioChoice, state: &AppState) {
         if let Some(key) = &self.selected_process {
             let name = self.game_name.trim().to_owned();
             self.config.source_names.insert(key.clone(), name);
+            self.config.last_cast = state.selected.as_ref().map(|w| LastCast {
+                process: key.clone(),
+                title: w.title.clone(),
+            });
             self.store.save(&self.config);
         }
         self.send(Command::Start(choice));
+    }
+
+    /// After a start: selects the window cast last as soon as it is open,
+    /// unless something is selected already (D54).
+    fn restore_last_cast(&mut self, state: &AppState) {
+        if !self.restore_last_cast {
+            return;
+        }
+        if state.selected.is_some() || state.sending.is_some() {
+            self.restore_last_cast = false;
+            return;
+        }
+        if let Some(last) = self.config.last_cast.clone()
+            && let Some(window) = self.carousel.find_last_cast(&last)
+        {
+            tracing::info!("selecting the window cast last ({})", last.process);
+            self.select(window, state);
+        }
     }
 
     fn send(&self, command: Command) {
@@ -995,6 +1024,7 @@ impl eframe::App for LancastApp {
             if let Some(window) = self.carousel.show(ui, selected, badge) {
                 self.select(window, &state);
             }
+            self.restore_last_cast(&state);
             ui.add_space(8.0);
             self.preview_and_meter(ui, &state);
         });
@@ -1324,18 +1354,18 @@ impl LancastApp {
                         .add_enabled(ready, big("Go live with system audio", fill))
                         .clicked()
                     {
-                        self.start(AudioChoice::System);
+                        self.start(AudioChoice::System, state);
                     }
                     if ui
                         .add_enabled(ready, big("Go live without audio", fill))
                         .clicked()
                     {
-                        self.start(AudioChoice::None);
+                        self.start(AudioChoice::None, state);
                     }
                 }
                 _ => {
                     if ui.add_enabled(ready, big("Go live", fill)).clicked() {
-                        self.start(AudioChoice::Game);
+                        self.start(AudioChoice::Game, state);
                     }
                 }
             }

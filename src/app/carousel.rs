@@ -15,6 +15,7 @@ use eframe::egui::{
 
 use super::theme::Palette;
 use crate::{
+    config::LastCast,
     exe_icon,
     win_thumbnail::Thumbnails,
     windows_list::{self, WindowInfo},
@@ -111,6 +112,26 @@ impl Carousel {
             thumbnails: destination.map(Thumbnails::new),
             query: String::new(),
         }
+    }
+
+    /// The open window of the program cast last (D54): the one with the same
+    /// title, else the most recently used one of that program. Scrolls it
+    /// into view.
+    pub fn find_last_cast(&mut self, last: &LastCast) -> Option<WindowInfo> {
+        let of_program = |w: &&WindowInfo| {
+            w.process_name
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&last.process))
+        };
+        let window = self
+            .windows
+            .iter()
+            .filter(of_program)
+            .find(|w| w.title == last.title)
+            .or_else(|| self.windows.iter().find(of_program))
+            .cloned()?;
+        self.scroll_into_view(Some(window.hwnd));
+        Some(window)
     }
 
     /// The first window (most recently used first) that the search matches;
@@ -679,6 +700,25 @@ mod tests {
             height: 600,
             minimized: false,
         }
+    }
+
+    #[test]
+    fn last_cast_prefers_the_same_title_then_the_most_recent() {
+        let mut carousel = Carousel::new(None);
+        carousel.windows = vec![
+            window(1, "Notes", Some("notepad.exe")),
+            window(2, "Song A - Spotify", Some("Spotify.exe")),
+            window(3, "Spotify Premium", Some("Spotify.exe")),
+        ];
+        let last = |title: &str| LastCast {
+            process: "spotify.exe".to_owned(),
+            title: title.to_owned(),
+        };
+        let found = |c: &mut Carousel, title| c.find_last_cast(&last(title)).map(|w| w.hwnd);
+        assert_eq!(found(&mut carousel, "Spotify Premium"), Some(3));
+        assert_eq!(found(&mut carousel, "Another song"), Some(2));
+        carousel.windows.retain(|w| w.hwnd == 1);
+        assert_eq!(found(&mut carousel, "Spotify Premium"), None);
     }
 
     #[test]

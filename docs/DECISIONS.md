@@ -1689,6 +1689,22 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
   (Windows blocked bringing it to the front; posted `WM_CHAR` messages are ignored by winit), so
   the test set the search text through a temporary hook; typing itself was not tried.
 
+### D54. Select the window cast last at the next start (2026-11-07)
+- **User:** LANcast should remember the application it cast last and, when started again, select
+  that window if it is open.
+- **Stored** at Go live (`LancastApp::start`) as `[last_cast]` in `LANcast.toml`: `process`
+  (lowercase exe name, the key of the game names) and `title`. Window handles do not survive a
+  restart of the game or of Windows, so the window is found again by these.
+- **Found** (`Carousel::find_last_cast`): a window of that exe with the same title, else the most
+  recently used window of that exe (titles change, e.g. Spotify shows the song, a game its map).
+  The tile is scrolled into view and selected like a click, which starts the preview and fills
+  in the remembered game name. It does not go live: casting stays the user's decision.
+- **Until the first selection:** the app keeps looking at each carousel refresh, so a game started
+  after LANcast is still selected when its window appears. Any selection (automatic or by the
+  user), or a selection already made, ends it for this run.
+- **Checked** with a portable copy with `last_cast` set to an Explorer window: at start it was
+  selected with its preview and the game name "explorer".
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

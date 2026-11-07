@@ -81,6 +81,10 @@ pub struct Config {
     pub event_bundled: String,
     /// Last game name per process (lowercase exe name).
     pub source_names: BTreeMap<String, String>,
+    /// The window cast last, selected again at the next start when it is
+    /// open (D54).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_cast: Option<LastCast>,
     /// Look for a newer LANcast at startup (D37).
     pub check_updates: bool,
     /// Where to look: the URL of a signed `LANcast-update.json`; empty =
@@ -114,6 +118,15 @@ pub fn source_name(user: &str, game: &str) -> String {
         (user, "") => user.to_owned(),
         (user, game) => format!("{user} - {game}"),
     }
+}
+
+/// The window cast last (D54): its program and title. Window handles do not
+/// survive a restart, so the window is found again by these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastCast {
+    /// Lowercase exe name, e.g. `rocketleague.exe`.
+    pub process: String,
+    pub title: String,
 }
 
 /// A personal name from an earlier event (D47).
@@ -170,6 +183,7 @@ impl Default for Config {
             event_user_previous: None,
             event_bundled: String::new(),
             source_names: BTreeMap::new(),
+            last_cast: None,
             check_updates: true,
             update_url: String::new(),
             skipped_update: String::new(),
