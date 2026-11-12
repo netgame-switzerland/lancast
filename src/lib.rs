@@ -18,6 +18,7 @@ pub mod locale;
 // Windows-only modules have stubs in `unsupported/` elsewhere (D32).
 #[cfg_attr(not(windows), path = "unsupported/exe_icon.rs")]
 pub mod exe_icon;
+pub mod firewall;
 pub mod logging;
 pub mod ndi_config;
 pub mod ndi_out;

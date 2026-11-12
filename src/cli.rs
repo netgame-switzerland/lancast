@@ -26,6 +26,7 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
 pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB] [--discovery SERVERS]]
   Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
+  `LANcast --firewall` checks the Windows Firewall; `LANcast --allow-firewall` (as admin) allows LANcast.
   --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).
   --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).
   --discovery sets the NDI discovery server(s), host[:port],… (\"\" = mDNS; default: NDI Access Manager's).
@@ -52,6 +53,9 @@ struct Args {
 
 /// Runs the CLI with the arguments after the program name.
 pub fn run(args: Vec<String>) -> Result<()> {
+    if args.len() == 1 && args[0] == "--firewall" {
+        return print_firewall();
+    }
     let Some(args) = parse_args(args)? else {
         print_windows()?;
         return Ok(());
@@ -293,6 +297,28 @@ fn supervise(session: &mut Session, interrupted: &AtomicBool, servers: &str) -> 
 }
 
 /// Returns `None` for `--list`.
+/// `--firewall`: whether receivers can connect on the active networks (D55).
+fn print_firewall() -> Result<()> {
+    let check = crate::firewall::check()?;
+    let active: Vec<String> = check.active.iter().map(ToString::to_string).collect();
+    println!("Active network profiles: {}", active.join(", "));
+    if check.ok() {
+        println!("Windows Firewall: receivers can connect.");
+    } else {
+        let why = if check.block_rule {
+            "a block rule"
+        } else {
+            "no allow rule for TCP and UDP"
+        };
+        println!(
+            "Windows Firewall: receivers are blocked on {} ({why}). Run `LANcast {}` as admin.",
+            check.blocked_text(),
+            crate::firewall::ALLOW_FLAG
+        );
+    }
+    Ok(())
+}
+
 fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
     let mut args = args.into_iter();
     let mut target = None;

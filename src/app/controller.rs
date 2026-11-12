@@ -219,6 +219,8 @@ pub struct AppState {
     /// discovery server and starting NDI (D49).
     pub going_live: bool,
     pub notice: Option<Notice>,
+    /// The Windows Firewall blocks receivers (D55): no cast from the tray.
+    pub firewall_blocked: bool,
 }
 
 /// The preview capture as the UI sees it.
@@ -338,7 +340,14 @@ impl Controller {
             Command::Start(choice) => self.start(choice),
             Command::TrayStart => {
                 let check = self.state().audio_check.clone();
-                if check == AudioCheck::GameAudio {
+                if self.state().firewall_blocked {
+                    // The window asks to allow LANcast first (D55).
+                    self.set_notice(
+                        NoticeLevel::Warning,
+                        "Windows Firewall blocks LANcast: allow it, then go live.",
+                    );
+                    self.tray.show_main_window();
+                } else if check == AudioCheck::GameAudio {
                     self.start(AudioChoice::Game);
                 } else {
                     // Never send system audio without the explicit choice in

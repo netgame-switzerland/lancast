@@ -257,7 +257,9 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 
   Also log the effective NDI network configuration (discovery servers, groups, multicast) at startup.
 - **Transport:** NDI 6 default is reliable UDP. Receivers connect to the sender on TCP 5960 and UDP/TCP 5960+.
-- **Firewall:** the sender needs **inbound** access. On first launch, Windows shows the "Allow access" dialog; the participant must allow it for **Private** networks (and check that the LAN is not classified as "Public").
+- **Firewall:** the sender needs **inbound** access, on every network type: Windows classifies a new network (a LAN party) as "Public" (D55).
+  - The setup adds an inbound allow rule for LANcast.exe on all profiles.
+  - LANcast checks the firewall itself and, if receivers are blocked on the connected network, offers "Allow LANcast in the firewall" (UAC prompt; D55).
   - The README documents this, including a `netsh advfirewall firewall add rule … program=… dir=in action=allow` command for admins.
   - Symptom of a blocked firewall: the source is listed but stays black.
 - **Bandwidth:** full NDI at 1080p60 is up to ~132 Mbit/s per source (D6), so a 1 GbE uplink at the central machine carries about 6 such sources.

@@ -36,17 +36,18 @@ FIRST START: WINDOWS WARNINGS
 -----------------------------
 - SmartScreen: LANcast is not code-signed, so Windows may say "Windows
   protected your PC". Click "More info" -> "Run anyway".
-- Firewall: Windows asks whether LANcast may communicate on networks. Allow
-  it for PRIVATE networks. Receivers connect TO your PC; if this is blocked,
-  your source may appear but stay black.
-  The setup already allows LANcast on private networks. Windows may still ask
-  if the PC also has a "Public" network (e.g. a WSL, VPN or virtual adapter).
-  Click "Allow access" then, not "Cancel": Cancel blocks LANcast on private
-  networks too. Running the setup again repairs it.
+- Firewall: receivers connect TO your PC. If the Windows Firewall blocks
+  that, your source appears but stays black. Windows treats a new network,
+  like the one at a LAN party, as "Public".
+  The setup allows LANcast on all networks. LANcast also checks it: if the
+  firewall blocks it, LANcast asks to allow it and cannot go live until
+  then. Click "Allow LANcast" and confirm the Windows prompt (needs an
+  administrator password on a standard account).
+  If Windows asks whether LANcast may communicate on networks, click
+  "Allow access", not "Cancel": Cancel blocks LANcast.
   Admins can add the rule manually:
     netsh advfirewall firewall add rule name="LANcast" dir=in action=allow ^
-          program="C:\path\to\LANcast.exe" profile=private
-  Also make sure the LAN connection is a "Private" network in Windows.
+          program="C:\path\to\LANcast.exe" profile=any
 
 
 SETTINGS
@@ -95,7 +96,8 @@ the settings removes them.
 TROUBLESHOOTING
 ---------------
 - The central PC does not see my source:
-  - Firewall (see above); LAN must be a "Private" network.
+  - Listed but black: the firewall (see above). "LANcast --firewall" in a
+    command prompt shows whether it blocks receivers.
   - LANcast warns if NDI Access Manager still points to an old discovery
     server - click "Ignore it for LANcast".
 - Black picture: switch the game to borderless windowed mode.

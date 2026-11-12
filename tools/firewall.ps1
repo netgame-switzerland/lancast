@@ -9,14 +9,12 @@
 # Without -Apply the script only reports: network profiles, and every firewall
 # rule whose program is a LANcast.exe (any folder). With -Apply (as admin) it
 # deletes all of those rules and adds one clean allow rule for the installed
-# LANcast.exe.
+# LANcast.exe on all network profiles (D55).
 #
 # Usage (from an admin PowerShell; plain text, no install needed):
 #   powershell -ExecutionPolicy Bypass -File firewall.ps1
-#   powershell -ExecutionPolicy Bypass -File firewall.ps1 -Apply [-Public] [-Exe <path>]
+#   powershell -ExecutionPolicy Bypass -File firewall.ps1 -Apply [-Exe <path>]
 #   powershell -ExecutionPolicy Bypass -File firewall.ps1 -Apply -Dev
-# -Public   also allows LANcast on networks classified as Public (the setup
-#           allows only Domain and Private: opening Public is the user's call).
 # -Exe      the LANcast.exe to allow; default: the installed one (all users,
 #           then "for me only").
 # -Dev      also removes rules for any exe under a cargo "target" folder whose
@@ -26,7 +24,6 @@
 
 param(
     [switch]$Apply,
-    [switch]$Public,
     [switch]$Dev,
     [string]$Exe
 )
@@ -67,11 +64,8 @@ if (-not $Exe) {
     $Exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 
-Write-Host "Network profiles (LANcast's setup rule covers Domain and Private):"
+Write-Host "Network profiles:"
 Get-NetConnectionProfile | Format-Table InterfaceAlias, Name, NetworkCategory -AutoSize | Out-Host
-if (Get-NetConnectionProfile | Where-Object NetworkCategory -eq "Public") {
-    Write-Warning "A network is Public. Make the LAN Private (Settings > Network > Properties) or use -Public."
-}
 
 $rules = @(Get-LancastRules)
 if ($rules.Count -eq 0) {
@@ -102,7 +96,8 @@ Write-Host "Removed $($rules.Count) rule(s)."
 
 if ($Exe) {
     $exePath = (Resolve-Path $Exe).Path
-    $profiles = if ($Public) { "Domain,Private,Public" } else { "Domain,Private" }
+    # All profiles, like the setup: a LAN party network is usually Public (D55).
+    $profiles = "Domain,Private,Public"
     New-NetFirewallRule -DisplayName "LANcast" -Direction Inbound -Action Allow `
         -Program $exePath -Profile $profiles -Enabled True | Out-Null
     Write-Host "Added: LANcast, inbound allow, $profiles, $exePath"

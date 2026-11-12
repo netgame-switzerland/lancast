@@ -84,8 +84,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 
 [CustomMessages]
-english.FirewallTask=Allow LANcast through Windows Firewall (private networks; recommended)
-german.FirewallTask=LANcast in der Windows-Firewall freigeben (private Netzwerke; empfohlen)
+english.FirewallTask=Allow LANcast through Windows Firewall (recommended)
+german.FirewallTask=LANcast in der Windows-Firewall freigeben (empfohlen)
 english.LaunchLANcast=Start LANcast
 german.LaunchLANcast=LANcast starten
 
@@ -135,9 +135,10 @@ Root: HKCU; Subkey: "Software\Classes\lancast"; ValueType: none; Flags: deleteke
 ; Remove every older rule for this exe, then allow inbound connections: NDI
 ; receivers connect to the sender (SPEC §5.4). "Every" includes the block
 ; rules Windows creates when its firewall prompt is cancelled: a block rule
-; beats our allow rule (D40).
+; beats our allow rule (D40). All profiles: Windows classifies a new network,
+; e.g. at a LAN party, as Public (D55).
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=all program=""{app}\LANcast.exe"""; Flags: runhidden; Tasks: firewall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LANcast"" dir=in action=allow program=""{app}\LANcast.exe"" profile=private,domain enable=yes"; Flags: runhidden; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""LANcast"" dir=in action=allow program=""{app}\LANcast.exe"" profile=any enable=yes"; Flags: runhidden; Tasks: firewall
 ; Start LANcast as the normal user, not elevated like the installer. Not for
 ; an organizer edition: without an event link it can't send (see [Messages]).
 #ifndef OrganizerEdition

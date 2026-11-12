@@ -1741,6 +1741,61 @@ Source: https://learn.microsoft.com/en-us/windows/security/operating-system-secu
 - **Checked** with a portable copy with `last_cast` set to an Explorer window: at start it was
   selected with its preview and the game name "explorer".
 
+### D55. LANcast checks the firewall and allows itself on every network type (2026-11-13)
+Sources: https://learn.microsoft.com/en-us/windows/win32/api/netfw/nn-netfw-inetfwpolicy2,
+https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-inetfwpolicy2-get_currentprofiletypes
+(Windows Vista and later; "Multiple profiles can be returned in the profiles bitmask"),
+https://learn.microsoft.com/en-us/windows/win32/api/netfw/nn-netfw-inetfwrule.
+
+- **Report:** a participant who updated from an old LANcast (also after uninstall + new install)
+  was listed on the discovery server, but receivers got no picture. On the developer PC, at the
+  same gateway, it worked.
+- **Findings** (`toolsirewall.ps1`, committed before this change): the developer PC's LAN is
+  classified **Public** (Windows' default for a new network). The setup's rule (Domain+Private,
+  D25/D40) never applied there; LANcast worked only through the Public rules Windows had created
+  when its prompt was once answered with "Allow access". Without such a rule, or with a block
+  rule from a cancelled prompt, Windows blocks silently: it asks only for an exe without any rule.
+  So the setup's rule fails at nearly every LAN party. The participant's machine is not checked
+  yet; a Public network without an allow rule is the likely cause.
+- **Decision:** reverses D40's "the rule stays on Domain+Private". The inbound rule covers all
+  profiles (`profile=any`): the setup's, and the one LANcast sets itself. The rule is limited to
+  LANcast.exe, and LANcast only listens while casting, so a Public network exposes no more than
+  "Allow access" on the prompt does. Switching the network to Private would change the system for
+  every program; LANcast does not do that.
+- **Check** (`firewall::check`, at startup, every 30 s and at Go live): `INetFwPolicy2` lists the
+  active profiles, whether the firewall is on for each, and the rules. Rules count when inbound,
+  enabled and for this exe (path compared case-insensitively, `%VAR%` expanded). A profile is
+  blocked if a block rule applies, or if no allow rule covers TCP and UDP (NDI 6 uses reliable
+  UDP, D10; the prompt creates one rule per protocol). Rules without a program (port rules) and
+  third-party firewalls are not considered. With several active networks every profile must be
+  allowed, so a Public VPN or virtual adapter also triggers the warning; the fix covers it.
+  Reading needs no admin rights: checked as a standard process (0.2 s with ~1,000 rules). The
+  documentation does not say which operations need admin.
+- **Dialog (user):** a banner alone is too easy to miss; it must be "in your face". If the first
+  check finds LANcast blocked, a native dialog (D42, shield icon) says so at startup: "Allow
+  LANcast" / "Not now". The banner stays, with "Allow LANcast in the firewall". **Go live** while
+  blocked shows the dialog again; "Allow LANcast" goes live once the fix has worked, while "Not now",
+  a cancelled UAC prompt or a failed fix means no cast. "Start sending" in the tray shows the
+  window with a notice instead. A failed check (unknown state) never blocks casting.
+- **Fix:** "Allow LANcast" starts the same exe with `--allow-firewall` through `ShellExecuteEx`
+  "runas" (UAC prompt), waits and checks again. The helper does what the setup does (`netsh …
+  delete rule name=all program=<exe>`, then `add rule name=LANcast … profile=any`), so block rules
+  go too. It does not log: the log file belongs to the running LANcast, and starting a logging
+  LANcast rotates it. "Cancel" on the UAC prompt leaves everything as it was. If the rule is added
+  but the check still finds LANcast blocked (a group policy or another firewall), the banner says
+  so. This works for every install mode and for ZIP copies.
+- **Pitfall:** `INetFwRules::_NewEnum` yields the rules as `VT_DISPATCH`; windows-rs converts only
+  `VT_UNKNOWN` to `IUnknown`, so the first version skipped every rule and still reported LANcast
+  as blocked after the fix. Rules are taken as `IDispatch`, and reading no rule at all is an error.
+- **CLI:** `LANcast --firewall` prints the result of the check.
+- **Updates:** the silent setup of an update (D37) runs the firewall task again, so all-users
+  installs get the new rule with the next update.
+- **Checked:** on the developer PC (Public network), with a test copy: `--firewall` reported
+  "blocked on Public (no allow rule for TCP and UDP)"; "Allow LANcast in the firewall" with the UAC
+  prompt added the rule `LANcast` (inbound, allow, all profiles, any protocol); `--firewall` then
+  reported "receivers can connect" (after the VT_DISPATCH fix). Unit tests for the rule
+  evaluation. Not yet checked: the dialog flow, and the participant's PC.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

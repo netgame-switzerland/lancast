@@ -9,7 +9,7 @@
 // The binary is deliberately named "LANcast".
 #![allow(non_snake_case)]
 
-use lancast::{app, cli, logging, ndi_config};
+use lancast::{app, cli, firewall, logging, ndi_config};
 use tracing::{error, info, warn};
 
 fn main() {
@@ -18,6 +18,17 @@ fn main() {
     // arguments after it are ignored (see `event_link::from_args`).
     let link = lancast::event_link::from_args(&args).map(str::to_owned);
     let gui = args.is_empty() || link.is_some();
+    // The elevated helper that allows LANcast in the firewall (D55). It does
+    // not log: the log file belongs to the LANcast that started it.
+    if args.len() == 1 && args[0] == firewall::ALLOW_FLAG {
+        attach_parent_console();
+        if let Err(err) = firewall::allow_own_exe() {
+            eprintln!("{err:#}");
+            std::process::exit(1);
+        }
+        println!("LANcast is allowed in the Windows Firewall.");
+        return;
+    }
     if !gui {
         attach_parent_console();
     }

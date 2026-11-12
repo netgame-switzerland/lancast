@@ -23,6 +23,7 @@ use super::{
         PendingLink, Sending, Settings, SharedState,
     },
     event_source::SourceLoader,
+    firewall_watch::FirewallWatch,
     meter::Meter,
     theme::{self, Palette},
     updater::{UpdateStatus, Updater},
@@ -67,6 +68,8 @@ const MIN_HEADER_HEIGHT: f32 = 20.0;
 /// What an open native dialog asks (D42).
 enum DialogKind {
     Quit,
+    /// Allow LANcast in the Windows Firewall (D55).
+    Firewall,
     /// The link as shown, applied on "Apply".
     Link(Box<EventLink>),
 }
@@ -154,6 +157,14 @@ pub struct LancastApp {
     check_updates: bool,
     /// "Later" was clicked on the update banner.
     update_dismissed: bool,
+    /// Windows Firewall check and fix (D55).
+    firewall: FirewallWatch,
+    /// The firewall dialog was shown at startup (D55).
+    firewall_prompted: bool,
+    /// Open the firewall dialog at the next frame.
+    firewall_ask: bool,
+    /// Go live waits for the firewall dialog and the fix (D55).
+    firewall_go_live: Option<AudioChoice>,
 }
 
 impl LancastApp {
@@ -167,6 +178,15 @@ impl LancastApp {
         ctx: egui::Context,
     ) -> Self {
         let updater = Updater::new(ctx.clone());
+        let firewall = FirewallWatch::new(ctx.clone(), {
+            let state = state.clone();
+            move |blocked| {
+                state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .firewall_blocked = blocked
+            }
+        });
         let event_source = SourceLoader::new(ctx);
         let restore_last_cast = config.last_cast.is_some();
         let mut app = Self {
@@ -229,6 +249,10 @@ impl LancastApp {
             name_row_height: 0.0,
             updater,
             update_dismissed: false,
+            firewall,
+            firewall_prompted: false,
+            firewall_ask: false,
+            firewall_go_live: None,
         };
         app.load_bundled_event();
         app.refresh_event();
@@ -631,7 +655,80 @@ impl LancastApp {
                 }
                 self.send(Command::DismissLink);
             }
+            DialogKind::Firewall => {
+                if confirmed {
+                    self.firewall.allow();
+                } else {
+                    // "Not now": no cast while the firewall blocks it.
+                    self.firewall_go_live = None;
+                }
+            }
         }
+    }
+
+    /// The firewall blocks receivers on the connected network (D55); `false`
+    /// while unknown, so a failed check never blocks casting.
+    fn firewall_blocked(&self) -> bool {
+        self.firewall.state().check.is_some_and(|check| !check.ok())
+    }
+
+    /// The firewall dialog at startup and at Go live, and Go live once the
+    /// firewall allows LANcast (D55).
+    fn firewall_flow(&mut self, ctx: &egui::Context, state: &AppState) {
+        let firewall = self.firewall.state();
+        if !self.firewall_prompted && firewall.check.is_some() {
+            self.firewall_prompted = true;
+            self.firewall_ask |= self.firewall_blocked();
+        }
+        if self.dialog.is_some() || firewall.fixing {
+            return;
+        }
+        if self.firewall_ask {
+            self.firewall_ask = false;
+            if self.firewall_blocked() {
+                self.firewall_dialog(ctx);
+            }
+            return;
+        }
+        // The fix after "Allow LANcast" at Go live is done.
+        if let Some(choice) = self.firewall_go_live.take()
+            && !self.firewall_blocked()
+            && state.sending.is_none()
+            && !state.going_live
+            && state.selected.is_some()
+        {
+            self.go_live(choice, state);
+        }
+    }
+
+    fn firewall_dialog(&mut self, ctx: &egui::Context) {
+        let networks = self
+            .firewall
+            .state()
+            .check
+            .map(|check| check.blocked_text())
+            .unwrap_or_default();
+        let content = format!(
+            "This network is \"{networks}\". Receivers would see your stream in the list, \
+             but no picture: Windows Firewall does not let them connect to LANcast.\n\n\
+             Allow LANcast to accept incoming connections on every network type? Windows \
+             asks for administrator permission."
+        );
+        let dialog = Dialog {
+            title: "LANcast".to_owned(),
+            instruction: "Windows Firewall blocks LANcast".to_owned(),
+            content,
+            footer: Some(
+                "Without this, LANcast cannot go live. The rule is only for LANcast, which \
+                 accepts connections only while casting."
+                    .to_owned(),
+            ),
+            icon: Icon::Shield,
+            buttons: vec!["Allow LANcast".to_owned(), "Not now".to_owned()],
+            default: 0,
+            cancel: 1,
+        };
+        self.open_dialog(ctx, DialogKind::Firewall, dialog);
     }
 
     /// See [`repeats_event`].
@@ -784,6 +881,18 @@ impl LancastApp {
     /// Starts sending and remembers the game name for this game, and the
     /// window for the next start (D54).
     fn start(&mut self, choice: AudioChoice, state: &AppState) {
+        // The network may have changed since the last check.
+        self.firewall.recheck();
+        // Receivers could not connect: ask to allow LANcast first (D55).
+        if self.firewall_blocked() {
+            self.firewall_go_live = Some(choice);
+            self.firewall_ask = true;
+            return;
+        }
+        self.go_live(choice, state);
+    }
+
+    fn go_live(&mut self, choice: AudioChoice, state: &AppState) {
         if let Some(key) = &self.selected_process {
             let name = self.game_name.trim().to_owned();
             self.config.source_names.insert(key.clone(), name);
@@ -907,6 +1016,7 @@ impl eframe::App for LancastApp {
         if self.confirm_quit {
             self.confirm_quit(&ctx);
         }
+        self.firewall_flow(&ctx, &state);
         // The update setup runs and replaces LANcast (D37).
         if self.updater.status() == UpdateStatus::Installing {
             self.store.save(&self.config);
@@ -1001,6 +1111,7 @@ impl eframe::App for LancastApp {
         egui::Panel::bottom("controls").show(ui, |ui| {
             ui.add_space(6.0);
             self.update_banner(ui, &state);
+            self.firewall_banner(ui);
             self.discovery_warning(ui, &state);
             self.discovery_restart(ui, &state);
             self.source_name(ui, &state);
@@ -1790,6 +1901,57 @@ impl LancastApp {
                     self.update_dismissed = true;
                 }
             });
+        });
+        ui.add_space(6.0);
+    }
+
+    /// Warns when the Windows Firewall blocks receivers on the connected
+    /// network, and offers to allow LANcast (D55).
+    fn firewall_banner(&mut self, ui: &mut egui::Ui) {
+        let firewall = self.firewall.state();
+        let Some(check) = &firewall.check else {
+            return;
+        };
+        if check.ok() {
+            return;
+        }
+        let color = Palette::of(ui).amber;
+        banner_frame(ui, color, |ui| {
+            let networks = check.blocked_text();
+            ui.label(
+                RichText::new(format!(
+                    "Windows Firewall blocks LANcast on this network ({networks}): receivers \
+                     would see your stream, but no picture. Allow LANcast to go live."
+                ))
+                .strong()
+                .color(color),
+            );
+            ui.horizontal(|ui| {
+                if firewall.fixing {
+                    ui.spinner();
+                    ui.label("Waiting for Windows to allow it …");
+                    return;
+                }
+                if ui
+                    .button("Allow LANcast in the firewall")
+                    .on_hover_text(
+                        "Allows incoming connections to LANcast on every network type \
+                         (Domain, Private, Public) and removes older LANcast rules. \
+                         Windows asks for administrator permission.",
+                    )
+                    .clicked()
+                {
+                    self.firewall.allow();
+                }
+            });
+            if let Some(error) = &firewall.fix_error {
+                let text = if error == "cancelled" {
+                    "Windows did not get permission; nothing was changed.".to_owned()
+                } else {
+                    format!("That did not work: {error}")
+                };
+                ui.label(RichText::new(text).small());
+            }
         });
         ui.add_space(6.0);
     }

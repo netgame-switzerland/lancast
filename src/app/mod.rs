@@ -4,6 +4,7 @@
 mod carousel;
 mod controller;
 mod event_source;
+mod firewall_watch;
 mod meter;
 mod theme;
 mod ui;
@@ -60,6 +61,7 @@ pub fn run(link: Option<String>, restart_after: Option<u32>) -> Result<()> {
         preview: None,
         sending: None,
         going_live: false,
+        firewall_blocked: false,
         notice: None,
     }));
     let (commands_tx, commands_rx) = crossbeam_channel::unbounded();
