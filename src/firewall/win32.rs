@@ -9,6 +9,7 @@ use tracing::{debug, info};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_CANCELLED, VARIANT_TRUE},
+        Globalization::{CP_OEMCP, MULTI_BYTE_TO_WIDE_CHAR_FLAGS, MultiByteToWideChar},
         NetworkManagement::WindowsFirewall::{
             INetFwPolicy2, INetFwRule, NET_FW_ACTION_ALLOW, NET_FW_IP_PROTOCOL_ANY,
             NET_FW_IP_PROTOCOL_TCP, NET_FW_IP_PROTOCOL_UDP, NET_FW_PROFILE_TYPE2,
@@ -115,8 +116,10 @@ pub fn check() -> Result<Check> {
 }
 
 pub fn allow_elevated() -> Result<()> {
+    let report = std::env::temp_dir().join(format!("LANcast-firewall-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&report);
     let exe = HSTRING::from(own_exe()?.as_os_str());
-    let params = HSTRING::from(ALLOW_FLAG);
+    let params = HSTRING::from(format!("{ALLOW_FLAG} \"{}\"", report.display()));
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS,
@@ -146,8 +149,14 @@ pub fn allow_elevated() -> Result<()> {
         let _ = CloseHandle(process);
         read.context("cannot read the exit code of the elevated LANcast")?;
     }
+    let message = std::fs::read_to_string(&report).unwrap_or_default();
+    let _ = std::fs::remove_file(&report);
     if code != 0 {
-        bail!("changing the firewall failed (exit code {code})");
+        let message = message.trim();
+        if message.is_empty() {
+            bail!("changing the firewall failed (exit code {code})");
+        }
+        bail!("{message}");
     }
     Ok(())
 }
@@ -187,16 +196,37 @@ fn netsh_command(args: &[&str]) -> Command {
 
 fn netsh(args: &[&str]) -> Result<String> {
     let output = netsh_command(args).output().context("cannot run netsh")?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(oem_text(&output.stdout))
 }
 
 fn netsh_checked(args: &[&str]) -> Result<String> {
     let output = netsh_command(args).output().context("cannot run netsh")?;
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    // netsh prints its errors to stdout, in the language of Windows.
+    let text = oem_text(&output.stdout) + &oem_text(&output.stderr);
     if !output.status.success() {
         bail!("netsh failed: {}", text.trim());
     }
     Ok(text)
+}
+
+/// netsh runs in its own (hidden) console, which writes in the OEM code page,
+/// e.g. 850 on German Windows.
+fn oem_text(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let flags = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
+    // SAFETY: both buffers are slices, passed with their lengths; the second
+    // call writes at most `wide.len()` characters.
+    unsafe {
+        let len = MultiByteToWideChar(CP_OEMCP, flags, bytes, None);
+        if len <= 0 {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        let mut wide = vec![0u16; len as usize];
+        let len = MultiByteToWideChar(CP_OEMCP, flags, bytes, Some(&mut wide));
+        String::from_utf16_lossy(&wide[..len.max(0) as usize])
+    }
 }
 
 fn system32(file: &str) -> PathBuf {

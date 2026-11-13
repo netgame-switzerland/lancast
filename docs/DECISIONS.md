@@ -1795,6 +1795,25 @@ https://learn.microsoft.com/en-us/windows/win32/api/netfw/nn-netfw-inetfwrule.
   prompt added the rule `LANcast` (inbound, allow, all profiles, any protocol); `--firewall` then
   reported "receivers can connect" (after the VT_DISPATCH fix). Unit tests for the rule
   evaluation. Not yet checked: the dialog flow, and the participant's PC.
+- **Error report (2026-11-13):** on the developer PC "Allow LANcast" for a test build failed with
+  only "changing the firewall failed (exit code 1)": a process started through `ShellExecuteEx`
+  "runas" cannot hand its output back. By hand, netsh said "Nicht behebbarer Fehler in der Windows
+  Defender Firewall (0x8032000a)", i.e. `FWP_E_IN_USE` (`certutil -error`). The firewall event log
+  showed the rule as added (event 2097), but it was only in the persistent store
+  (`Get-NetFirewallRule -PolicyStore PersistentStore`), not in the active one, so `INetFwPolicy2`,
+  `netsh … show rule` and our check did not see it, and `netsh … delete rule` did not find it
+  either; every attempt left another such rule. Rules for other paths were applied normally.
+  Microsoft documents no cause; a Windows restart is the usual remedy (not verified).
+  - The parent passes a report file (`--allow-firewall "<temp>\LANcast-firewall-<pid>.txt"`); the
+    helper writes its error there, and the banner and the log show it instead of the exit code.
+  - netsh's output is decoded from the OEM code page (its hidden console's), so localized
+    messages keep their umlauts; stderr is included.
+  - For `0x8032000a` the message adds: "Windows Firewall saved the rule but could not apply it;
+    restart Windows and try again." (`firewall::explain`, also for `LANcast --allow-firewall` run
+    by hand).
+  - **Checked:** a test build in a new folder showed the same failure, now with netsh's message
+    and the hint in the banner and the log; so on that PC no new rule could be applied, not just
+    one path. Still open: whether a restart clears it.
 
 ### D56. UWP apps in the window list: the frame, with the app's process (2026-11-13)
 Sources: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-enumwindows (Remarks),

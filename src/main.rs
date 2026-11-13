@@ -19,11 +19,16 @@ fn main() {
     let link = lancast::event_link::from_args(&args).map(str::to_owned);
     let gui = args.is_empty() || link.is_some();
     // The elevated helper that allows LANcast in the firewall (D55). It does
-    // not log: the log file belongs to the LANcast that started it.
-    if args.len() == 1 && args[0] == firewall::ALLOW_FLAG {
+    // not log: the log file belongs to the LANcast that started it, which
+    // passes a report file for the error instead.
+    if args.len() <= 2 && args.first().is_some_and(|a| a == firewall::ALLOW_FLAG) {
         attach_parent_console();
         if let Err(err) = firewall::allow_own_exe() {
-            eprintln!("{err:#}");
+            let message = firewall::explain(&format!("{err:#}"));
+            eprintln!("{message}");
+            if let Some(report) = args.get(1) {
+                let _ = std::fs::write(report, &message);
+            }
             std::process::exit(1);
         }
         println!("LANcast is allowed in the Windows Firewall.");

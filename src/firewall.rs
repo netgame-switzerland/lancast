@@ -23,6 +23,22 @@ pub const ALLOW_FLAG: &str = "--allow-firewall";
 /// Name of LANcast's firewall rule (also used by the setup).
 pub const RULE_NAME: &str = "LANcast";
 
+/// `FWP_E_IN_USE` as netsh prints it: Windows Firewall saved the rule but
+/// could not apply it (D55).
+const FWP_E_IN_USE: &str = "0x8032000a";
+
+/// Adds the remedy for known failures to the helper's error `message`.
+pub fn explain(message: &str) -> String {
+    if message.to_ascii_lowercase().contains(FWP_E_IN_USE) {
+        format!(
+            "{message} Windows Firewall saved the rule but could not apply it; \
+             restart Windows and try again."
+        )
+    } else {
+        message.to_owned()
+    }
+}
+
 /// A Windows Firewall network profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
@@ -140,7 +156,10 @@ pub fn check() -> Result<Check> {
 }
 
 /// Starts this exe elevated with [`ALLOW_FLAG`] (Windows shows the UAC
-/// prompt) and waits for it. Blocks: call it off the UI thread.
+/// prompt) and waits for it. Blocks: call it off the UI thread. The helper
+/// writes its error to a report file named after the flag, since a process
+/// started through the UAC prompt cannot hand back its output; that message
+/// becomes the error.
 pub fn allow_elevated() -> Result<()> {
     #[cfg(windows)]
     return win32::allow_elevated();
@@ -207,5 +226,14 @@ mod tests {
     fn a_disabled_firewall_needs_no_rule() {
         let check = Check::evaluate(vec![Profile::Public], |p| p != Profile::Public, &[]);
         assert!(check.ok());
+    }
+
+    #[test]
+    fn a_rule_windows_cannot_apply_gets_a_hint() {
+        let netsh = "netsh failed: Nicht behebbarer Fehler in der Windows Defender Firewall \
+                     (0x8032000A).";
+        assert!(explain(netsh).starts_with(netsh));
+        assert!(explain(netsh).contains("restart Windows"));
+        assert_eq!(explain("cancelled"), "cancelled");
     }
 }
