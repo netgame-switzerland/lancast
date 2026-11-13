@@ -192,7 +192,7 @@ Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.p
   - `GetWindowThreadProcessId`, then `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` and `QueryFullProcessImageNameW`.
   - Only the HWND goes to windows-capture (`Window::from_raw_hwnd`).
 - **Measured:** `list_windows` shows exactly the Alt-Tab windows, including minimized ones (marked);
-  hidden UWP frames do not appear.
+  hidden UWP frames do not appear. UWP apps (frame, app process, full screen): D56.
 
 ### D10. Discovery, routing and firewall (SPEC §5.4)
 Sources: SDK headers (`Processing.NDI.Send.h` l.36–62, `Processing.NDI.Find.h` l.41–50), *NDI SDK
@@ -1795,6 +1795,43 @@ https://learn.microsoft.com/en-us/windows/win32/api/netfw/nn-netfw-inetfwrule.
   prompt added the rule `LANcast` (inbound, allow, all profiles, any protocol); `--firewall` then
   reported "receivers can connect" (after the VT_DISPATCH fix). Unit tests for the rule
   evaluation. Not yet checked: the dialog flow, and the participant's PC.
+
+### D56. UWP apps in the window list: the frame, with the app's process (2026-11-13)
+Sources: https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-enumwindows (Remarks),
+https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-findwindowexw,
+https://learn.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute (`DWMWA_CLOAKED`).
+
+- **Problem (user report):** the Windows Media Player ("Medienwiedergabe", a UWP app) could not be
+  found in the carousel. Measured with the player open:
+  - **Windowed:** the top-level window is an `ApplicationFrameWindow` of `ApplicationFrameHost.exe`;
+    the app's content is a child `Windows.UI.Core.CoreWindow` of `Microsoft.Media.Player.exe`. The
+    list showed the frame as "ApplicationFrameHost.exe": wrong icon and source name, and process
+    loopback on the frame host's PID records nothing (D13).
+  - **Full screen:** the same frame (same HWND, popup style without `WS_CAPTION`, `WS_EX_TOPMOST`)
+    is no longer returned by `EnumWindows`; the docs: "For Windows 8 and later, EnumWindows
+    enumerates only top-level windows of desktop apps." `FindWindowEx(NULL, …)` still finds it. The
+    CoreWindow becomes a top-level window with the same title, likewise invisible to `EnumWindows`.
+  - **Cloaking:** in full screen the frame is cloaked by the shell (`DWM_CLOAKED_SHELL`) whenever
+    another window is in front, i.e. always while the user picks a window in LANcast. The
+    full-screen CoreWindow is cloaked even when the player is in front.
+- **WGC, measured with `wgc_window` on both HWNDs at once (2560×1440):** the frame delivers ~30 fps
+  (the video's rate) while the player is in front, the CoreWindow only a single frame. In the
+  background (cloaked) neither delivers frames, like a minimized window.
+- **Decision:**
+  - The list adds `ApplicationFrameWindow`s found with `FindWindowExW` that `EnumWindows` missed
+    (appended after the Z-ordered windows).
+  - A frame takes PID and exe of its app: the child CoreWindow, else a top-level CoreWindow with the
+    same title, from a process other than the frame host. Without one (suspended app) it stays
+    ApplicationFrameHost as before. Video always captures the frame.
+  - A cloaked window stays hidden, except a full-screen frame (no `WS_CAPTION`) whose app was
+    found. A maximized or windowed frame that is cloaked (e.g. suspended Settings) stays hidden.
+  - A cloaked window counts as minimized (`WindowState::Minimized`, `WindowInfo::minimized`): the
+    cast shows "Window minimized – last frame stays on air" while the full-screen app is in the
+    background instead of the "no frames" hint.
+- **Checked:** `LANcast --list` lists the player as `Microsoft.Media.Player.exe` "Medienwiedergabe"
+  windowed and full screen, also while in the background; Settings in the background stays hidden.
+  The player's audio session belongs to `Microsoft.Media.Player.exe` itself (`IAudioSessionControl2::
+  GetProcessId`); `process_loopback` on that PID recorded the video's sound (peak −19.3 dBFS).
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

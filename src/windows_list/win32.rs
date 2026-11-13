@@ -16,23 +16,40 @@ use windows::{
         },
         UI::HiDpi::GetDpiForSystem,
         UI::WindowsAndMessaging::{
-            EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClassNameW, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-            IsWindowVisible, WS_EX_TOOLWINDOW,
+            EnumWindows, FindWindowExW, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetWindow,
+            GetWindowLongPtrW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+            IsWindow, IsWindowVisible, WS_CAPTION, WS_EX_TOOLWINDOW,
         },
     },
-    core::BOOL,
+    core::{BOOL, HSTRING, PCWSTR, w},
 };
 
 use super::{WindowHandle, WindowInfo, WindowState};
 
+/// Window class of the frame (title bar, border) that `ApplicationFrameHost.exe`
+/// draws around a UWP app.
+const FRAME_CLASS: &str = "ApplicationFrameWindow";
+const FRAME_CLASS_W: PCWSTR = w!("ApplicationFrameWindow");
+/// Window class of a UWP app's content window, owned by the app's process.
+const CORE_CLASS: PCWSTR = w!("Windows.UI.Core.CoreWindow");
+
 /// Visible, non-cloaked, unowned top-level windows that have a title, in
-/// Z-order (topmost first).
+/// Z-order (topmost first), plus full-screen UWP frames (D56).
 pub(super) fn list_windows() -> windows::core::Result<Vec<WindowInfo>> {
     let mut hwnds: Vec<HWND> = Vec::new();
     // SAFETY: the callback only runs during this call and receives a pointer to
     // `hwnds`, which outlives it and is not otherwise accessed meanwhile.
     unsafe { EnumWindows(Some(collect_hwnd), LPARAM(&raw mut hwnds as isize))? };
+    // EnumWindows only returns windows of desktop apps (Windows 8+); the frame
+    // of a full-screen UWP app is missing, so look for frames separately.
+    let mut after = None;
+    // SAFETY: plain queries; a frame destroyed meanwhile ends the loop early.
+    while let Ok(frame) = unsafe { FindWindowExW(None, after, FRAME_CLASS_W, None) } {
+        if !hwnds.contains(&frame) {
+            hwnds.push(frame);
+        }
+        after = Some(frame);
+    }
     Ok(hwnds.into_iter().filter_map(hwnd_info).collect())
 }
 
@@ -42,11 +59,13 @@ pub(super) fn window_info(hwnd: WindowHandle) -> Option<WindowInfo> {
 
 pub(super) fn window_state(hwnd: WindowHandle) -> WindowState {
     let hwnd = HWND(hwnd as *mut c_void);
-    // SAFETY: both calls only query state and accept stale handles.
+    // SAFETY: all calls only query state and accept stale handles.
     unsafe {
         if !IsWindow(Some(hwnd)).as_bool() {
             WindowState::Gone
-        } else if IsIconic(hwnd).as_bool() {
+        } else if IsIconic(hwnd).as_bool() || is_cloaked(hwnd) {
+            // A cloaked window delivers no frames either, e.g. a full-screen
+            // UWP app in the background (D56).
             WindowState::Minimized
         } else {
             WindowState::Normal
@@ -80,7 +99,7 @@ fn hwnd_info(hwnd: HWND) -> Option<WindowInfo> {
     // SAFETY: all calls below only read window/process state; the HWND may be
     // stale, in which case the APIs fail and we skip the window.
     unsafe {
-        if !IsWindowVisible(hwnd).as_bool() || is_cloaked(hwnd) {
+        if !IsWindowVisible(hwnd).as_bool() {
             return None;
         }
         // Owned windows are dialogs/popups; tool windows are not in Alt-Tab.
@@ -103,6 +122,21 @@ fn hwnd_info(hwnd: HWND) -> Option<WindowInfo> {
             return None;
         }
 
+        // A UWP frame belongs to ApplicationFrameHost.exe; name, icon and
+        // audio come from the app's process instead (D56).
+        let app_pid = if class_name == FRAME_CLASS {
+            uwp_app_pid(hwnd, pid, &title)
+        } else {
+            None
+        };
+        let cloaked = is_cloaked(hwnd);
+        // The shell cloaks a full-screen UWP app whenever it is in the
+        // background, i.e. while LANcast is in front: keep it in the list.
+        if cloaked && !(app_pid.is_some() && is_full_screen_frame(hwnd)) {
+            return None;
+        }
+        let pid = app_pid.unwrap_or(pid);
+
         let process_path = process_path(pid);
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &raw mut rect).ok()?;
@@ -116,9 +150,40 @@ fn hwnd_info(hwnd: HWND) -> Option<WindowInfo> {
             class_name,
             width: rect.right - rect.left,
             height: rect.bottom - rect.top,
-            minimized: IsIconic(hwnd).as_bool(),
+            minimized: IsIconic(hwnd).as_bool() || cloaked,
         })
     }
+}
+
+/// The process of the UWP app inside the frame `frame` (owned by
+/// `frame_pid`, ApplicationFrameHost.exe). Windowed, the app's CoreWindow is
+/// a child of the frame; full screen, it is a top-level window with the same
+/// title. `None` if neither is found (e.g. the app is suspended).
+fn uwp_app_pid(frame: HWND, frame_pid: u32, title: &str) -> Option<u32> {
+    let title = HSTRING::from(title);
+    // SAFETY: plain queries; stale handles make the calls fail.
+    unsafe {
+        let child = FindWindowExW(Some(frame), None, CORE_CLASS, None).ok();
+        let candidates = child.into_iter().chain(std::iter::successors(
+            FindWindowExW(None, None, CORE_CLASS, &title).ok(),
+            |&after| FindWindowExW(None, Some(after), CORE_CLASS, &title).ok(),
+        ));
+        candidates
+            .map(|core| {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(core, Some(&raw mut pid));
+                pid
+            })
+            .find(|&pid| pid != 0 && pid != frame_pid)
+    }
+}
+
+/// A UWP frame in full screen has no caption (a windowed or maximized one
+/// has `WS_CAPTION`, also while suspended in the background).
+fn is_full_screen_frame(frame: HWND) -> bool {
+    // SAFETY: plain query; a stale handle yields 0.
+    let style = unsafe { GetWindowLongPtrW(frame, GWL_STYLE) };
+    style & WS_CAPTION.0 as isize == 0
 }
 
 /// Cloaked windows are invisible despite `WS_VISIBLE`, e.g. UWP frames that
