@@ -1890,6 +1890,7 @@ https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthread
   - Network: the connected physical adapter (`GetIfTable2`, hardware and not a filter
     interface, `IfOperStatusUp`) with the most outgoing bytes since the last sample, its link
     speed, Wi-Fi flag, outgoing Mbit/s and send errors + discards.
+    Without traffic, the routed adapter instead (D58).
   - Amber marks values that point at a problem: hitches, dropped frames, a readback longer than
     the period, system CPU ≥ 90 %, Wi-Fi, a link under 1 Gbit/s, send errors.
 - All measurements are read-only OS queries and counters in LANcast's own threads; nothing
@@ -1900,6 +1901,50 @@ https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthread
   dropped, readback 3.8 ms avg, CPU 68 %. So uneven gaps of this size, and the hitch count as
   defined here, do not by themselves make a stream look bad; a first reading that blamed them was
   wrong. Next: the same panel from a PC whose stream does stutter, to compare.
+
+### D58. A slow network link lowers the resolution; size and frame rate change while live (2026-11-14)
+Sources: https://learn.microsoft.com/windows/win32/api/iphlpapi/nf-iphlpapi-getbestinterface,
+https://learn.microsoft.com/windows/win32/api/netioapi/nf-netioapi-getifentry2,
+https://learn.microsoft.com/windows/win32/api/netioapi/ns-netioapi-mib_if_row2 (`TransmitLinkSpeed`,
+`InterfaceAndOperStatusFlags`); NDI bandwidth: D6.
+
+- **Problem:** at the LAN one sender's diagnostics (D57) showed its adapter at 100 Mbit/s. Full NDI
+  at 1080p60 needs up to 132 Mbit/s (D6), so such a link cannot carry the stream; the game itself
+  needs well under 1 Mbit/s and runs fine, so nobody notices the link. LANcast is meant to just
+  work: no warning, but a stream that fits. Separately, during a live show the resolution could
+  not be lowered without Stop, because all video settings were locked while sending.
+- **Lower the resolution, keep the frame rate (decided with the user):** on a big screen in front
+  of a crowd, choppy motion at 30 fps is more visible than a softer 720p picture; 720p60 is the
+  usual broadcast choice for fast games. 1080p30 and 720p60 need about the same bandwidth.
+- **Estimate:** 132.14 Mbit/s × pixel rate / (1920 × 1080 × 60), on the max. size (the bounding
+  box, so wide windows are estimated high). The stream may take 70 % of the link (NDI peaks in
+  busy scenes; audio, game and other traffic). If the max. size does not fit, the largest smaller
+  16:9 step that fits is sent (1440p, 1080p, 900p, 720p, 540p, 360p), at least 360p. 100 Mbit/s at
+  60 fps → 1280×720 (~59 Mbit/s); at 30 fps 1080p fits (~66 Mbit/s); 1 Gbit/s keeps 1440p60.
+- **Which link:** `GetBestInterface` towards the discovery server(s) (host names resolved; loopback
+  skipped), else towards the mDNS group 224.0.0.251 (routed on a LAN without a default gateway too),
+  else the fastest connected physical adapter. The adapter counts only if it is physical
+  (`HardwareInterface`, not a filter interface) and up; a VPN or virtual switch gives "unknown",
+  and unknown never lowers anything. Checked at start, when the discovery setting changes and every
+  15 s, in the background; logged when it changes.
+- **Settings:** behind "Max. resolution" an amber note "(network 100 Mbit/s: sends 1280×720)" with
+  the adapter and the estimate on hover; below it "Keep it on a slow network link"
+  (`keep_resolution`, CLI `--keep-resolution`) sends the chosen size anyway (note: "kept"). The
+  cut applies after any event limit (D51).
+- **While live:** max. resolution, frame rate and the override stay editable while sending. The
+  controller hands the new values (event limit and link cut applied) to the session; the capture
+  thread reads them per frame (`LiveOptions`), restarts the pacer for a new frame rate and builds
+  new NDI frames, since NDI clocks by the frame's rate. The source stays up; receivers see the
+  size change. Border and cursor still need a new session. `MinUpdateInterval` keeps the value of
+  the start (half the period of the frame rate then), so raising the frame rate above twice the
+  start value is capped by WGC until the next send.
+- **Diagnostics (D57):** the network row showed the busiest adapter; without traffic (no receiver)
+  that was simply the first one, possibly an unused adapter. It now shows the busiest adapter only
+  with real traffic (≥ 1 Mbit/s), else the routed one from above.
+- **Checked (2026-11-14):** unit tests for the estimate and the steps, and for size and rate
+  changing on the next frame; on the developer machine the routed link is "Ethernet Mainboard
+  Main", 1 Gbit/s (no cut); with a faked 100 Mbit/s link the settings show the note and the
+  checkbox (screenshot).
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

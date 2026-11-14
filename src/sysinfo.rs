@@ -1,8 +1,9 @@
 //! System measurements for the diagnostics (D57): the refresh rate of the
-//! game's monitor, CPU load, and the busiest network adapter. Read-only OS
-//! queries; nothing touches the game.
+//! game's monitor, CPU load, and the busiest network adapter; and the link
+//! the stream leaves on (D58). Read-only OS queries; nothing touches the
+//! game.
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, net::Ipv4Addr, time::Instant};
 
 use windows::{
     Win32::{
@@ -12,7 +13,10 @@ use windows::{
             MONITOR_DEFAULTTONULL, MONITORINFO, MONITORINFOEXW, MonitorFromWindow,
         },
         NetworkManagement::{
-            IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_ROW2, MIB_IF_TABLE2},
+            IpHelper::{
+                FreeMibTable, GetBestInterface, GetIfEntry2, GetIfTable2, MIB_IF_ROW2,
+                MIB_IF_TABLE2,
+            },
             Ndis::IfOperStatusUp,
         },
         System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes},
@@ -20,7 +24,10 @@ use windows::{
     core::PCWSTR,
 };
 
-use crate::diagnostics::{CpuUsage, NetUsage};
+use crate::{
+    bandwidth::LinkInfo,
+    diagnostics::{CpuUsage, NetUsage},
+};
 
 /// The refresh rate (Hz, rounded by Windows) of the monitor showing most of
 /// `hwnd`, or `None` if it cannot be read.
@@ -145,12 +152,17 @@ const IF_TYPE_WIFI: u32 = 71;
 impl NetMeter {
     /// The busiest connected physical adapter since the previous call;
     /// `None` on the first call or if there is none.
-    pub fn sample(&mut self) -> Option<NetUsage> {
+    ///
+    /// Without real traffic (under 1 Mbit/s) the busiest adapter says
+    /// nothing, so `preferred` (the adapter the route to the receivers uses,
+    /// by name, D58) is shown instead.
+    pub fn sample(&mut self, preferred: Option<&str>) -> Option<NetUsage> {
         let now = Instant::now();
         let rows = adapters();
         let secs = self.at.map(|at| now.duration_since(at).as_secs_f64());
         self.at = Some(now);
         let mut best: Option<(u64, NetUsage)> = None;
+        let mut routed: Option<NetUsage> = None;
         let mut last = HashMap::new();
         for row in &rows {
             let errors = row.OutErrors + row.OutDiscards;
@@ -161,21 +173,31 @@ impl NetMeter {
                 continue;
             };
             let sent = row.OutOctets.saturating_sub(octets);
-            if best.as_ref().is_some_and(|(b, _)| *b >= sent) {
+            let name = wide(&row.Alias);
+            let is_routed = preferred == Some(name.as_str());
+            if !is_routed && best.as_ref().is_some_and(|(b, _)| *b >= sent) {
                 continue;
             }
             let usage = NetUsage {
-                name: wide(&row.Alias),
+                name,
                 description: wide(&row.Description),
                 wifi: row.Type == IF_TYPE_WIFI,
                 link_mbps: row.TransmitLinkSpeed / 1_000_000,
                 out_mbps: sent as f64 * 8.0 / 1e6 / secs.max(1e-3),
                 out_errors: errors.saturating_sub(errors_before),
             };
-            best = Some((sent, usage));
+            if is_routed {
+                routed = Some(usage.clone());
+            }
+            if best.as_ref().is_none_or(|(b, _)| *b < sent) {
+                best = Some((sent, usage));
+            }
         }
         self.last = last;
-        best.map(|(_, usage)| usage)
+        match (best, routed) {
+            (Some((_, busy)), _) if busy.out_mbps >= 1.0 => Some(busy),
+            (best, routed) => routed.or(best.map(|(_, usage)| usage)),
+        }
     }
 }
 
@@ -210,4 +232,50 @@ fn adapters() -> Vec<MIB_IF_ROW2> {
 fn wide(text: &[u16]) -> String {
     let end = text.iter().position(|&c| c == 0).unwrap_or(text.len());
     String::from_utf16_lossy(&text[..end])
+}
+
+/// The physical adapter Windows routes `target` through, with its link
+/// speed; `None` without a route or for a virtual adapter (VPN, Hyper-V,
+/// loopback), whose speed says nothing about the wire.
+pub fn link_to(target: Ipv4Addr) -> Option<LinkInfo> {
+    let mut index = 0u32;
+    // SAFETY: plain value and a valid out-pointer; the address is in network
+    // byte order as GetBestInterface expects.
+    if unsafe { GetBestInterface(u32::from_ne_bytes(target.octets()), &raw mut index) }
+        != NO_ERROR.0
+    {
+        return None;
+    }
+    let mut row = MIB_IF_ROW2 {
+        InterfaceIndex: index,
+        ..Default::default()
+    };
+    // SAFETY: `row` is a MIB_IF_ROW2 with InterfaceIndex set, which
+    // GetIfEntry2 fills in.
+    if unsafe { GetIfEntry2(&raw mut row) } != NO_ERROR {
+        return None;
+    }
+    let flags = row.InterfaceAndOperStatusFlags._bitfield;
+    let physical = flags & HARDWARE_INTERFACE != 0 && flags & FILTER_INTERFACE == 0;
+    (physical && row.OperStatus == IfOperStatusUp)
+        .then(|| link_info(&row))
+        .flatten()
+}
+
+/// The fastest connected physical adapter.
+pub fn fastest_link() -> Option<LinkInfo> {
+    adapters()
+        .iter()
+        .filter_map(link_info)
+        .max_by_key(|l| l.mbps)
+}
+
+fn link_info(row: &MIB_IF_ROW2) -> Option<LinkInfo> {
+    // 0 and u64::MAX mean "unknown".
+    let mbps = row.TransmitLinkSpeed;
+    (mbps != 0 && mbps != u64::MAX).then(|| LinkInfo {
+        name: wide(&row.Alias),
+        description: wide(&row.Description),
+        mbps: mbps / 1_000_000,
+    })
 }

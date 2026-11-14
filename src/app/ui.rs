@@ -30,6 +30,7 @@ use super::{
     updater::{UpdateStatus, Updater},
 };
 use crate::{
+    bandwidth,
     capture::{
         audio::{AudioLevels, AudioMode},
         video::{PreviewSlot, VideoOptions},
@@ -211,6 +212,7 @@ impl LancastApp {
                 send_blocked: None,
                 required_servers: None,
                 diagnostics: config.diagnostics,
+                keep_resolution: config.keep_resolution,
             },
             sent_settings: None,
             to_tray: config.to_tray,
@@ -501,6 +503,7 @@ impl LancastApp {
         config.show_border = self.settings.video.show_border;
         config.capture_cursor = self.settings.video.capture_cursor;
         config.diagnostics = self.settings.diagnostics;
+        config.keep_resolution = self.settings.keep_resolution;
         config.audio_gain_db = self.settings.audio_gain_db;
         config.discovery_server = self.discovery_server.trim().to_owned();
         config.ignore_system_discovery = self.ignore_system_discovery;
@@ -815,6 +818,47 @@ impl LancastApp {
         let servers = self.effective_servers();
         if !servers.is_empty() {
             self.send(Command::CheckDiscovery(servers));
+        }
+    }
+
+    /// Behind the max. resolution: what a slow network link makes LANcast
+    /// send instead (D58), after any event limit.
+    fn link_note(&self, ui: &mut egui::Ui, state: &AppState, enforced: &EventValues) {
+        let Some(link) = &state.network.link else {
+            return;
+        };
+        let video = &self.settings.video;
+        let (lw, lh) = enforced.max_size.unwrap_or(video.max_size);
+        let size = (video.max_size.0.min(lw), video.max_size.1.min(lh));
+        let fps = video.fps_cap.min(enforced.max_fps.unwrap_or(u32::MAX));
+        let Some(cap) = bandwidth::cap_for_link(size, fps, link.mbps) else {
+            return;
+        };
+        let speed = link.speed_text();
+        let about = format!(
+            "The network link ({}, {}) runs at {speed}: too slow for {}×{} at {fps} fps, \
+             which needs up to about {:.0} Mbit/s. Often a damaged cable or a switch port \
+             that fell back to 100 Mbit/s; at 1 Gbit/s LANcast sends the full resolution.",
+            link.name,
+            link.description,
+            size.0,
+            size.1,
+            bandwidth::estimate_mbps(size, fps)
+        );
+        if self.settings.keep_resolution {
+            ui.label(
+                RichText::new(format!("(network {speed}: kept)"))
+                    .small()
+                    .weak(),
+            )
+            .on_hover_text(about);
+        } else {
+            ui.label(
+                RichText::new(format!("(network {speed}: sends {}×{})", cap.0, cap.1))
+                    .small()
+                    .color(Palette::of(ui).amber),
+            )
+            .on_hover_text(about);
         }
     }
 
@@ -1723,8 +1767,9 @@ impl LancastApp {
                             );
                             ui.end_row();
 
+                            // Frame rate and size also change while sending (D58).
                             group_label(ui, "Video");
-                            ui.add_enabled_ui(editable, |ui| {
+                            ui.add_enabled_ui(true, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Max. frame rate");
                                     // The user's choice, also above the event
@@ -1741,7 +1786,7 @@ impl LancastApp {
                                     }
                                 });
                             });
-                            ui.add_enabled_ui(editable, |ui| {
+                            ui.add_enabled_ui(true, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Max. resolution");
                                     // As for the frame rate (D51).
@@ -1768,7 +1813,23 @@ impl LancastApp {
                                             ((sw, sh) != (w, h)).then_some(&*sent),
                                         );
                                     }
+                                    self.link_note(ui, state, &enforced);
                                 });
+                            });
+                            ui.end_row();
+
+                            ui.label("");
+                            ui.label("");
+                            ui.add_enabled_ui(true, |ui| {
+                                ui.checkbox(
+                                    &mut self.settings.keep_resolution,
+                                    "Keep it on a slow network link",
+                                )
+                                .on_hover_text(
+                                    "LANcast lowers the resolution when the network link is too \
+                                     slow for it (e.g. 100 Mbit/s) and keeps the frame rate. \
+                                     Check this to send the chosen resolution anyway.",
+                                );
                             });
                             ui.end_row();
 

@@ -152,6 +152,13 @@ impl Session {
         ))
     }
 
+    /// Changes the max. size and the FPS cap while sending (D58); the next
+    /// frame uses them. Other video options need a new session.
+    pub fn set_video(&mut self, video: &VideoOptions) {
+        self.video.live.set(video.max_size, video.fps_cap);
+        self.fps_cap = video.fps_cap;
+    }
+
     /// The captured window.
     pub fn hwnd(&self) -> isize {
         self.hwnd

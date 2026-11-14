@@ -6,6 +6,7 @@ pub const VERSION: &str = env!("LANCAST_VERSION");
 
 pub mod app;
 pub mod app_icon;
+pub mod bandwidth;
 pub mod capture;
 pub mod cli;
 pub mod config;

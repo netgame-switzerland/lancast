@@ -11,6 +11,7 @@ use crossbeam_channel::{Receiver, select};
 use tracing::{debug, info, warn};
 
 use crate::{
+    bandwidth::{self, LinkInfo},
     capture::{
         audio::{self, AudioLevels, AudioMode, AudioSource},
         video::{PreviewSlot, VideoOptions},
@@ -69,6 +70,8 @@ pub struct Settings {
     pub required_servers: Option<String>,
     /// Measure and show the diagnostics while sending (D57).
     pub diagnostics: bool,
+    /// Keep the max. resolution on a slow network link (D58).
+    pub keep_resolution: bool,
 }
 
 /// An event link waiting for confirmation.
@@ -107,6 +110,8 @@ pub struct NetworkStatus {
     pub in_use: Option<String>,
     /// Discovery servers the current setting asks for (`""` = mDNS).
     pub wanted: String,
+    /// The physical link the stream leaves on, if known (D58).
+    pub link: Option<LinkInfo>,
 }
 
 impl NetworkStatus {
@@ -278,6 +283,8 @@ pub struct Controller {
     /// When the discovery servers were last checked (D48).
     own_checked: Instant,
     system_checked: Instant,
+    /// When the network link was last checked (D58).
+    link_checked: Instant,
 }
 
 impl Controller {
@@ -294,6 +301,7 @@ impl Controller {
             reaching_nobody: false,
             own_checked: Instant::now(),
             system_checked: Instant::now(),
+            link_checked: Instant::now(),
         }
     }
 
@@ -301,6 +309,7 @@ impl Controller {
     pub fn run(mut self, commands: Receiver<Command>) {
         self.publish_tray();
         self.check_system_discovery(false);
+        self.check_network_link();
         let mut restart = false;
         loop {
             select! {
@@ -335,14 +344,29 @@ impl Controller {
             Command::Settings(settings) => {
                 let video_changed =
                     self.settings.as_ref().map(|s| &s.video) != Some(&settings.video);
+                let keep_changed = self.settings.as_ref().map(|s| s.keep_resolution)
+                    != Some(settings.keep_resolution);
                 if self.settings.as_ref().map(|s| &s.discovery) != Some(&settings.discovery) {
                     self.state().network.wanted = ndi_config::resolve(&settings.discovery);
+                    self.check_network_link();
                 }
                 self.settings = Some(settings);
                 self.publish_tray();
                 // Border and cursor show in the preview right away.
                 if video_changed && self.preview.is_some() {
                     self.start_preview();
+                }
+                // Size and frame rate change while sending, too (D58).
+                if (video_changed || keep_changed)
+                    && let Some(settings) = &self.settings
+                    && self.session.is_some()
+                {
+                    let mut video = settings.video.clone();
+                    let link = self.state().network.link.clone();
+                    bandwidth::fit_to_link(&mut video, link.as_ref(), settings.keep_resolution);
+                    if let Some(session) = self.session.as_mut() {
+                        session.set_video(&video);
+                    }
                 }
             }
             Command::Start(choice) => self.start(choice),
@@ -555,7 +579,7 @@ impl Controller {
             AudioChoice::System => Some(AudioSource::System),
             AudioChoice::None => None,
         };
-        let config = SessionConfig {
+        let mut config = SessionConfig {
             window,
             source_name: settings.source_name.clone(),
             groups: settings.groups.clone(),
@@ -563,6 +587,8 @@ impl Controller {
             audio,
             audio_gain_db: settings.audio_gain_db,
         };
+        let link = self.state().network.link.clone();
+        bandwidth::fit_to_link(&mut config.video, link.as_ref(), settings.keep_resolution);
         // NDI reads its configuration when the session loads it.
         if let Err(err) = ndi_config::apply(&settings.discovery) {
             warn!("failed to apply the discovery setting: {err:#}");
@@ -707,7 +733,17 @@ impl Controller {
                     info!("diagnostics off");
                 }
             }
-            let diagnostics = self.probe.as_mut().map(|p| p.sample(session, &status));
+            let link = self
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .network
+                .link
+                .clone();
+            let diagnostics = self
+                .probe
+                .as_mut()
+                .map(|p| p.sample(session, &status, link.as_ref()));
             let (minimized, frames_missing) = (session.is_minimized(), session.frames_missing());
             let mut state = self.state();
             let servers = state.network.in_use.clone().unwrap_or_default();
@@ -842,6 +878,41 @@ impl Controller {
         if system_down && self.system_checked.elapsed() >= DISCOVERY_RECHECK {
             self.check_system_discovery(true);
         }
+        if self.link_checked.elapsed() >= DISCOVERY_RECHECK {
+            self.check_network_link();
+        }
+    }
+
+    /// Finds the network link the stream leaves on, in the background
+    /// (D58): towards the discovery servers in use or wanted.
+    fn check_network_link(&mut self) {
+        self.link_checked = Instant::now();
+        let servers = {
+            let network = &self.state().network;
+            network
+                .in_use
+                .clone()
+                .unwrap_or_else(|| network.wanted.clone())
+        };
+        let (state, wake) = (self.state.clone(), self.wake.clone());
+        std::thread::spawn(move || {
+            let link = bandwidth::detect(&servers);
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.network.link != link {
+                match &link {
+                    Some(l) => info!(
+                        adapter = %l.name,
+                        description = %l.description,
+                        speed = %l.speed_text(),
+                        "network link"
+                    ),
+                    None => info!("network link unknown"),
+                }
+                state.network.link = link;
+                drop(state);
+                wake();
+            }
+        });
     }
 
     /// Checks the discovery server from NDI Access Manager in the background.

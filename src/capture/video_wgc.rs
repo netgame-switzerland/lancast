@@ -26,7 +26,7 @@ use windows_capture::{
 
 use super::{
     pacer::Pacer,
-    video::{FrameSink, PreviewSlot, Readback, SinkError, VideoOptions, VideoStats},
+    video::{FrameSink, LiveOptions, PreviewSlot, Readback, SinkError, VideoOptions, VideoStats},
 };
 use crate::{os_caps::OsCaps, windows_list::WindowHandle};
 
@@ -35,6 +35,8 @@ pub struct VideoCapture {
     control: Option<CaptureControl<Handler, SinkError>>,
     closed: Arc<AtomicBool>,
     pub stats: Arc<VideoStats>,
+    /// Max. size and FPS cap, changeable while capturing (D58).
+    pub live: Arc<LiveOptions>,
 }
 
 impl VideoCapture {
@@ -84,6 +86,7 @@ impl VideoCapture {
 
         let sink = FrameSink::new(pacer, options, frames, recycled, preview);
         let stats = sink.stats();
+        let live = sink.live();
         let closed = Arc::new(AtomicBool::new(false));
         let config = HandlerConfig {
             sink,
@@ -107,6 +110,7 @@ impl VideoCapture {
             control: Some(control),
             closed,
             stats,
+            live,
         })
     }
 

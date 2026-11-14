@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use tracing::info;
 
 use crate::{
+    bandwidth::LinkInfo,
     capture::timeline::GapStats,
     session::{Session, SessionStatus},
     sysinfo::{self, CpuMeter, NetMeter},
@@ -106,14 +107,20 @@ impl Probe {
         };
         // The meters report from their second sample on.
         probe.cpu.sample();
-        probe.net.sample();
+        probe.net.sample(None);
         info!("diagnostics on");
         probe
     }
 
-    /// Takes a snapshot; `status` is the session status of the same moment.
-    /// Writes a log line every [`LOG_INTERVAL`].
-    pub fn sample(&mut self, session: &Session, status: &SessionStatus) -> Diagnostics {
+    /// Takes a snapshot; `status` is the session status of the same moment,
+    /// `link` the adapter the stream is routed through (D58). Writes a log
+    /// line every [`LOG_INTERVAL`].
+    pub fn sample(
+        &mut self,
+        session: &Session,
+        status: &SessionStatus,
+        link: Option<&LinkInfo>,
+    ) -> Diagnostics {
         let fps_cap = session.fps_cap();
         let period = Duration::from_secs(1) / fps_cap.max(1);
         let span = |fps: f64| (fps * GRAPH_SPAN.as_secs_f64()).ceil() as usize;
@@ -146,7 +153,7 @@ impl Probe {
             arrived: GapStats::of(&arrived, None),
             recent_ms: sent.iter().map(|&g| g as f32 / 1000.0).collect(),
             cpu: self.cpu.sample(),
-            net: self.net.sample(),
+            net: self.net.sample(link.map(|l| l.name.as_str())),
         };
 
         let t = &mut self.totals;

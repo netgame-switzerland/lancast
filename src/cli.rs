@@ -25,12 +25,14 @@ use crate::{
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
-pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB] [--discovery SERVERS] [--diagnostics]]
+pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB] [--discovery SERVERS] [--diagnostics] [--keep-resolution]]
   Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
   `LANcast --firewall` checks the Windows Firewall; `LANcast --allow-firewall` (as admin) allows LANcast.
   --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).
   --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).
   --discovery sets the NDI discovery server(s), host[:port],… (\"\" = mDNS; default: NDI Access Manager's).
+  On a network link too slow for the max. size (e.g. 100 Mbit/s), a smaller size is sent at the
+  same frame rate; --keep-resolution sends the max. size anyway (D58).
   --diagnostics logs frame timing, refresh rate, CPU and network every 5 s (D57).
   An active event (event link, event edition) overrules these options where it fixes a value.";
 
@@ -52,6 +54,7 @@ struct Args {
     audio_gain_db: f32,
     discovery: Discovery,
     diagnostics: bool,
+    keep_resolution: bool,
 }
 
 /// Runs the CLI with the arguments after the program name.
@@ -96,6 +99,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
         AudioChoice::System => Some(AudioSource::System),
         AudioChoice::None => None,
     };
+    let link = crate::bandwidth::detect(&ndi_config::resolve(&args.discovery));
+    match &link {
+        Some(l) => info!(adapter = %l.name, speed = %l.speed_text(), "network link"),
+        None => info!("network link unknown"),
+    }
+    crate::bandwidth::fit_to_link(&mut args.video, link.as_ref(), args.keep_resolution);
     let config = SessionConfig {
         source_name: {
             let name = args.name.unwrap_or_else(|| window.default_source_name());
@@ -135,7 +144,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
     .context("failed to install the Ctrl-C handler")?;
     info!(source = %session.source_name(), "sending; press Ctrl-C to stop");
 
-    let reason = supervise(&mut session, &interrupted, &servers, args.diagnostics);
+    let reason = supervise(
+        &mut session,
+        &interrupted,
+        &servers,
+        args.diagnostics,
+        link.as_ref(),
+    );
     info!("stopping: {reason}");
     session.stop();
     info!("stopped");
@@ -245,6 +260,7 @@ fn supervise(
     interrupted: &AtomicBool,
     servers: &str,
     diagnostics: bool,
+    link: Option<&crate::bandwidth::LinkInfo>,
 ) -> &'static str {
     let mut probe = diagnostics.then(|| Probe::new(session));
     let mut last_status = Instant::now();
@@ -275,7 +291,7 @@ fn supervise(
             last_status = Instant::now();
             let s = session.status();
             if let Some(probe) = probe.as_mut() {
-                probe.sample(session, &s);
+                probe.sample(session, &s, link);
             }
             info!(
                 source = format!("{}x{}", s.source_size.0, s.source_size.1),
@@ -341,6 +357,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
     let mut audio_gain_db = 0.0f32;
     let mut discovery = Discovery::System;
     let mut diagnostics = false;
+    let mut keep_resolution = false;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
@@ -373,6 +390,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
             "--no-border" => video.show_border = false,
             "--cursor" => video.capture_cursor = true,
             "--diagnostics" => diagnostics = true,
+            "--keep-resolution" => keep_resolution = true,
             "--system-audio" => audio = AudioChoice::System,
             "--no-audio" => audio = AudioChoice::None,
             "--discovery" => {
@@ -410,6 +428,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
         audio_gain_db,
         discovery,
         diagnostics,
+        keep_resolution,
     }))
 }
 

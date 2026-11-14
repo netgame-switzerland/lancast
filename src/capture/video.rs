@@ -50,6 +50,39 @@ impl Default for VideoOptions {
     }
 }
 
+/// The options that may change while capturing (D58): the max. size and
+/// the FPS cap, read by the capture thread once per frame.
+#[derive(Debug, Default)]
+pub struct LiveOptions {
+    max_width: AtomicU32,
+    max_height: AtomicU32,
+    fps: AtomicU32,
+}
+
+impl LiveOptions {
+    pub fn new(options: &VideoOptions) -> Self {
+        let live = Self::default();
+        live.set(options.max_size, options.fps_cap);
+        live
+    }
+
+    pub fn set(&self, max_size: (u32, u32), fps: u32) {
+        self.max_width.store(max_size.0, Ordering::Relaxed);
+        self.max_height.store(max_size.1, Ordering::Relaxed);
+        self.fps.store(fps.max(1), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> ((u32, u32), u32) {
+        (
+            (
+                self.max_width.load(Ordering::Relaxed),
+                self.max_height.load(Ordering::Relaxed),
+            ),
+            self.fps.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// Counters for status display; written by the capture thread.
 #[derive(Debug, Default)]
 pub struct VideoStats {
@@ -149,6 +182,8 @@ pub(super) struct FrameSink {
     pacer: Pacer,
     fps: u32,
     max_size: (u32, u32),
+    /// Changes to `fps` and `max_size` while capturing.
+    live: Arc<LiveOptions>,
     /// `None` in preview-only mode (window selected, not sending).
     frames: Option<Sender<VideoFrame>>,
     recycled: Receiver<VideoFrame>,
@@ -173,6 +208,7 @@ impl FrameSink {
             pacer,
             fps: options.fps_cap,
             max_size: options.max_size,
+            live: Arc::new(LiveOptions::new(options)),
             frames,
             recycled,
             stats: Arc::new(VideoStats::default()),
@@ -187,10 +223,32 @@ impl FrameSink {
         self.stats.clone()
     }
 
+    pub(super) fn live(&self) -> Arc<LiveOptions> {
+        self.live.clone()
+    }
+
+    /// Takes over changed live options before the next frame.
+    fn apply_live(&mut self) {
+        let (max_size, fps) = self.live.get();
+        if max_size != self.max_size {
+            info!(
+                max = format!("{}x{}", max_size.0, max_size.1),
+                "max. size changed"
+            );
+            self.max_size = max_size;
+        }
+        if fps != self.fps {
+            info!(fps, "frame rate cap changed");
+            self.fps = fps;
+            self.pacer = Pacer::new(fps);
+        }
+    }
+
     /// Whether a frame arriving at `now` should be read back at all. Surplus
     /// frames are dropped here, before the GPU → CPU readback, which is the
     /// cost. `timestamp` is the frame's capture time (any fixed epoch).
     pub(super) fn wants_frame(&mut self, now: Instant, timestamp: Duration) -> bool {
+        self.apply_live();
         self.stats.arrived.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut timeline) = self.stats.timeline.lock() {
             timeline.arrived.record(timestamp);
@@ -311,11 +369,15 @@ impl FrameSink {
 
     /// Returns a frame of `size` from the recycled pool or a new one.
     fn frame_for(&mut self, size: (u32, u32)) -> Result<VideoFrame, SinkError> {
-        let matches = |f: &VideoFrame| (f.width() as u32, f.height() as u32) == size;
+        // NDI clocks by the frame's rate, so a changed cap needs new frames.
+        let fps = self.fps as i32;
+        let matches = |f: &VideoFrame| {
+            (f.width() as u32, f.height() as u32) == size && f.frame_rate_n() == fps
+        };
         if let Some(frame) = self.spare.take().filter(matches) {
             return Ok(frame);
         }
-        // Frames of an outdated size are dropped here.
+        // Frames of an outdated size or rate are dropped here.
         while let Ok(frame) = self.recycled.try_recv() {
             if matches(&frame) {
                 return Ok(frame);
@@ -341,11 +403,12 @@ mod unsupported {
     use crossbeam_channel::{Receiver, Sender};
     use grafton_ndi::VideoFrame;
 
-    use super::{PreviewSlot, VideoOptions, VideoStats};
+    use super::{LiveOptions, PreviewSlot, VideoOptions, VideoStats};
     use crate::{os_caps::OsCaps, windows_list::WindowHandle};
 
     pub struct VideoCapture {
         pub stats: Arc<VideoStats>,
+        pub live: Arc<LiveOptions>,
     }
 
     impl VideoCapture {
@@ -367,5 +430,68 @@ mod unsupported {
         pub fn stop(self) -> Result<()> {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Pixels(Vec<u8>, usize);
+
+    impl Readback for Pixels {
+        fn bgra(&mut self) -> (&[u8], usize) {
+            (&self.0, self.1)
+        }
+    }
+
+    /// Size and FPS cap changed while capturing apply to the next frame,
+    /// in frames of the new rate (D58).
+    #[test]
+    fn live_options_apply_to_the_next_frame() {
+        let options = VideoOptions {
+            fps_cap: 60,
+            max_size: (64, 36),
+            ..VideoOptions::default()
+        };
+        let (frames_tx, frames_rx) = crossbeam_channel::bounded(4);
+        let (_recycle_tx, recycled) = crossbeam_channel::bounded(4);
+        let mut sink = FrameSink::new(
+            Pacer::new(60),
+            &options,
+            Some(frames_tx),
+            recycled,
+            Arc::new(PreviewSlot::default()),
+        );
+        let source = (128, 72);
+        let pixels = || Ok(Pixels(vec![128; 128 * 72 * 4], 128 * 4));
+        let start = Instant::now();
+        let send = |sink: &mut FrameSink, ms: u64| {
+            let now = start + Duration::from_millis(ms);
+            assert!(sink.wants_frame(now, Duration::from_millis(ms)));
+            assert!(
+                sink.deliver(source, now, Duration::from_millis(ms), pixels)
+                    .unwrap()
+            );
+            frames_rx.try_recv().unwrap()
+        };
+
+        let frame = send(&mut sink, 0);
+        assert_eq!(
+            (frame.width(), frame.height(), frame.frame_rate_n()),
+            (64, 36, 60)
+        );
+
+        sink.live().set((32, 18), 30);
+        let frame = send(&mut sink, 100);
+        assert_eq!(
+            (frame.width(), frame.height(), frame.frame_rate_n()),
+            (32, 18, 30)
+        );
+        // The pacer now runs at 30 fps: a frame 20 ms later is skipped.
+        assert!(!sink.wants_frame(
+            start + Duration::from_millis(120),
+            Duration::from_millis(120)
+        ));
     }
 }
