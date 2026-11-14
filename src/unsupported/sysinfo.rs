@@ -12,8 +12,10 @@ pub fn refresh_rate(_hwnd: isize) -> Option<u32> {
     None
 }
 
+// Braced, so `CpuMeter::default()` reads the same as on Windows
+// (clippy: default_constructed_unit_structs).
 #[derive(Default)]
-pub struct CpuMeter;
+pub struct CpuMeter {}
 
 impl CpuMeter {
     pub fn sample(&mut self) -> Option<CpuUsage> {
@@ -21,8 +23,10 @@ impl CpuMeter {
     }
 }
 
+// Braced, so `NetMeter::default()` reads the same as on Windows
+// (clippy: default_constructed_unit_structs).
 #[derive(Default)]
-pub struct NetMeter;
+pub struct NetMeter {}
 
 impl NetMeter {
     pub fn sample(&mut self, _preferred: Option<&str>) -> Option<NetUsage> {
