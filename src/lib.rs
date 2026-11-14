@@ -9,6 +9,7 @@ pub mod app_icon;
 pub mod capture;
 pub mod cli;
 pub mod config;
+pub mod diagnostics;
 #[cfg_attr(not(windows), path = "unsupported/dialog.rs")]
 pub mod dialog;
 pub mod distro;
@@ -26,6 +27,8 @@ pub mod os_caps;
 #[cfg_attr(not(windows), path = "unsupported/process_info.rs")]
 pub mod process_info;
 pub mod session;
+#[cfg_attr(not(windows), path = "unsupported/sysinfo.rs")]
+pub mod sysinfo;
 pub mod tray;
 #[cfg_attr(not(windows), path = "unsupported/tray_visibility.rs")]
 pub mod tray_visibility;

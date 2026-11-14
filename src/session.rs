@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use crate::{
     capture::{
         audio::{AudioCapture, AudioChunk, AudioLevels, AudioMode, AudioSource},
-        video::{NO_FRAMES_HINT_AFTER, PreviewSlot, VideoCapture, VideoOptions},
+        video::{NO_FRAMES_HINT_AFTER, PreviewSlot, VideoCapture, VideoOptions, VideoStats},
     },
     ndi_out::{NdiInputs, NdiOutput},
     os_caps::OsCaps,
@@ -56,9 +56,14 @@ pub enum SessionEvent {
 pub struct SessionStatus {
     pub source_size: (u32, u32),
     pub output_size: (u32, u32),
+    /// Frames from the capture API per second, before the FPS cap.
+    pub arrived_fps: f64,
     pub capture_fps: f64,
     pub send_fps: f64,
     pub readback_ms: f64,
+    pub readback_max_ms: f64,
+    /// Longest blocked NDI video send (D57).
+    pub send_block_max_ms: f64,
     pub paced_out: u64,
     pub backlogged: u64,
     pub receivers: u32,
@@ -78,7 +83,10 @@ pub struct Session {
     last_captured: u64,
     status_at: Instant,
     status_captured: u64,
+    status_arrived: u64,
     status_sent: u64,
+    /// The effective FPS cap.
+    fps_cap: u32,
 }
 
 impl Session {
@@ -136,10 +144,27 @@ impl Session {
                 last_captured: 0,
                 status_at: now,
                 status_captured: 0,
+                status_arrived: 0,
                 status_sent: 0,
+                fps_cap: config.video.fps_cap,
             },
             audio_error,
         ))
+    }
+
+    /// The captured window.
+    pub fn hwnd(&self) -> isize {
+        self.hwnd
+    }
+
+    /// The effective FPS cap.
+    pub fn fps_cap(&self) -> u32 {
+        self.fps_cap
+    }
+
+    /// Frame counters and gaps of the video capture (D57).
+    pub fn video_stats(&self) -> &VideoStats {
+        &self.video.stats
     }
 
     /// Full NDI name, e.g. `MACHINE (war3)`.
@@ -213,8 +238,10 @@ impl Session {
         self.status_at = Instant::now();
         let captured = stats.captured.load(Ordering::Relaxed);
         let sent = self.ndi.stats.video_sent.load(Ordering::Relaxed);
+        let arrived = stats.arrived.load(Ordering::Relaxed);
         let frames = captured - self.status_captured;
         let readback_us = stats.readback_us.swap(0, Ordering::Relaxed);
+        let ms = |us: u64| us as f64 / 1000.0;
         let status = SessionStatus {
             source_size: (
                 stats.source_width.load(Ordering::Relaxed),
@@ -224,14 +251,18 @@ impl Session {
                 stats.width.load(Ordering::Relaxed),
                 stats.height.load(Ordering::Relaxed),
             ),
+            arrived_fps: (arrived - self.status_arrived) as f64 / secs,
             capture_fps: frames as f64 / secs,
             send_fps: (sent - self.status_sent) as f64 / secs,
             readback_ms: readback_us as f64 / frames.max(1) as f64 / 1000.0,
+            readback_max_ms: ms(stats.readback_max_us.swap(0, Ordering::Relaxed)),
+            send_block_max_ms: ms(self.ndi.stats.send_block_max_us.swap(0, Ordering::Relaxed)),
             paced_out: stats.paced_out.swap(0, Ordering::Relaxed),
             backlogged: stats.backlogged.swap(0, Ordering::Relaxed),
             receivers: self.ndi.stats.connections.load(Ordering::Relaxed),
         };
         self.status_captured = captured;
+        self.status_arrived = arrived;
         self.status_sent = sent;
         status
     }

@@ -22,7 +22,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use grafton_ndi::{PixelFormat, VideoFrame};
 use tracing::info;
 
-use super::{pacer::Pacer, scale};
+use super::{pacer::Pacer, scale, timeline::Timeline};
 
 #[cfg(windows)]
 pub use super::video_wgc::VideoCapture;
@@ -53,6 +53,8 @@ impl Default for VideoOptions {
 /// Counters for status display; written by the capture thread.
 #[derive(Debug, Default)]
 pub struct VideoStats {
+    /// Frames delivered by the capture API, before the FPS cap.
+    pub arrived: AtomicU64,
     /// Frames read back and handed to the NDI thread.
     pub captured: AtomicU64,
     /// Frames skipped by the FPS cap.
@@ -60,6 +62,10 @@ pub struct VideoStats {
     /// Frames skipped because the NDI thread was behind.
     pub backlogged: AtomicU64,
     pub readback_us: AtomicU64,
+    /// Longest readback (incl. scaling) since the last status.
+    pub readback_max_us: AtomicU64,
+    /// Frame gaps for the diagnostics (D57).
+    pub timeline: Mutex<Timeline>,
     pub source_width: AtomicU32,
     pub source_height: AtomicU32,
     pub width: AtomicU32,
@@ -183,8 +189,12 @@ impl FrameSink {
 
     /// Whether a frame arriving at `now` should be read back at all. Surplus
     /// frames are dropped here, before the GPU → CPU readback, which is the
-    /// cost.
-    pub(super) fn wants_frame(&mut self, now: Instant) -> bool {
+    /// cost. `timestamp` is the frame's capture time (any fixed epoch).
+    pub(super) fn wants_frame(&mut self, now: Instant, timestamp: Duration) -> bool {
+        self.stats.arrived.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut timeline) = self.stats.timeline.lock() {
+            timeline.arrived.record(timestamp);
+        }
         if !self.pacer.accept(now) {
             self.stats.paced_out.fetch_add(1, Ordering::Relaxed);
             return false;
@@ -208,6 +218,7 @@ impl FrameSink {
         &mut self,
         source: (u32, u32),
         now: Instant,
+        timestamp: Duration,
         readback: impl FnOnce() -> Result<R, SinkError>,
     ) -> Result<bool, SinkError> {
         let stats = self.stats.clone();
@@ -269,9 +280,11 @@ impl FrameSink {
             });
         }
 
+        let readback_us = now.elapsed().as_micros() as u64;
+        stats.readback_us.fetch_add(readback_us, Ordering::Relaxed);
         stats
-            .readback_us
-            .fetch_add(now.elapsed().as_micros() as u64, Ordering::Relaxed);
+            .readback_max_us
+            .fetch_max(readback_us, Ordering::Relaxed);
         stats.source_width.store(source.0, Ordering::Relaxed);
         stats.source_height.store(source.1, Ordering::Relaxed);
         stats.width.store(size.0, Ordering::Relaxed);
@@ -280,6 +293,9 @@ impl FrameSink {
         match frames.try_send(out) {
             Ok(()) => {
                 stats.captured.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut timeline) = stats.timeline.lock() {
+                    timeline.sent.record(timestamp);
+                }
             }
             Err(TrySendError::Full(frame)) => {
                 stats.backlogged.fetch_add(1, Ordering::Relaxed);

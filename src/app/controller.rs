@@ -15,6 +15,7 @@ use crate::{
         audio::{self, AudioLevels, AudioMode, AudioSource},
         video::{PreviewSlot, VideoOptions},
     },
+    diagnostics::{Diagnostics, Probe},
     distro,
     event_link::{self, EventLink},
     event_state,
@@ -66,6 +67,8 @@ pub struct Settings {
     /// The event's discovery servers (D49): checked right before going
     /// live; if they are not reachable, the cast does not start.
     pub required_servers: Option<String>,
+    /// Measure and show the diagnostics while sending (D57).
+    pub diagnostics: bool,
 }
 
 /// An event link waiting for confirmation.
@@ -146,6 +149,8 @@ pub struct Sending {
     /// `(server, connected)` for each discovery server in use; empty for
     /// mDNS (D41).
     pub discovery: Vec<(String, bool)>,
+    /// Updated every second while the diagnostics are on (D57).
+    pub diagnostics: Option<Diagnostics>,
 }
 
 impl Sending {
@@ -264,6 +269,8 @@ pub struct Controller {
     wake: Wake,
     settings: Option<Settings>,
     session: Option<Session>,
+    /// Diagnostics of the session, while turned on (D57).
+    probe: Option<Probe>,
     preview: Option<Preview>,
     last_status: Instant,
     /// The cast reached nobody at the last status update (D49).
@@ -281,6 +288,7 @@ impl Controller {
             wake,
             settings: None,
             session: None,
+            probe: None,
             preview: None,
             last_status: Instant::now(),
             reaching_nobody: false,
@@ -593,6 +601,7 @@ impl Controller {
                     frames_missing: false,
                     started: Instant::now(),
                     discovery,
+                    diagnostics: None,
                 });
                 state.notice = None;
                 drop(state);
@@ -617,6 +626,7 @@ impl Controller {
             return;
         };
         info!("stopping: {reason}");
+        self.probe = None;
         session.stop();
         self.release_ndi();
         let mut state = self.state();
@@ -690,11 +700,20 @@ impl Controller {
         if self.last_status.elapsed() >= STATUS_INTERVAL {
             self.last_status = Instant::now();
             let status = session.status();
+            let wanted = self.settings.as_ref().is_some_and(|s| s.diagnostics);
+            if wanted != self.probe.is_some() {
+                self.probe = wanted.then(|| Probe::new(session));
+                if !wanted {
+                    info!("diagnostics off");
+                }
+            }
+            let diagnostics = self.probe.as_mut().map(|p| p.sample(session, &status));
             let (minimized, frames_missing) = (session.is_minimized(), session.frames_missing());
             let mut state = self.state();
             let servers = state.network.in_use.clone().unwrap_or_default();
             if let Some(sending) = state.sending.as_mut() {
                 sending.status = status;
+                sending.diagnostics = diagnostics;
                 sending.minimized = minimized;
                 sending.frames_missing = frames_missing;
                 let discovery = ndi_config::connections(&servers);

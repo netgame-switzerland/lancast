@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 use crate::{
     capture::{audio::AudioSource, video::VideoOptions},
     config::ConfigStore,
+    diagnostics::Probe,
     event_state::{self, EventState},
     ndi_config::{self, Discovery},
     os_caps::OsCaps,
@@ -24,12 +25,13 @@ use crate::{
 
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 
-pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB] [--discovery SERVERS]]
+pub const USAGE: &str = "usage: LANcast [<0xHWND | PID> [--name NAME] [--groups G1,G2] [--fps N] [--max-size WxH] [--no-border] [--cursor] [--system-audio | --no-audio] [--audio-gain-db DB] [--discovery SERVERS] [--diagnostics]]
   Without arguments, LANcast opens its window. `LANcast --list` prints the capturable windows.
   `LANcast --firewall` checks the Windows Firewall; `LANcast --allow-firewall` (as admin) allows LANcast.
   --audio-gain-db 20 matches NDI Studio Monitor's level convention (D17).
   --groups sets the NDI send groups (default Public,lancast; \"\" = NDI's own setting, D39).
   --discovery sets the NDI discovery server(s), host[:port],… (\"\" = mDNS; default: NDI Access Manager's).
+  --diagnostics logs frame timing, refresh rate, CPU and network every 5 s (D57).
   An active event (event link, event edition) overrules these options where it fixes a value.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,7 @@ struct Args {
     audio: AudioChoice,
     audio_gain_db: f32,
     discovery: Discovery,
+    diagnostics: bool,
 }
 
 /// Runs the CLI with the arguments after the program name.
@@ -132,7 +135,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     .context("failed to install the Ctrl-C handler")?;
     info!(source = %session.source_name(), "sending; press Ctrl-C to stop");
 
-    let reason = supervise(&mut session, &interrupted, &servers);
+    let reason = supervise(&mut session, &interrupted, &servers, args.diagnostics);
     info!("stopping: {reason}");
     session.stop();
     info!("stopped");
@@ -237,7 +240,13 @@ fn discovery_text(discovery: &Discovery) -> String {
     }
 }
 
-fn supervise(session: &mut Session, interrupted: &AtomicBool, servers: &str) -> &'static str {
+fn supervise(
+    session: &mut Session,
+    interrupted: &AtomicBool,
+    servers: &str,
+    diagnostics: bool,
+) -> &'static str {
+    let mut probe = diagnostics.then(|| Probe::new(session));
     let mut last_status = Instant::now();
     loop {
         std::thread::sleep(POLL_INTERVAL);
@@ -265,6 +274,9 @@ fn supervise(session: &mut Session, interrupted: &AtomicBool, servers: &str) -> 
         if last_status.elapsed() >= STATUS_INTERVAL {
             last_status = Instant::now();
             let s = session.status();
+            if let Some(probe) = probe.as_mut() {
+                probe.sample(session, &s);
+            }
             info!(
                 source = format!("{}x{}", s.source_size.0, s.source_size.1),
                 output = format!("{}x{}", s.output_size.0, s.output_size.1),
@@ -328,6 +340,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
     let mut audio = AudioChoice::Game;
     let mut audio_gain_db = 0.0f32;
     let mut discovery = Discovery::System;
+    let mut diagnostics = false;
 
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
@@ -359,6 +372,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
             }
             "--no-border" => video.show_border = false,
             "--cursor" => video.capture_cursor = true,
+            "--diagnostics" => diagnostics = true,
             "--system-audio" => audio = AudioChoice::System,
             "--no-audio" => audio = AudioChoice::None,
             "--discovery" => {
@@ -395,6 +409,7 @@ fn parse_args(args: Vec<String>) -> Result<Option<Args>> {
         audio,
         audio_gain_db,
         discovery,
+        diagnostics,
     }))
 }
 

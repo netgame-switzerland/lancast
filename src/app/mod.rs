@@ -3,6 +3,7 @@
 
 mod carousel;
 mod controller;
+mod diagnostics_panel;
 mod event_source;
 mod firewall_watch;
 mod meter;

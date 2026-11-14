@@ -158,6 +158,7 @@ Modules:
 
 ### 4.5 Logging
 `tracing` to stdout and to `logs\LANcast.log` in the data folder (§4.6). The previous run is kept as `LANcast.prev.log`, and the level is set via env `LANCAST_LOG`. **Window titles are logged at debug level only.** Participants may share their log file for troubleshooting, and titles can contain private text (browser tabs, documents). Info level identifies windows by process name and HWND.
+With diagnostics on, a `diagnostics` line is logged every 5 s while sending (D57).
 
 ### 4.6 Config file and data folder (D23)
 Following Windows conventions, everything LANcast writes is per-user, machine-specific data and lives in `%LOCALAPPDATA%\LANcast\`; nothing is written into the program folder:
@@ -198,6 +199,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - FPS cap: default 60, configurable. Enforced by a deadline pacer on the capture thread that drops surplus frames before the readback. `MinUpdateInterval` (where supported) is set to only half the target period. Setting it to the full period quantizes to the refresh grid, e.g. 48 fps on 144 Hz displays (D8).
 - Max resolution: default 1920×1080. Downscale larger windows on the CPU, keeping the aspect ratio; a box or bilinear filter is enough in v1.
 - Preview: produced on the capture thread from the CPU frame, downscaled to ≤ 320×180 and swizzled to RGBA in one pass, at most 15 fps. It is produced only when the UI is visible.
+- Diagnostics ("Diagnostics" toggle next to the settings, CLI `--diagnostics`): a separate window while sending and a log line every 5 s with frame gaps, frame counters, readback and send times, refresh rate, CPU and network adapter (D57).
 - Known limitation: games in **exclusive fullscreen** may deliver black frames or none at all. The UI shows the hint "Please use borderless windowed mode".
 
 ### 5.2 Audio (WASAPI process loopback)

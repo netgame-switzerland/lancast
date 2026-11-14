@@ -1852,6 +1852,55 @@ https://learn.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribut
   The player's audio session belongs to `Microsoft.Media.Player.exe` itself (`IAudioSessionControl2::
   GetProcessId`); `process_loopback` on that PID recorded the video's sound (peak −19.3 dBFS).
 
+### D57. Diagnostics panel and log for stuttering streams (2026-11-14)
+Sources: https://learn.microsoft.com/uwp/api/windows.graphics.capture.direct3d11captureframe.systemrelativetime,
+https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-enumdisplaysettingsw,
+https://learn.microsoft.com/windows/win32/api/wingdi/ns-wingdi-devmodew (`dmDisplayFrequency`),
+https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-monitorfromwindow,
+https://learn.microsoft.com/windows/win32/api/netioapi/nf-netioapi-getiftable2,
+https://learn.microsoft.com/windows/win32/api/netioapi/ns-netioapi-mib_if_row2,
+https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes,
+https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes.
+
+- **Problem (user report):** at the LAN, some senders arrive at the receiver visibly stuttering
+  while the game runs smoothly on the sender; most senders are fine. All are wired at 1 Gbit/s.
+  Refresh rates differ widely between the PCs. Candidates: uneven pacing on displays that are not
+  a multiple of the cap (D8), frames dropped while the clocked NDI send blocks (`VIDEO_QUEUE` 2), a
+  busy GPU delaying the readback, a busy CPU, or a degraded link. The log could not tell them
+  apart: the GUI did not log the capture counters at all.
+- **Decision:** a "Diagnostics" toggle button (`diagnostics` in `LANcast.toml`, default off; CLI
+  `--diagnostics`): at the right of the collapsed settings header, or at the bottom right of the
+  open settings. While on and sending, the controller takes a snapshot every second
+  (`diagnostics::Probe`), shows it in a separate window "LANcast diagnostics" (an egui
+  viewport; closing it turns the diagnostics off), laid out for screenshots, and logs one
+  `diagnostics` line every 5 s. A panel under the preview was tried first: with the settings or
+  banners open, the main window had only ~130 pt left for preview and panel. The snapshot holds:
+  - Display: refresh rate of the monitor showing the game (`MonitorFromWindow` →
+    `EnumDisplaySettingsW`, integer Hz, so 59.94 Hz shows as 59), the cap, and refreshes per frame.
+  - Frames/s: captured (every WGC frame, before the cap) → picked (handed to NDI) → sent by NDI.
+  - Gaps between frames, min / avg / max ± standard deviation, for the frames handed to NDI and
+    for all captured frames, over the last 2 s (panel) or 5 s (log). Taken from the frame's
+    `SystemRelativeTime` (when the compositor made it), not the callback time, so a busy thread
+    does not distort them; the callback time is the fallback. "Hitches" are sent gaps over 1.5
+    periods of the cap: there a receiver at that rate shows a frame twice.
+  - A bar graph of the sent gaps of the last 2 s with the cap's period as a line; hitches amber.
+  - Skipped frames: over the cap (pacer) and dropped because the NDI queue was full.
+  - GPU readback (incl. scaling) avg and max, and the longest blocked `send_video_async`.
+  - CPU: LANcast's share of all logical processors (like Task Manager) and the system load.
+  - Network: the connected physical adapter (`GetIfTable2`, hardware and not a filter
+    interface, `IfOperStatusUp`) with the most outgoing bytes since the last sample, its link
+    speed, Wi-Fi flag, outgoing Mbit/s and send errors + discards.
+  - Amber marks values that point at a problem: hitches, dropped frames, a readback longer than
+    the period, system CPU ≥ 90 %, Wi-Fi, a link under 1 Gbit/s, send errors.
+- All measurements are read-only OS queries and counters in LANcast's own threads; nothing
+  touches the game (CLAUDE.md). The per-frame cost is two counter updates and a short mutex hold.
+- **Reference measurement (2026-11-14), a PC whose stream looks flawless at the consumer**
+  (Rocket League in the menu, 2560×1440 on 144 Hz, cap 60): captured 78 fps (gaps 6.9 / 12.9 /
+  13.9 ms), sent 59.3 fps with gaps 6.9 / 16.7 / 27.8 ms ±6.8 and 28 "hitches" in 2 s; nothing
+  dropped, readback 3.8 ms avg, CPU 68 %. So uneven gaps of this size, and the hitch count as
+  defined here, do not by themselves make a stream look bad; a first reading that blamed them was
+  wrong. Next: the same panel from a PC whose stream does stutter, to compare.
+
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).
   Also check the yellow border during `wgc_window`.

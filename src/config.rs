@@ -35,6 +35,8 @@ pub struct Config {
     pub max_height: u32,
     pub show_border: bool,
     pub capture_cursor: bool,
+    /// Measure and show the diagnostics panel while sending (D57).
+    pub diagnostics: bool,
     /// Gain for the receiver's audio level convention (D17): 0 for OBS /
     /// DistroAV, 20 for NDI Studio Monitor.
     pub audio_gain_db: f32,
@@ -166,6 +168,7 @@ impl Default for Config {
             max_height: 1080,
             show_border: true,
             capture_cursor: false,
+            diagnostics: false,
             audio_gain_db: 0.0,
             discovery_server: String::new(),
             ignore_system_discovery: false,

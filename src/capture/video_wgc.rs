@@ -6,7 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow, bail};
@@ -88,6 +88,7 @@ impl VideoCapture {
         let config = HandlerConfig {
             sink,
             closed: closed.clone(),
+            started: Instant::now(),
         };
         let settings = Settings::new(
             Window::from_raw_hwnd(hwnd as *mut _),
@@ -143,6 +144,7 @@ impl Drop for VideoCapture {
 struct HandlerConfig {
     sink: FrameSink,
     closed: Arc<AtomicBool>,
+    started: Instant,
 }
 
 struct Handler {
@@ -170,12 +172,20 @@ impl GraphicsCaptureApiHandler for Handler {
         control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         let now = Instant::now();
+        // The compositor's time of the frame (SystemRelativeTime, 100 ns
+        // units); the callback time if it cannot be read.
+        let timestamp = frame
+            .timestamp()
+            .ok()
+            .and_then(|t| u64::try_from(t.Duration).ok())
+            .map(|t| Duration::from_nanos(t.saturating_mul(100)))
+            .unwrap_or_else(|| now - self.config.started);
         let sink = &mut self.config.sink;
-        if !sink.wants_frame(now) {
+        if !sink.wants_frame(now, timestamp) {
             return Ok(());
         }
         let source = (frame.width(), frame.height());
-        if !sink.deliver(source, now, || Ok(frame.buffer()?))? {
+        if !sink.deliver(source, now, timestamp, || Ok(frame.buffer()?))? {
             control.stop();
         }
         Ok(())

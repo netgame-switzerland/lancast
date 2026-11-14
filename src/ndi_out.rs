@@ -38,6 +38,8 @@ const CONNECTION_POLL: Duration = Duration::from_secs(1);
 #[derive(Debug, Default)]
 pub struct NdiStats {
     pub video_sent: AtomicU64,
+    /// Longest wait in a clocked video send since the last status (D57).
+    pub send_block_max_us: AtomicU64,
     pub audio_sent: AtomicU64,
     pub connections: AtomicU32,
 }
@@ -162,7 +164,12 @@ fn run(
             recv(video) -> msg => match msg {
                 Ok(frame) => {
                     // With clock_video this blocks until the frame's slot.
-                    if let Some(released) = sender.send_video_async(frame) {
+                    let started = Instant::now();
+                    let released = sender.send_video_async(frame);
+                    stats
+                        .send_block_max_us
+                        .fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    if let Some(released) = released {
                         // A full pool just means the capture side has enough.
                         let _ = recycle.try_send(released);
                     }

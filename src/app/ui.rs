@@ -22,6 +22,7 @@ use super::{
         AppState, AudioCheck, AudioChoice, Command, LinkSource, NetworkStatus, NoticeLevel,
         PendingLink, Sending, Settings, SharedState,
     },
+    diagnostics_panel,
     event_source::SourceLoader,
     firewall_watch::FirewallWatch,
     meter::Meter,
@@ -209,6 +210,7 @@ impl LancastApp {
                 groups: config.ndi_groups.clone(),
                 send_blocked: None,
                 required_servers: None,
+                diagnostics: config.diagnostics,
             },
             sent_settings: None,
             to_tray: config.to_tray,
@@ -498,6 +500,7 @@ impl LancastApp {
         (config.max_width, config.max_height) = self.settings.video.max_size;
         config.show_border = self.settings.video.show_border;
         config.capture_cursor = self.settings.video.capture_cursor;
+        config.diagnostics = self.settings.diagnostics;
         config.audio_gain_db = self.settings.audio_gain_db;
         config.discovery_server = self.discovery_server.trim().to_owned();
         config.ignore_system_discovery = self.ignore_system_discovery;
@@ -1166,6 +1169,15 @@ impl eframe::App for LancastApp {
             self.preview_and_meter(ui, &state);
         });
 
+        // The diagnostics in their own window while sending (D57); closing
+        // it turns them off.
+        if self.settings.diagnostics
+            && let Some(sending) = &state.sending
+            && diagnostics_panel::window(&ctx, sending)
+        {
+            self.settings.diagnostics = false;
+        }
+
         // Animate the meter and preview; otherwise the controller wakes us.
         let live = state.sending.is_some() || state.preview.is_some();
         let interval = if live { 33 } else { 1000 };
@@ -1586,6 +1598,9 @@ impl LancastApp {
                             self.leave_event();
                         }
                     }
+                    if !self.settings_open {
+                        self.diagnostics_row(ui);
+                    }
                 });
                 if title_clicked {
                     header.toggle();
@@ -1814,8 +1829,37 @@ impl LancastApp {
                             self.update_settings(ui);
                             ui.end_row();
                         });
+                    self.diagnostics_row(ui);
                 });
             });
+    }
+
+    /// The diagnostics toggle, right-aligned in a single row: a
+    /// right-to-left layout alone would take all the height left (D57).
+    fn diagnostics_row(&mut self, ui: &mut egui::Ui) {
+        let size = vec2(ui.available_width(), ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(
+            size,
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| self.diagnostics_toggle(ui),
+        );
+    }
+
+    /// Turns the diagnostics window on and off (D57). Its place: the
+    /// settings header while collapsed, the panel's bottom right while open.
+    fn diagnostics_toggle(&mut self, ui: &mut egui::Ui) {
+        let on = self.settings.diagnostics;
+        if ui
+            .selectable_label(on, "Diagnostics")
+            .on_hover_text(
+                "Frame timing, refresh rate, CPU and network in a separate window while \
+                 sending, and every 5 s in the log. For finding out why a stream stutters \
+                 at the receiver.",
+            )
+            .clicked()
+        {
+            self.settings.diagnostics = !on;
+        }
     }
 
     /// A newer LANcast: install it (installed copies) or download it

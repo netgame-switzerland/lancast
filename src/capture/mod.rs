@@ -6,6 +6,7 @@ pub mod audio;
 mod audio_wasapi;
 pub mod pacer;
 pub mod scale;
+pub mod timeline;
 pub mod video;
 #[cfg(windows)]
 mod video_wgc;
