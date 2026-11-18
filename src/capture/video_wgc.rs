@@ -30,6 +30,9 @@ use super::{
 };
 use crate::{os_caps::OsCaps, windows_list::WindowHandle};
 
+/// `MinUpdateInterval` where supported: short enough for every refresh.
+const MIN_UPDATE_INTERVAL: Duration = Duration::from_millis(1);
+
 /// A running capture session. Stops when dropped.
 pub struct VideoCapture {
     control: Option<CaptureControl<Handler, SinkError>>,
@@ -75,10 +78,12 @@ impl VideoCapture {
             }
         };
         let pacer = Pacer::new(options.fps_cap);
-        // Only a coarse prefilter at twice the target rate; the exact cap is the
-        // pacer's job (D8).
+        // Every refresh (up to 1000 Hz): the pacer picks the frame nearest to
+        // each tick, so it needs the whole refresh grid. Any larger interval
+        // rounds up to whole refreshes and leaves gaps (72 of 144 Hz for
+        // 60 fps; D59).
         let interval = if caps.min_update_interval {
-            MinimumUpdateIntervalSettings::Custom(pacer.period() / 2)
+            MinimumUpdateIntervalSettings::Custom(MIN_UPDATE_INTERVAL)
         } else {
             MinimumUpdateIntervalSettings::Default
         };
@@ -185,7 +190,7 @@ impl GraphicsCaptureApiHandler for Handler {
             .map(|t| Duration::from_nanos(t.saturating_mul(100)))
             .unwrap_or_else(|| now - self.config.started);
         let sink = &mut self.config.sink;
-        if !sink.wants_frame(now, timestamp) {
+        if !sink.wants_frame(timestamp) {
             return Ok(());
         }
         let source = (frame.width(), frame.height());

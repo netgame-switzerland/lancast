@@ -196,7 +196,7 @@ Windows 10 cannot be tested by the developer (D7); these paths are built "blind"
 - Pixel format is BGRA8, sent as `BGRX` (alpha is irrelevant; with alpha NDI uses a costlier codec, D6).
 - Size changes at runtime are handled by windows-capture (frame pool recreation). A minimized window produces no frames. The sender keeps the last frame, and NDI re-sends it to new receivers.
 - WGC delivers frames only when the content changes. The NDI thread sends at most the FPS cap and does not duplicate frames in v1.
-- FPS cap: default 60, configurable. Enforced by a deadline pacer on the capture thread that drops surplus frames before the readback. `MinUpdateInterval` (where supported) is set to only half the target period. Setting it to the full period quantizes to the refresh grid, e.g. 48 fps on 144 Hz displays (D8).
+- FPS cap: default 60, configurable; best set to the show output's rate (the projector, usually 60). Enforced by a pacer on the capture thread that drops surplus frames before the readback: it keeps one tick per period and takes the frame whose compositor timestamp is nearest to each tick. `MinUpdateInterval` (where supported) is 1 ms, so every refresh is available. On a refresh rate that is a multiple of the cap (60/120/240 Hz for 60 fps) every gap is exactly one period; otherwise (144 Hz) gaps mix neighbouring refresh counts, each frame at most half a refresh off (D8, D59).
 - Max resolution: default 1920×1080. Downscale larger windows on the CPU, keeping the aspect ratio; a box or bilinear filter is enough in v1.
 - On a network link too slow for the max. resolution (e.g. 100 Mbit/s), a smaller 16:9 size is sent at the same frame rate; the settings show it, and "Keep it on a slow network link" overrides it. Max. resolution and frame rate can be changed while sending (D58).
 - Preview: produced on the capture thread from the CPU frame, downscaled to ≤ 320×180 and swizzled to RGBA in one pass, at most 15 fps. It is produced only when the UI is visible.
@@ -275,7 +275,7 @@ An event website can configure every LANcast with one click:
 
 - `discovery` sets the event's NDI discovery server (gateway).
 - `groups` sets the NDI send groups (D39).
-- `max` and `fps` are **limits** the user cannot exceed.
+- `max` and `fps` are **limits** the user cannot exceed. Set `fps` to the show output's rate (usually 60): senders with a multiple of it as refresh rate then send perfectly even motion (D59).
 - The other keys are **defaults**.
 
 LANcast asks before applying an event or changed enforced settings, and never starts sending by itself. A link that repeats the event in force with the same enforced settings applies nothing and asks nothing (D36). The settings show the event with a "Leave event" button. The `lancast:` scheme is registered by the installer, or per user by LANcast itself.

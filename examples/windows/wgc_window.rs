@@ -64,8 +64,10 @@ impl GraphicsCaptureApiHandler for Capture {
         _control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
         let start = Instant::now();
+        // The compositor's time of the frame (100 ns units).
+        let timestamp = Duration::from_nanos(frame.timestamp()?.Duration as u64 * 100);
         // Drop surplus frames before the GPU → CPU readback, which is the cost.
-        if !self.pacer.accept(start) {
+        if !self.pacer.accept(timestamp) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
@@ -138,7 +140,7 @@ pub fn main() -> Result<()> {
     // Only a coarse prefilter at twice the target rate; the exact cap is the
     // Pacer's job (an interval of exactly 1/FPS_CAP yields 48 fps at 144 Hz).
     let interval = if GraphicsCaptureApi::is_minimum_update_interval_supported()? {
-        MinimumUpdateIntervalSettings::Custom(Duration::from_secs(1) / (2 * FPS_CAP))
+        MinimumUpdateIntervalSettings::Custom(Duration::from_millis(1))
     } else {
         MinimumUpdateIntervalSettings::Default
     };

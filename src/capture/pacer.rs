@@ -1,25 +1,30 @@
-//! Deadline-based frame pacer for the FPS cap (D8).
+//! Frame pacer for the frame rate cap (D8, D59).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// WGC delivers frames on the display's refresh grid (e.g. 6.94 ms at
-/// 144 Hz), so a fixed minimum interval of 1/60 s rounds up to every third
-/// tick (48 fps). Advancing the deadline by exactly one period per accepted
-/// frame alternates 2- and 3-tick gaps and averages to the target rate.
+/// WGC delivers frames only on the display's refresh grid (e.g. every
+/// 6.94 ms at 144 Hz), at the compositor's timestamps. The pacer keeps an
+/// ideal schedule of one tick per period and takes, for each tick, the frame
+/// whose timestamp is nearest to it. On a refresh rate that is a multiple of
+/// the frame rate (60 fps from 60, 120 or 240 Hz) every gap is exactly the
+/// period; otherwise (144 Hz) the gaps mix whole refreshes, each frame at
+/// most half a refresh off its tick. Sources slower than the cap pass
+/// through.
 #[derive(Debug)]
 pub struct Pacer {
     period: Duration,
-    due: Option<Instant>,
+    /// The next tick of the ideal schedule.
+    due: Option<Duration>,
+    /// Timestamp of the previous delivered frame, accepted or not.
+    last: Option<Duration>,
 }
 
 impl Pacer {
-    /// Accepts frames up to this early, to absorb delivery jitter.
-    const TOLERANCE: Duration = Duration::from_millis(1);
-
     pub fn new(fps: u32) -> Self {
         Self {
             period: Duration::from_secs(1) / fps.max(1),
             due: None,
+            last: None,
         }
     }
 
@@ -27,14 +32,25 @@ impl Pacer {
         self.period
     }
 
-    /// Returns whether a frame arriving at `now` should be used.
-    pub fn accept(&mut self, now: Instant) -> bool {
+    /// Returns whether the frame with this capture `timestamp` (any fixed
+    /// epoch) should be used.
+    pub fn accept(&mut self, timestamp: Duration) -> bool {
+        // The next frame most likely follows after the same gap as this one
+        // (one refresh while the content changes on every refresh).
+        let step = self
+            .last
+            .map(|last| timestamp.saturating_sub(last))
+            .filter(|gap| !gap.is_zero())
+            .unwrap_or(self.period)
+            .min(self.period);
+        self.last = Some(timestamp);
         match self.due {
-            Some(due) if now + Self::TOLERANCE < due => false,
+            // The next frame will be nearer to the tick than this one.
+            Some(due) if timestamp + step / 2 < due => false,
             // Fell behind by more than a period (e.g. after a stall or while
             // minimized): restart the schedule instead of bursting.
-            Some(due) if now > due + self.period => {
-                self.due = Some(now + self.period);
+            Some(due) if timestamp > due + self.period => {
+                self.due = Some(timestamp + self.period);
                 true
             }
             Some(due) => {
@@ -42,7 +58,7 @@ impl Pacer {
                 true
             }
             None => {
-                self.due = Some(now + self.period);
+                self.due = Some(timestamp + self.period);
                 true
             }
         }
@@ -53,28 +69,82 @@ impl Pacer {
 mod tests {
     use super::*;
 
-    /// Feeds frames on a fixed refresh grid and returns the accepted count.
-    fn accepted_per_second(refresh_hz: f64, fps: u32) -> u32 {
-        let start = Instant::now();
+    /// Feeds 10 s of frames on a refresh grid starting at `offset` and returns
+    /// the gaps between accepted frames in whole refreshes.
+    fn accepted_gaps(refresh_hz: f64, fps: u32, offset: f64) -> Vec<u32> {
         let mut pacer = Pacer::new(fps);
-        let ticks = refresh_hz as u32 * 10;
-        let accepted = (0..ticks)
-            .filter(|&i| pacer.accept(start + Duration::from_secs_f64(i as f64 / refresh_hz)))
-            .count() as u32;
-        accepted / 10
+        let ticks = (refresh_hz * 10.0) as u32;
+        let accepted: Vec<u32> = (0..ticks)
+            .filter(|&i| pacer.accept(Duration::from_secs_f64(offset + i as f64 / refresh_hz)))
+            .collect();
+        accepted.windows(2).map(|w| w[1] - w[0]).collect()
+    }
+
+    fn per_second(gaps: &[u32]) -> usize {
+        (gaps.len() + 1) / 10
     }
 
     #[test]
-    fn caps_high_refresh_displays_at_target() {
-        assert_eq!(accepted_per_second(144.0, 60), 60);
-        assert_eq!(accepted_per_second(120.0, 60), 60);
-        assert_eq!(accepted_per_second(240.0, 60), 60);
-        assert_eq!(accepted_per_second(144.0, 30), 30);
+    fn multiples_of_the_rate_are_perfectly_even() {
+        for (hz, every) in [(60.0, 1), (120.0, 2), (240.0, 4)] {
+            let gaps = accepted_gaps(hz, 60, 0.123_456);
+            assert!(gaps.iter().all(|&g| g == every), "{hz} Hz: {gaps:?}");
+            assert_eq!(per_second(&gaps), 60);
+        }
+        let gaps = accepted_gaps(240.0, 40, 0.0);
+        assert!(gaps.iter().all(|&g| g == 6), "{gaps:?}");
+    }
+
+    /// 60 from 144 Hz: 2 or 3 refreshes per frame, never a skipped extra
+    /// refresh, and 60 frames per second on average.
+    #[test]
+    fn other_refresh_rates_mix_neighbouring_gaps() {
+        let gaps = accepted_gaps(144.0, 60, 0.0);
+        assert!(gaps.iter().all(|&g| g == 2 || g == 3), "{gaps:?}");
+        assert_eq!(per_second(&gaps), 60);
+        let gaps = accepted_gaps(165.0, 60, 0.004);
+        assert!(gaps.iter().all(|&g| g == 2 || g == 3), "{gaps:?}");
+        assert_eq!(per_second(&gaps), 60);
+    }
+
+    /// Each accepted frame is at most half a refresh away from its tick.
+    #[test]
+    fn frames_are_nearest_to_their_tick() {
+        let (hz, fps) = (144.0, 60);
+        let mut pacer = Pacer::new(fps);
+        let mut first = None;
+        let mut n = 0;
+        for i in 0..1440 {
+            let t = i as f64 / hz;
+            if pacer.accept(Duration::from_secs_f64(t)) {
+                let first = *first.get_or_insert(t);
+                let tick = first + n as f64 / fps as f64;
+                assert!(
+                    (t - tick).abs() <= 0.5 / hz + 1e-6,
+                    "frame {i}: {t} vs {tick}"
+                );
+                n += 1;
+            }
+        }
     }
 
     #[test]
     fn passes_through_slower_sources() {
-        assert_eq!(accepted_per_second(60.0, 60), 60);
-        assert_eq!(accepted_per_second(50.0, 60), 50);
+        assert_eq!(per_second(&accepted_gaps(60.0, 60, 0.0)), 60);
+        assert_eq!(per_second(&accepted_gaps(50.0, 60, 0.0)), 50);
+        assert_eq!(per_second(&accepted_gaps(30.0, 40, 0.0)), 30);
+    }
+
+    #[test]
+    fn restarts_after_a_stall() {
+        let mut pacer = Pacer::new(60);
+        let ms = Duration::from_millis;
+        assert!(pacer.accept(ms(0)));
+        // No frames for a second (e.g. minimized), then the grid resumes:
+        // no burst of catch-up frames.
+        assert!(pacer.accept(ms(1000)));
+        assert!(!pacer.accept(ms(1004)));
+        assert!(!pacer.accept(ms(1008)));
+        assert!(pacer.accept(ms(1017)));
     }
 }

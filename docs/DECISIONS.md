@@ -162,6 +162,7 @@ Sources: `NDI SDK License Agreement.pdf`, `Documentation/NDI SDK Documentation.p
     WGC delivers on the refresh grid (6.94 ms). Two ticks (13.9 ms) are shorter than 16.67 ms, so every
     frame waits for the third tick (20.8 ms), and 144/3 = 48.
   - **Decision:** `MinUpdateInterval` is only a coarse prefilter at **half the target period** (≥ 26100).
+    (Superseded by D59: 1 ms, and the pacer takes the frame nearest to each tick by timestamp.)
     The exact cap comes from a **deadline pacer** in our code:
     - The deadline advances by exactly one period per accepted frame.
     - Frames up to 1 ms early are accepted.
@@ -1937,7 +1938,7 @@ https://learn.microsoft.com/windows/win32/api/netioapi/ns-netioapi-mib_if_row2 (
   new NDI frames, since NDI clocks by the frame's rate. The source stays up; receivers see the
   size change. Border and cursor still need a new session. `MinUpdateInterval` keeps the value of
   the start (half the period of the frame rate then), so raising the frame rate above twice the
-  start value is capped by WGC until the next send.
+  start value is capped by WGC until the next send. (Obsolete since D59: 1 ms for every rate.)
 - **Diagnostics (D57):** the network row showed the busiest adapter; without traffic (no receiver)
   that was simply the first one, possibly an unused adapter. It now shows the busiest adapter only
   with real traffic (≥ 1 Mbit/s), else the routed one from above.
@@ -1945,6 +1946,49 @@ https://learn.microsoft.com/windows/win32/api/netioapi/ns-netioapi-mib_if_row2 (
   changing on the next frame; on the developer machine the routed link is "Ethernet Mainboard
   Main", 1 Gbit/s (no cut); with a faked 100 Mbit/s link the settings show the note and the
   checkbox (screenshot).
+
+### D59. Pacing on the refresh grid: nearest frame per tick, every refresh delivered (2026-11-18)
+Sources: https://learn.microsoft.com/uwp/api/windows.graphics.capture.graphicscapturesession.minupdateinterval,
+https://learn.microsoft.com/uwp/api/windows.graphics.capture.direct3d11captureframe.systemrelativetime; D8, D57.
+
+- **Why the sender's display matters:** WGC captures what the desktop compositor composes, once
+  per display refresh, not the game's own frames. A game rendering 300 fps is still sampled at the
+  refresh rate; all gaps measured in D57 screenshots and here were whole multiples of the refresh
+  period (4.17 ms at 240 Hz, 6.94 ms at 144 Hz). 60 fps can only be even when the refresh rate is a
+  multiple of 60; on 144 Hz the gaps must mix 2 and 3 refreshes.
+- **Measured before (2026-11-15, 144 Hz, browser page drawing on every refresh = even 144 fps
+  source, D57 diagnostics):**
+  - cap 40: WGC delivered 72 fps (`MinUpdateInterval` 12.5 ms rounds up to every 2nd refresh); sent
+    gaps 13.9–34.7 ms, ±5.6 ms.
+  - cap 60: WGC delivered only 72 fps (8.3 ms rounds up to 13.9 ms), so the pacer had to skip whole
+    slots: sent gaps 6.9/13.9/27.8 ms, ±5.6 ms, about 12 hitches per second. LANcast itself made an
+    even source uneven.
+- **Decision (with the user):** no per-display rate (e.g. 72 fps on 144 Hz): the show output runs
+  at 60 Hz and would have to drop the surplus itself, which judders the same. The cap stays the
+  target, best the show output's rate (usually 60); LANcast gets as close to even as the sender's
+  display allows:
+  - `MinUpdateInterval` = 1 ms (where supported): every refresh up to 1000 Hz is delivered.
+    Surplus frames cost no readback (dropped before `frame.buffer()`), only a callback. Replaces the
+    half-period prefilter of D8 and removes the D58 caveat about raising the rate while live.
+  - The pacer works on the compositor timestamps (`SystemRelativeTime`), not on the callback time.
+    It keeps an ideal schedule (one tick per period, restarted after a stall of more than one
+    period) and takes the frame nearest to each tick: a frame is skipped when the next one, expected
+    after the same gap as the last, will be nearer. Each frame is at most half a refresh off its tick
+    (±3.5 ms at 144 Hz instead of up to a whole refresh); with a multiple (60/120/240 Hz) every gap is
+    exactly one period. Sources slower than the cap pass through.
+  - Diagnostics: the display row turns amber with "(uneven)" when refreshes per frame are not a
+    whole number. The frame rate setting's tooltip and the event example recommend the show
+    output's rate.
+- **Measured after (same setup, 2026-11-18):** WGC delivers 143–144 fps; cap 60: sent gaps
+  13.9/16.7/20.8 ms ±3.4 ms, 0 hitches; cap 40: 20.8/25.0/27.8 ms ±3.4 ms; cap 72: 13.9 ms ±0.8 ms
+  (every 2nd refresh); cap 90: 6.9–13.9 ms ±3.4 ms. Remaining outliers matched gaps of the source
+  itself. Unit tests: exact gaps for 60 fps on 60/120/240 Hz and 40 fps on 240 Hz, only 2- or
+  3-refresh gaps for 60 fps on 144/165 Hz, at most half a refresh off each tick, pass-through of
+  slower sources, restart after a stall.
+- **Not addressed:** a 144/165 Hz sender still mixes 2 and 3 refreshes at 60 fps. Blending the
+  two nearest frames by time would make it even at the cost of a slight double image in fast
+  motion; only worth trying if it is visible on the projector. Sources that themselves deliver
+  unevenly (the 240 Hz PC in D57 captured only ~30 fps with 25–67 ms gaps) are passed on as they are.
 
 ### Open items after M0
 - Check visually: test pattern and tone in NDI Studio Monitor (pick the source from the ☰ menu).

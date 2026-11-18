@@ -92,15 +92,22 @@ fn numbers(ui: &mut egui::Ui, sending: &Sending, d: &Diagnostics) {
         .num_columns(2)
         .spacing(vec2(12.0, 1.0))
         .show(ui, |ui| {
-            let display = match d.refresh_hz {
-                Some(hz) => format!(
-                    "{hz} Hz · cap {} fps · {:.2} refreshes/frame",
-                    d.fps_cap,
-                    f64::from(hz) / f64::from(d.fps_cap.max(1))
-                ),
-                None => format!("unknown · cap {} fps", d.fps_cap),
+            // Even motion needs a whole number of refreshes per frame; else
+            // the frames mix e.g. 2 and 3 refreshes (60 fps on 144 Hz, D59).
+            let (display, uneven) = match d.refresh_hz {
+                Some(hz) => {
+                    let ratio = f64::from(hz) / f64::from(d.fps_cap.max(1));
+                    let uneven = ratio > 1.0 && (ratio - ratio.round()).abs() > 0.02;
+                    let text = format!(
+                        "{hz} Hz · cap {} fps · {ratio:.2} refreshes/frame{}",
+                        d.fps_cap,
+                        if uneven { " (uneven)" } else { "" }
+                    );
+                    (text, uneven)
+                }
+                None => (format!("unknown · cap {} fps", d.fps_cap), false),
             };
-            row(ui, "Display", display, false);
+            row(ui, "Display", display, uneven);
             row(
                 ui,
                 "Frames/s",

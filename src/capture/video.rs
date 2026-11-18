@@ -244,16 +244,16 @@ impl FrameSink {
         }
     }
 
-    /// Whether a frame arriving at `now` should be read back at all. Surplus
-    /// frames are dropped here, before the GPU → CPU readback, which is the
-    /// cost. `timestamp` is the frame's capture time (any fixed epoch).
-    pub(super) fn wants_frame(&mut self, now: Instant, timestamp: Duration) -> bool {
+    /// Whether a frame should be read back at all. Surplus frames are dropped
+    /// here, before the GPU → CPU readback, which is the cost. `timestamp` is
+    /// the frame's capture time (any fixed epoch); the pacer works on it.
+    pub(super) fn wants_frame(&mut self, timestamp: Duration) -> bool {
         self.apply_live();
         self.stats.arrived.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut timeline) = self.stats.timeline.lock() {
             timeline.arrived.record(timestamp);
         }
-        if !self.pacer.accept(now) {
+        if !self.pacer.accept(timestamp) {
             self.stats.paced_out.fetch_add(1, Ordering::Relaxed);
             return false;
         }
@@ -468,7 +468,7 @@ mod tests {
         let start = Instant::now();
         let send = |sink: &mut FrameSink, ms: u64| {
             let now = start + Duration::from_millis(ms);
-            assert!(sink.wants_frame(now, Duration::from_millis(ms)));
+            assert!(sink.wants_frame(Duration::from_millis(ms)));
             assert!(
                 sink.deliver(source, now, Duration::from_millis(ms), pixels)
                     .unwrap()
@@ -489,9 +489,6 @@ mod tests {
             (32, 18, 30)
         );
         // The pacer now runs at 30 fps: a frame 20 ms later is skipped.
-        assert!(!sink.wants_frame(
-            start + Duration::from_millis(120),
-            Duration::from_millis(120)
-        ));
+        assert!(!sink.wants_frame(Duration::from_millis(120)));
     }
 }

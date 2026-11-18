@@ -1778,6 +1778,9 @@ impl LancastApp {
                                         egui::DragValue::new(&mut self.settings.video.fps_cap)
                                             .range(10..=120)
                                             .suffix(" fps"),
+                                    )
+                                    .on_hover_text(
+                                        "Best: the frame rate of the show output, usually 60.                                          Motion is perfectly even when the display's refresh                                          rate is a multiple of it (60, 120 or 240 Hz for 60 fps).",
                                     );
                                     if let Some(fps) = enforced.max_fps {
                                         let capped = self.settings.video.fps_cap > fps;
